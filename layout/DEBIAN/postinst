@@ -1,0 +1,81 @@
+#!/bin/bash
+
+echo "Running Installation Script"
+
+# Define the path to your bundle, plist file, and daemon binary
+BUNDLE_PATH="/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle"
+PLIST_PATH="/Library/LaunchDaemons/com.skyglow.snd.plist"
+DAEMON_BINARY_PATH="/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/sndrestart" # Path to your daemon binary
+
+# Check and create the Keys directory if it doesn't exist
+if [ ! -d "$BUNDLE_PATH/Keys" ]; then
+    echo "Creating Keys directory."
+    mkdir -p "$BUNDLE_PATH/Keys"
+
+    # Set permissions to allow the mobile user to access this directory
+    chown mobile:mobile "$BUNDLE_PATH/Keys"
+    chmod 755 "$BUNDLE_PATH/Keys"
+else
+    echo "Keys directory already exists."
+fi
+
+# Check and create the plist file if it doesn't exist
+if [ ! -f "$PLIST_PATH" ]; then
+    echo "Creating plist file for the daemon."
+    cat > "${PLIST_PATH}" << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.skyglow.snd</string>
+    
+    <key>Program</key>
+    <string>/usr/local/bin/SkyglowNotificationsDaemon</string>
+    
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <key>KeepAlive</key>
+    <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+    </dict>
+
+    
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>
+EOF
+
+    # Set the correct ownership and permissions
+    chown root:wheel "${PLIST_PATH}"
+    chmod 644 "${PLIST_PATH}"
+
+    # Load the plist to start the daemon
+    launchctl load "${PLIST_PATH}"
+    echo "Daemon plist file created and loaded."
+else
+    echo "Daemon plist file already exists."
+    chown root:wheel "${PLIST_PATH}"
+    chmod 644 "${PLIST_PATH}"
+    launchctl unload "${PLIST_PATH}"
+    launchctl load "${PLIST_PATH}"
+fi
+
+# Set the daemon binary ownership to root and setuid
+if [ -f "$DAEMON_BINARY_PATH" ]; then
+    echo "Setting daemon binary permissions."
+    chown root:wheel "$DAEMON_BINARY_PATH"
+    chmod 4755 "$DAEMON_BINARY_PATH"
+else
+    echo "Daemon binary not found at $DAEMON_BINARY_PATH."
+fi
+
+echo "Installation and daemon setup complete."
+
+exit 0
