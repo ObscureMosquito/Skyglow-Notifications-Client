@@ -1,6 +1,8 @@
 TARGET := iphone:clang:latest:7.0
 ARCHS = armv7 armv7s
+
 export TARGET=iphone:clang:6.0
+
 include $(THEOS)/makefiles/common.mk
 
 BUNDLE_NAME = SkyglowNotificationsDaemonSettings

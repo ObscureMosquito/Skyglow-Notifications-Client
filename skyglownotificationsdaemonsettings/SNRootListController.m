@@ -19,8 +19,27 @@
 
 
 - (void)reloadDaemon {
-    NSLog(@"Invoking the binary to restart the daemon");
-    system("/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/sndrestart");
+    NSLog(@"[Sndrestart] Invoking the binary to restart the daemon");
+    
+    pid_t pid;
+    char *args[] = {"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/sndrestart", NULL};
+    int status;
+    
+    // Spawn the process
+    status = posix_spawn(&pid, args[0], NULL, NULL, args, environ);
+    
+    if (status == 0) {
+        NSLog(@"[Sndrestart] Successfully spawned the process.");
+        
+        // Wait for the spawned process to finish, if necessary
+        if (waitpid(pid, &status, 0) == -1) {
+            NSLog(@"[Sndrestart] Error waiting for the process to finish.");
+        } else {
+            NSLog(@"[Sndrestart] Process finished.");
+        }
+    } else {
+        NSLog(@"[Sndrestart] Failed to spawn the process.");
+    }
 }
 
 
@@ -33,18 +52,6 @@
     GuideViewController *guideVC = [[GuideViewController alloc] init];
     [self.navigationController pushViewController:guideVC animated:YES];
 }
-
-
-- (void)disableDaemonAndRespring {
-    NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.skyglow.snds"];
-    //set the enabled key to false for NSUserDefaults specific to com.skyglow.sndp
-    NSMutableDictionary *newPrefs = [prefs mutableCopy];
-    [newPrefs setObject:[NSNumber numberWithBool:NO] forKey:@"enabled"];
-    [[NSUserDefaults standardUserDefaults] setPersistentDomain:newPrefs forName:@"com.skyglow.snds"];
-    [[NSUserDefaults standardUserDefaults] synchronize];
-    system("killall -9 SpringBoard");
-}
-
 
 - (void)generateSSLCertificate {
     UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Generating Certificate"

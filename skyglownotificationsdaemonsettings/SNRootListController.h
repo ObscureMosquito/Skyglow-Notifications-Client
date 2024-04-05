@@ -4,6 +4,11 @@
 #include <openssl/err.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
+#include <spawn.h>
+#include <stdio.h>
+#include <sys/wait.h>
+
+extern char **environ;
 
 @interface SNRootListController : PSListController
 

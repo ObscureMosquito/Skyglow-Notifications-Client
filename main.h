@@ -16,11 +16,11 @@
 #import <SystemConfiguration/SystemConfiguration.h>
 #import "KeyManager.h"
 
-#define MAX_BACKOFF 64 // Maximum backoff time in seconds
+#define MAX_BACKOFF 256 // Maximum backoff time in seconds
 
 // Global variables
-extern char *serverIP = NULL;
-extern char *serverPortStr = NULL;
+char *serverIP;
+char *serverPortStr;
 NSString *privateKeyPath = @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Keys/private_key.pem";
 BOOL *isReachableWithoutRequiredConnection = NULL;
 
@@ -28,7 +28,7 @@ BOOL *isReachableWithoutRequiredConnection = NULL;
 int connectToServer(const char *serverIP, int port);
 NSData *tlsDecrypt(NSData *inputData, NSString *privateKeyPath);
 
-@interface MyAppDaemon : NSObject {
+@interface NotificationDaemon : NSObject {
     SCNetworkReachabilityRef _reachabilityRef;
 }
 

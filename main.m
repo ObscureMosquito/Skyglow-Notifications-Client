@@ -1,7 +1,7 @@
 #import "main.h"
 
 
-@implementation MyAppDaemon
+@implementation NotificationDaemon
 
 - (void)scheduleLocalNotificationWithDecryptedMessage:(NSString *)decryptedMessage {
     // Parse the JSON string
@@ -32,9 +32,6 @@
     [localNotification performSelector:@selector(setAlertBody:) withObject:alertBody];
     [localNotification performSelector:@selector(setAlertAction:) withObject:@"Open"];
     [localNotification performSelector:@selector(setSoundName:) withObject:UILocalNotificationDefaultSoundName];
-
-    NSLog(@"Sending notification to %d", bundleID);
-    // Since iOS 6 doesn't support alertTitle, we don't set it
 
     // Find the SBSLocalNotificationClient class and schedule the notification
     Class SBSLocalNotificationClientClass = objc_getClass("SBSLocalNotificationClient");
@@ -77,8 +74,6 @@
         NSLog(@"[ExponentialBackoffConnect] Connected to server at %s:%d", serverIP, serverPort);
         char buffer[1024];
         ssize_t bytesRead;
-        // Assuming you have the decryption setup as previously discussed
-        char decryptedBuffer[4096]; // Adjust size as necessary
 
         while ((bytesRead = recv(sockfd, buffer, sizeof(buffer) - 1, 0)) > 0) {
             buffer[bytesRead] = '\0';
@@ -110,15 +105,16 @@
 }
 
 
-
 - (void)dealloc {
     if (_reachabilityRef != NULL) {
         SCNetworkReachabilitySetCallback(_reachabilityRef, NULL, NULL);
         SCNetworkReachabilitySetDispatchQueue(_reachabilityRef, NULL);
         CFRelease(_reachabilityRef);
         _reachabilityRef = NULL;
+        [super dealloc];
     }
 }
+
 
 - (void)startMonitoringNetworkReachability {
     struct sockaddr_in zeroAddress;
@@ -143,6 +139,7 @@
     }
 }
 
+
 static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) {
     BOOL isReachable = flags & kSCNetworkFlagsReachable;
     BOOL needsConnection = flags & kSCNetworkFlagsConnectionRequired;
@@ -150,7 +147,7 @@ static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReach
     // Additional checks to ensure more accurate status
     BOOL isReachableWithoutRequiredConnection = isReachable && !needsConnection;
     
-    MyAppDaemon *daemon = (__bridge MyAppDaemon *)info;
+    NotificationDaemon *daemon = (__bridge NotificationDaemon *)info;
     
     if (isReachableWithoutRequiredConnection) {
         NSLog(@"Network became reachable, trying to connect.");
@@ -212,32 +209,30 @@ int main() {
             return -1;
         }
 
-        MyAppDaemon *daemon = [[MyAppDaemon alloc] init];
+        NotificationDaemon *daemon = [[NotificationDaemon alloc] init];
         [daemon startMonitoringNetworkReachability];
 
         NSString *ip = [prefs objectForKey:@"notificationServerAddress"];
         NSString *port = [prefs objectForKey:@"notificationServerPort"];
         BOOL isEnabled = [[prefs objectForKey:@"enabled"] boolValue];
         if (!isEnabled) {
-            NSLog(@"Daemon is disabled, aborting");
+            NSLog(@"[Main] Daemon is disabled, aborting");
             return 0;
         } else if (ip && port) {
 
             if (serverIP) free(serverIP); // Free previously allocated memory if any
             if (serverPortStr) free(serverPortStr); // Free previously allocated memory if any
 
-            //serverIP = strdup([ip UTF8String]);
-            //serverPortStr = strdup([port UTF8String]);
             serverIP = strdup([ip UTF8String]);
             serverPortStr = strdup([port UTF8String]);
 
-            NSLog(@"Address and port extracted from preference file: %s,%s", serverIP, serverPortStr);
+            // NSLog(@"[Main] Address and port extracted from preference file: %s,%s", serverIP, serverPortStr);
 
         } else if (!isReachableWithoutRequiredConnection) {
         // If network is not reachable, stay dormant until startMonitoringNetworkReachability deems it reachable.
-            NSLog(@"Network is not reachable, staying dormant.");
+            NSLog(@"[Main] Network is not reachable, staying dormant.");
         } else {
-            NSLog(@"IP or Port missing in preferences.");
+            NSLog(@"[Main] IP or Port missing in preferences.");
             return -1;
         }
 
