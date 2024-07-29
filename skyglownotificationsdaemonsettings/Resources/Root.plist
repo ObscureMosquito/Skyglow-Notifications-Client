@@ -75,47 +75,17 @@
 			<string>PSGroupCell</string>
 		</dict>
 		<dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string></string>
+        </dict>
+		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>Daemon Logs:</string>
+			<string>Daemon Status:</string>
 		</dict>
-		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string></string>
-        </dict>
-		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string></string>
-        </dict>
-		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string></string>
-        </dict>
-		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string></string>
-        </dict>
-		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string></string>
-        </dict>
-		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string></string>
-        </dict>
 		<dict>
 			<key>cellClass</key>
 			<string>SNCustomTableViewCell</string>

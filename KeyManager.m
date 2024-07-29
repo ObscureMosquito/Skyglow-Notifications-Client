@@ -3,28 +3,22 @@
 
 
 NSData *OpenSSLBase64Decode(NSString *base64String) {
-    // Convert NSString to C string
     const char *input = [base64String cStringUsingEncoding:NSASCIIStringEncoding];
     size_t length = strlen(input);
 
-    // Set up a memory buffer to hold the decoded data
     BIO *b64 = BIO_new(BIO_f_base64());
     BIO *bio = BIO_new_mem_buf(input, (int)length);
     bio = BIO_push(b64, bio);
-
-    // Do not use newlines to flush buffer
     BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
 
-    // Decode
-    NSMutableData *decodedData = [NSMutableData dataWithLength:length]; // Length is overestimated
+    NSMutableData *decodedData = [NSMutableData dataWithLength:length];
     int decodedLength = BIO_read(bio, decodedData.mutableBytes, (int)length);
 
     [decodedData setLength:decodedLength];
 
     BIO_free_all(bio);
-    return decodedData;
+    return decodedLength > 0 ? decodedData : nil; // Ensure valid length
 }
-
 
 NSData *tlsDecrypt(NSData *inputData, NSString *privateKeyPath) {
     FILE *privateKeyFile = fopen(privateKeyPath.UTF8String, "r");
@@ -66,3 +60,43 @@ NSData *tlsDecrypt(NSData *inputData, NSString *privateKeyPath) {
     return decryptedData;
 }
 
+NSData *encryptWithRSAPublicKey(NSData *data, NSString *publicKeyPath) {
+    FILE *publicKeyFile = fopen([publicKeyPath UTF8String], "r");
+    if (!publicKeyFile) {
+        NSLog(@"Failed to open public key file");
+        return nil;
+    }
+
+    RSA *rsaPublicKey = PEM_read_RSA_PUBKEY(publicKeyFile, NULL, NULL, NULL);
+    if (!rsaPublicKey) {
+        NSLog(@"Failed to read public key");
+        fclose(publicKeyFile);
+        return nil;
+    }
+
+    const size_t rsaSize = RSA_size(rsaPublicKey);
+    unsigned char *encryptedBytes = malloc(rsaSize);
+    if (!encryptedBytes) {
+        RSA_free(rsaPublicKey);
+        fclose(publicKeyFile);
+        NSLog(@"Failed to allocate memory for encryption");
+        return nil;
+    }
+
+    int resultLength = RSA_public_encrypt((int)[data length], [data bytes], encryptedBytes, rsaPublicKey, RSA_PKCS1_OAEP_PADDING);
+    RSA_free(rsaPublicKey);
+    fclose(publicKeyFile);
+
+    if (resultLength == -1) {
+        free(encryptedBytes);
+        char errorBuf[120];
+        ERR_load_crypto_strings();
+        ERR_error_string(ERR_get_error(), errorBuf);
+        NSLog(@"Encryption Error: %s", errorBuf);
+        return nil;
+    }
+
+    NSData *encryptedData = [NSData dataWithBytesNoCopy:encryptedBytes length:resultLength freeWhenDone:YES];
+    NSLog(@"Encrypted data: %@", encryptedData);  // Log encrypted data
+    return encryptedData;
+}

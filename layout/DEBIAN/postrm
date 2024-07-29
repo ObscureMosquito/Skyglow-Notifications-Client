@@ -1,0 +1,17 @@
+#!/bin/bash
+
+echo "Running Removal Script"
+
+# Define the path to plist file
+PLIST_PATH="/Library/LaunchDaemons/com.skyglow.snd.plist"
+KEYS_PATH="/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Keys"
+
+#Unload the daemon
+launchctl unload "${PLIST_PATH}"
+
+# Remove existing plist for update
+rm -rf "${PLIST_PATH}"
+
+echo "Removal Script Complete"
+
+exit 0

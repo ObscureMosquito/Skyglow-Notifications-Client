@@ -1,8 +1,21 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 
-@interface ViewController : UIViewController
+// Darwin Notification Statuses
+#define kDaemonStatusNotification "com.skyglow.notificationdaemon.status"
+#define kDaemonStatusKey "DaemonStatus"
+#define kDaemonStatusDisabled "Disabled"
+#define kDaemonStatusError "Error"
+#define kDaemonStatusEnabledNotConnected "EnabledNotConnected"
+#define kDaemonStatusConnected "Connected"
+#define kDaemonStatusBadPort "DaemonStatusBadPort"
+#define kDaemonStatusBadIP "DaemonStatusBadIP"
+#define kDaemonStatusDecryptError "DaemonStatusDecryptError"
+#define kDaemonStatusEncryptError "DaemonStatusEncryptError"
+#define kDaemonStatusConnectionClosed "DaemonStatusConnectionClosed"
 
-@property (strong, nonatomic) UITextView *logTextView;
+@interface SNLogViewController : UIViewController
+
+- (void)updateLogWithStatus:(NSString *)status;
 
 @end

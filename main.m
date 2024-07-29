@@ -1,16 +1,16 @@
 #import "main.h"
 
-
 @implementation NotificationDaemon
 
-- (void)scheduleLocalNotificationWithDecryptedMessage:(NSString *)decryptedMessage {
+- (void)scheduleLocalNotificationWithDecryptedMessage:(NSString *)decryptedMessage sockfd:(int)sockfd {
     // Parse the JSON string
     NSData *data = [decryptedMessage dataUsingEncoding:NSUTF8StringEncoding];
     NSDictionary *messageDict = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-    
+
     NSString *sender = messageDict[@"sender"];
     NSString *message = messageDict[@"message"];
     NSString *bundleID = messageDict[@"topic"]; // Assuming 'topic' is the bundle ID
+    NSString *messageID = messageDict[@"message_id"]; // Assuming 'message_id' is provided
 
     // Continue with your existing setup, but modify the notification details based on the message
     Class UILocalNotificationClass = NSClassFromString(@"UILocalNotification");
@@ -20,7 +20,7 @@
     }
 
     id localNotification = [[UILocalNotificationClass alloc] init];
-    
+
     NSString *alertBody;
     if (sender) {
         alertBody = [NSString stringWithFormat:@"%@: %@", sender, message];
@@ -32,6 +32,29 @@
     [localNotification performSelector:@selector(setAlertBody:) withObject:alertBody];
     [localNotification performSelector:@selector(setAlertAction:) withObject:@"Open"];
     [localNotification performSelector:@selector(setSoundName:) withObject:UILocalNotificationDefaultSoundName];
+
+    // Check for the presence of "extra" key and conditionally include it
+    NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
+    if (messageDict[@"extra"]) { // Check if "extra" key exists
+        userInfo[@"extra"] = messageDict[@"extra"];
+    }
+
+    if (messageDict[@"extra1"]) { // Check if "extra" key exists
+        userInfo[@"extra1"] = messageDict[@"extra1"];
+    }
+
+    if (messageDict[@"extra2"]) { // Check if "extra" key exists
+        userInfo[@"extra2"] = messageDict[@"extra2"];
+    }
+
+    if (messageDict[@"extra3"]) { // Check if "extra" key exists
+        userInfo[@"extra3"] = messageDict[@"extra3"];
+    }
+
+    if (userInfo.count > 0) {
+        NSLog(@"Setting userInfo with data: %@", [userInfo copy]);
+        [localNotification performSelector:@selector(setUserInfo:) withObject:[userInfo copy]];
+    }
 
     // Find the SBSLocalNotificationClient class and schedule the notification
     Class SBSLocalNotificationClientClass = objc_getClass("SBSLocalNotificationClient");
@@ -46,18 +69,60 @@
     } else {
         NSLog(@"SBSLocalNotificationClient class not found.");
     }
-}
 
+    if (messageID) {
+        NSString *ackMessage = [NSString stringWithFormat:@"ACK:%@", messageID];
+        NSLog(@"Preparing to send acknowledgment for message ID: %@", messageID);
+
+        // Encrypt the acknowledgment message
+        NSString *publicKeyPath = @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Keys/public_key.pem";
+        NSData *ackData = [ackMessage dataUsingEncoding:NSUTF8StringEncoding];
+        NSData *encryptedAckData = encryptWithRSAPublicKey(ackData, publicKeyPath);
+
+        if (!encryptedAckData) {
+            NSLog(@"Failed to encrypt acknowledgment message");
+            return;
+        }
+
+        // Send the encrypted acknowledgment
+        ssize_t bytesSent = send(sockfd, [encryptedAckData bytes], [encryptedAckData length], 0);
+        if (bytesSent == -1) {
+            perror("Failed to send acknowledgment");
+        } else {
+            NSLog(@"Acknowledgment sent for message ID: %@", messageID);
+        }
+    }
+}
 
 - (void)exponentialBackoffConnect {
     NSLog(@"[ExponentialBackoffConnect] Started connection attempts");
     int serverPort;
     int sockfd;
     int backoff = 1;
+    NSString *clientUUID = [self getClientUUID]; // Retrieve the client UUID
+
+    // Encrypt the UUID with the server's public key
+    NSString *publicKeyPath = @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Keys/public_key.pem";
+    NSData *uuidData = [clientUUID dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *encryptedUUIDData = encryptWithRSAPublicKey(uuidData, publicKeyPath);
+
+    if (!encryptedUUIDData) {
+        NSLog(@"Failed to encrypt UUID");
+        postDaemonStatusNotification(kDaemonStatusEncryptError);
+        return;
+    }
+
+    postDaemonStatusNotification(kDaemonStatusEnabledNotConnected);
 
     while (1) {
         serverPort = atoi(serverPortStr);
         NSLog(@"[ExponentialBackoffConnect] Converted server port string to integer: %d", serverPort);
+
+        if (serverPort <= 0) {
+            NSLog(@"[ExponentialBackoffConnect] Invalid server port: %d", serverPort);
+            postDaemonStatusNotification(kDaemonStatusBadPort);
+            return;
+        }
 
         sockfd = connectToServer(serverIP, serverPort);
         if (sockfd <= 0) {
@@ -71,39 +136,68 @@
             continue; // Retry connection
         }
 
+        postDaemonStatusNotification(kDaemonStatusConnected);
+
         NSLog(@"[ExponentialBackoffConnect] Connected to server at %s:%d", serverIP, serverPort);
+
+        // Send encrypted UUID to the server
+        ssize_t bytesSent = send(sockfd, [encryptedUUIDData bytes], [encryptedUUIDData length], 0);
+        if (bytesSent != [encryptedUUIDData length]) {
+            NSLog(@"[ExponentialBackoffConnect] Failed to send encrypted UUID to the server.");
+            close(sockfd);
+            postDaemonStatusNotification(kDaemonStatusEnabledNotConnected);
+            continue; // Retry connection
+        }
+
         char buffer[1024];
         ssize_t bytesRead;
 
         while ((bytesRead = recv(sockfd, buffer, sizeof(buffer) - 1, 0)) > 0) {
             buffer[bytesRead] = '\0';
             NSString *base64EncodedString = [NSString stringWithUTF8String:buffer];
+            NSLog(@"Received Base64 Encoded Encrypted Message: %@", base64EncodedString);
+
+            if (base64EncodedString == nil || [base64EncodedString length] == 0) {
+                NSLog(@"Received invalid base64 encoded message.");
+                continue;
+            }
+
             NSData *decodedData = OpenSSLBase64Decode(base64EncodedString);
+            NSLog(@"Decoded Base64 message: %@", decodedData);
+
+            if (decodedData == nil) {
+                NSLog(@"Failed to decode base64 encoded message.");
+                continue;
+            }
 
             // Adjust the tlsDecrypt call
-            NSData *decryptedData = tlsDecrypt(decodedData, privateKeyPath); // Now privateKeyPath is an NSString*
+            NSData *decryptedData = tlsDecrypt(decodedData, privateKeyPath);
 
             if (decryptedData) {
                 NSString *decryptedMessageNSString = [[NSString alloc] initWithData:decryptedData encoding:NSUTF8StringEncoding];
-                [self scheduleLocalNotificationWithDecryptedMessage:decryptedMessageNSString];
+                NSLog(@"Decrypted Message: %@", decryptedMessageNSString);
+                [self scheduleLocalNotificationWithDecryptedMessage:decryptedMessageNSString sockfd:sockfd];
                 NSLog(@"[ExponentialBackoffConnect] Received and decrypted message: %@", decryptedMessageNSString);
             } else {
                 NSLog(@"[ExponentialBackoffConnect] Decryption failed.");
+                postDaemonStatusNotification(kDaemonStatusDecryptError);
             }
         }
 
         if (bytesRead == 0) {
             NSLog(@"[ExponentialBackoffConnect] Server closed the connection. Reconnecting...");
+            postDaemonStatusNotification(kDaemonStatusConnectionClosed);
         } else if (bytesRead < 0) {
             perror("[ExponentialBackoffConnect] recv error");
+            postDaemonStatusNotification(kDaemonStatusError);
         }
 
         close(sockfd); // Close the socket before reconnecting
         NSLog(@"[ExponentialBackoffConnect] Socket closed, preparing for next connection attempt.");
+        postDaemonStatusNotification(kDaemonStatusEnabledNotConnected);
         backoff = 1; // Reset backoff for the next connection attempt
     }
 }
-
 
 - (void)dealloc {
     if (_reachabilityRef != NULL) {
@@ -114,7 +208,6 @@
         [super dealloc];
     }
 }
-
 
 - (void)startMonitoringNetworkReachability {
     struct sockaddr_in zeroAddress;
@@ -128,7 +221,9 @@
         if (SCNetworkReachabilitySetCallback(_reachabilityRef, ReachabilityCallback, &context)) {
             // Use a background queue to avoid blocking the main thread
             dispatch_queue_t backgroundQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-            if (!SCNetworkReachabilitySetDispatchQueue(_reachabilityRef, backgroundQueue)) {
+            if (SCNetworkReachabilitySetDispatchQueue(_reachabilityRef, backgroundQueue)) {
+                NSLog(@"Reachability dispatch queue set successfully.");
+            } else {
                 NSLog(@"Could not set reachability dispatch queue");
             }
         } else {
@@ -139,30 +234,32 @@
     }
 }
 
-
-static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) {
-    BOOL isReachable = flags & kSCNetworkFlagsReachable;
-    BOOL needsConnection = flags & kSCNetworkFlagsConnectionRequired;
-
-    // Additional checks to ensure more accurate status
-    BOOL isReachableWithoutRequiredConnection = isReachable && !needsConnection;
-    
-    NotificationDaemon *daemon = (__bridge NotificationDaemon *)info;
-    
-    if (isReachableWithoutRequiredConnection) {
-        NSLog(@"Network became reachable, trying to connect.");
-        [daemon exponentialBackoffConnect];
-    } else {
-        NSLog(@"Network became unreachable.");
-        // Implement any additional logic for handling network unreachability
+- (SCNetworkReachabilityFlags)getReachabilityFlags {
+    SCNetworkReachabilityFlags flags = 0;
+    if (_reachabilityRef && SCNetworkReachabilityGetFlags(_reachabilityRef, &flags)) {
+        return flags;
     }
+    return 0;
+}
+
+- (NSString *)getClientUUID {
+    NSString *uuidKey = @"com.skyglow.notificationdaemon.clientuuid";
+    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
+    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
+
+    NSString *uuid = [prefs objectForKey:uuidKey];
+    if (!uuid) {
+        uuid = [[NSUUID UUID] UUIDString];
+        [prefs setObject:uuid forKey:uuidKey];
+        [prefs writeToFile:plistPath atomically:YES];
+    }
+
+    return uuid;
 }
 
 @end
 
-
 int connectToServer(const char *serverIP, int port) {
-
     struct sockaddr_in serverAddr;
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
@@ -176,7 +273,6 @@ int connectToServer(const char *serverIP, int port) {
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(port);
 
-    // Convert IPv4 and IPv6 addresses from text to binary form
     int addr_status = inet_pton(AF_INET, serverIP, &serverAddr.sin_addr);
     if (addr_status <= 0) {
         if (addr_status == 0)
@@ -198,6 +294,71 @@ int connectToServer(const char *serverIP, int port) {
     return sockfd;
 }
 
+static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) {
+    BOOL isReachable = flags & kSCNetworkFlagsReachable;
+    BOOL needsConnection = flags & kSCNetworkFlagsConnectionRequired;
+    BOOL isReachableWithoutRequiredConnection = isReachable && !needsConnection;
+    
+    NotificationDaemon *daemon = (__bridge NotificationDaemon *)info;
+    
+    if (isReachableWithoutRequiredConnection) {
+        NSLog(@"Network became reachable, trying to connect.");
+        [daemon exponentialBackoffConnect];
+    } else {
+        NSLog(@"Network became unreachable.");
+        postDaemonStatusNotification(kDaemonStatusEnabledNotConnected);
+    }
+}
+
+void postDaemonStatusNotification(const char *status) {
+    NSLog(@"postDaemonStatusNotification: Posting notification with status %s", status);
+
+    CFStringRef notificationName;
+
+    if (strcmp(status, kDaemonStatusDisabled) == 0) {
+        notificationName = CFSTR(kDaemonStatusDisabled);
+    } else if (strcmp(status, kDaemonStatusError) == 0) {
+        notificationName = CFSTR(kDaemonStatusError);
+    } else if (strcmp(status, kDaemonStatusEnabledNotConnected) == 0) {
+        notificationName = CFSTR(kDaemonStatusEnabledNotConnected);
+    } else if (strcmp(status, kDaemonStatusConnected) == 0) {
+        notificationName = CFSTR(kDaemonStatusConnected);
+    } else if (strcmp(status, kDaemonStatusBadPort) == 0) {
+        notificationName = CFSTR(kDaemonStatusBadPort);
+    } else if (strcmp(status, kDaemonStatusBadIP) == 0) {
+        notificationName = CFSTR(kDaemonStatusBadIP);
+    } else if (strcmp(status, kDaemonStatusDecryptError) == 0) {
+        notificationName = CFSTR(kDaemonStatusDecryptError);
+    } else if (strcmp(status, kDaemonStatusEncryptError) == 0) {
+        notificationName = CFSTR(kDaemonStatusEncryptError);
+    } else if (strcmp(status, kDaemonStatusConnectionClosed) == 0) {
+        notificationName = CFSTR(kDaemonStatusConnectionClosed);
+    } else {
+        NSLog(@"postDaemonStatusNotification: Unknown status.");
+        return;
+    }
+
+    // Post the notification
+    CFNotificationCenterPostNotificationWithOptions(CFNotificationCenterGetDarwinNotifyCenter(),
+                                                    notificationName,
+                                                    NULL,
+                                                    NULL,
+                                                    kCFNotificationDeliverImmediately);
+
+    NSLog(@"postDaemonStatusNotification: Notification posted successfully.");
+}
+
+BOOL isValidIPAddress(NSString *ipAddress) {
+    struct sockaddr_in sa;
+    int result = inet_pton(AF_INET, [ipAddress UTF8String], &(sa.sin_addr));
+    return result == 1;
+}
+
+BOOL isValidPort(NSString *port) {
+    if (port.length == 0) return NO;
+    NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
+    return [port rangeOfCharacterFromSet:nonDigits].location == NSNotFound;
+}
 
 int main() {
     @autoreleasepool {
@@ -206,6 +367,7 @@ int main() {
         NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
         if (!prefs) {
             NSLog(@"Failed to read preferences.");
+            postDaemonStatusNotification(kDaemonStatusError);
             return -1;
         }
 
@@ -215,33 +377,52 @@ int main() {
         NSString *ip = [prefs objectForKey:@"notificationServerAddress"];
         NSString *port = [prefs objectForKey:@"notificationServerPort"];
         BOOL isEnabled = [[prefs objectForKey:@"enabled"] boolValue];
+
         if (!isEnabled) {
             NSLog(@"[Main] Daemon is disabled, aborting");
+            postDaemonStatusNotification(kDaemonStatusDisabled);
             return 0;
-        } else if (ip && port) {
+        }
 
-            if (serverIP) free(serverIP); // Free previously allocated memory if any
-            if (serverPortStr) free(serverPortStr); // Free previously allocated memory if any
-
-            serverIP = strdup([ip UTF8String]);
-            serverPortStr = strdup([port UTF8String]);
-
-            // NSLog(@"[Main] Address and port extracted from preference file: %s,%s", serverIP, serverPortStr);
-
-        } else if (!isReachableWithoutRequiredConnection) {
-        // If network is not reachable, stay dormant until startMonitoringNetworkReachability deems it reachable.
-            NSLog(@"[Main] Network is not reachable, staying dormant.");
-        } else {
-            NSLog(@"[Main] IP or Port missing in preferences.");
+        if (ip == nil || !isValidIPAddress(ip)) {
+            NSLog(@"[Main] Invalid or missing IP address in preferences.");
+            postDaemonStatusNotification(kDaemonStatusBadIP);
             return -1;
         }
 
-        [daemon exponentialBackoffConnect];
+        if (port == nil || !isValidPort(port)) {
+            NSLog(@"[Main] Invalid or missing port in preferences.");
+            postDaemonStatusNotification(kDaemonStatusBadPort);
+            return -1;
+        }
+
+        if (serverIP) free(serverIP); // Free previously allocated memory if any
+        if (serverPortStr) free(serverPortStr); // Free previously allocated memory if any
+
+        serverIP = strdup([ip UTF8String]);
+        serverPortStr = strdup([port UTF8String]);
+
+        NSLog(@"[Main] Address and port extracted from preference file: %s,%s", serverIP, serverPortStr);
+
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 2, false);
+
+        // Check initial reachability status
+        SCNetworkReachabilityFlags flags = [daemon getReachabilityFlags];
+        BOOL isReachable = flags & kSCNetworkFlagsReachable;
+        BOOL needsConnection = flags & kSCNetworkFlagsConnectionRequired;
+        BOOL isReachableWithoutRequiredConnection = isReachable && !needsConnection;
+
+        if (!isReachableWithoutRequiredConnection) {
+            NSLog(@"[Main] Initial network check: Network is not reachable, staying dormant.");
+            postDaemonStatusNotification(kDaemonStatusEnabledNotConnected);
+        } else {
+            [daemon exponentialBackoffConnect];
+        }
 
         // Cleanup global variables
         if (serverIP) free(serverIP);
         if (serverPortStr) free(serverPortStr);
     }
-    NSLog(@"Skyglow Notifications Daemon exited sucesfully");
+    NSLog(@"Skyglow Notifications Daemon exited successfully");
     return 0;
 }

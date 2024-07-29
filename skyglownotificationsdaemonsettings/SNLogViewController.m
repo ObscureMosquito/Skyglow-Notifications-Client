@@ -1,127 +1,291 @@
 #import "SNLogViewController.h"
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <poll.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <errno.h>
 
-#define SOCKET_PATH "/var/run/lockdown/syslog.sock"
+@interface SNLogViewController ()
 
-@interface ViewController ()
+@property (nonatomic, strong) UITextView *logTextView;
 
 @end
 
-@implementation ViewController
+@implementation SNLogViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     
-    CGFloat parentWidth = 379; // Width of the parent view or cell
-    CGFloat textViewHeight = 154; // Desired height of the textView
-    CGFloat textViewWidth = parentWidth * 0.8; // textView width as 80% of the parent view or cell
-    
-    CGFloat textViewX = -1;
-    CGFloat textViewY = -109; // Adjust as needed for vertical placement, ensuring it's a positive value for positioning within the parent view
-    
-    self.logTextView = [[UITextView alloc] initWithFrame:CGRectMake(textViewX, textViewY, textViewWidth, textViewHeight)];
+    CGFloat offset = -39.0;
+    CGRect frame = CGRectMake(0, offset, self.view.bounds.size.width, self.view.bounds.size.height);
+
+    self.logTextView = [[UITextView alloc] initWithFrame:frame];
+    self.logTextView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.logTextView.editable = NO;
-    self.logTextView.backgroundColor = [UIColor blackColor];
-    self.logTextView.textColor = [UIColor whiteColor];
-    self.logTextView.layer.cornerRadius = 8; // Rounded corners
-    self.logTextView.layer.masksToBounds = YES;
-    self.logTextView.layer.borderWidth = 2.0; // Thin border width
-    self.logTextView.layer.borderColor = [[UIColor lightGrayColor] CGColor]; // Light gray border color, similar to PSCells
-    
-    
+    self.logTextView.textAlignment = NSTextAlignmentCenter;
+    self.logTextView.center = CGPointMake(self.view.center.x, self.view.center.y + offset / 2);
+    self.logTextView.layer.cornerRadius = 7;
+    self.logTextView.clipsToBounds = YES;
     [self.view addSubview:self.logTextView];
     
-    [self performSelectorInBackground:@selector(startLogStreaming) withObject:nil];
+    // Register for each status notification
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    (__bridge const void *)(self),
+                                    &daemonStatusDisabled,
+                                    CFSTR(kDaemonStatusDisabled),
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    (__bridge const void *)(self),
+                                    &daemonStatusError,
+                                    CFSTR(kDaemonStatusError),
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    (__bridge const void *)(self),
+                                    &daemonStatusEnabledNotConnected,
+                                    CFSTR(kDaemonStatusEnabledNotConnected),
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    (__bridge const void *)(self),
+                                    &daemonStatusConnected,
+                                    CFSTR(kDaemonStatusConnected),
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    (__bridge const void *)(self),
+                                    &daemonStatusBadPort,
+                                    CFSTR(kDaemonStatusBadPort),
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    (__bridge const void *)(self),
+                                    &daemonStatusBadIP,
+                                    CFSTR(kDaemonStatusBadIP),
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    (__bridge const void *)(self),
+                                    &daemonStatusDecryptError,
+                                    CFSTR(kDaemonStatusDecryptError),
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    (__bridge const void *)(self),
+                                    &daemonStatusEncryptError,
+                                    CFSTR(kDaemonStatusEncryptError),
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    (__bridge const void *)(self),
+                                    &daemonStatusConnectionClosed,
+                                    CFSTR(kDaemonStatusConnectionClosed),
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+
+    NSLog(@"SNLogViewController: Registered for notifications.");
 }
 
+- (void)dealloc {
+    // Remove observers
+    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                       (__bridge const void *)(self),
+                                       CFSTR(kDaemonStatusDisabled),
+                                       NULL);
+    
+    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                       (__bridge const void *)(self),
+                                       CFSTR(kDaemonStatusError),
+                                       NULL);
+    
+    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                       (__bridge const void *)(self),
+                                       CFSTR(kDaemonStatusEnabledNotConnected),
+                                       NULL);
+    
+    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                       (__bridge const void *)(self),
+                                       CFSTR(kDaemonStatusConnected),
+                                       NULL);
+    
+    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                       (__bridge const void *)(self),
+                                       CFSTR(kDaemonStatusBadPort),
+                                       NULL);
+    
+    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                       (__bridge const void *)(self),
+                                       CFSTR(kDaemonStatusBadIP),
+                                       NULL);
+    
+    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                       (__bridge const void *)(self),
+                                       CFSTR(kDaemonStatusDecryptError),
+                                       NULL);
+    
+    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                       (__bridge const void *)(self),
+                                       CFSTR(kDaemonStatusEncryptError),
+                                       NULL);
+    
+    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                       (__bridge const void *)(self),
+                                       CFSTR(kDaemonStatusConnectionClosed),
+                                       NULL);
 
-- (void)startLogStreaming {
-    int nfd = unix_connect(SOCKET_PATH);
-    
-    if (nfd < 0) {
-        NSLog(@"Failed to connect to socket");
-        return;
-    }
-    
-    // Write "watch" command to socket to begin receiving messages
-    write(nfd, "watch\n", 6);
-    
-    unsigned char buf[16384];
-    ssize_t n;
-    
-    while (1) {
-        n = read(nfd, buf, sizeof(buf) - 1);
-        if (n > 0) {
-            buf[n] = '\0';
-            NSString *logString = [NSString stringWithUTF8String:(char *)buf];
-            
-            // Filter to include only logs from SkyglowNotificationsDaemon
-            if ([logString rangeOfString:@"SkyglowNotificationsDaemon"].location != NSNotFound ||
-            [logString rangeOfString:@"sndrestart"].location != NSNotFound) {
-                
-                // Filter out "MS:" messages
-                if ([logString rangeOfString:@"MS:"].location == NSNotFound) {
-                    // Extract log type enclosed in "<>"
-                    NSRange startRange = [logString rangeOfString:@"<"];
-                    NSRange endRange = [logString rangeOfString:@">"];
-                    
-                    if (startRange.location != NSNotFound && endRange.location != NSNotFound) {
-                        NSRange typeRange = NSMakeRange(startRange.location + 1, endRange.location - startRange.location - 1);
-                        NSString *logType = [logString substringWithRange:typeRange];
-                        
-                        // Format the log message
-                        NSString *formattedLog = [NSString stringWithFormat:@"%@%@", logType, [logString substringFromIndex:endRange.location + 1]];
-                        
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            // Append the formatted log message
-                            self.logTextView.text = [self.logTextView.text stringByAppendingFormat:@"\n%@", formattedLog];
-                            
-                            // Auto-scroll to bottom
-                            NSRange range = NSMakeRange(self.logTextView.text.length - 1, 1);
-                            [self.logTextView scrollRangeToVisible:range];
-                        });
-                    }
-                }
-            }
-        } else if (n == 0) {
-            break; // Socket closed
-        } else if (n < 0) {
-            NSLog(@"Read error: %s", strerror(errno));
-            break;
-        }
-    }
-    
-    close(nfd);
+    NSLog(@"SNLogViewController: Observers removed.");
 }
 
+void daemonStatusDisabled(CFNotificationCenterRef center,
+                          void *observer,
+                          CFStringRef name,
+                          const void *object,
+                          CFDictionaryRef userInfo) {
+    SNLogViewController *self = (__bridge SNLogViewController *)observer;
+    NSLog(@"SNLogViewController: DaemonStatusDisabled notification received.");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateLogWithStatus:@"Disabled"];
+    });
+}
 
+void daemonStatusError(CFNotificationCenterRef center,
+                       void *observer,
+                       CFStringRef name,
+                       const void *object,
+                       CFDictionaryRef userInfo) {
+    SNLogViewController *self = (__bridge SNLogViewController *)observer;
+    NSLog(@"SNLogViewController: DaemonStatusError notification received.");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateLogWithStatus:@"Error"];
+    });
+}
 
-int unix_connect(char* path) {
-    struct sockaddr_un sun;
-    int s;
-    
-    if ((s = socket(AF_UNIX, SOCK_STREAM, 0)) < 0)
-        return (-1);
-    
-    memset(&sun, 0, sizeof(struct sockaddr_un));
-    sun.sun_family = AF_UNIX;
-    
-    if (strlcpy(sun.sun_path, path, sizeof(sun.sun_path)) >= sizeof(sun.sun_path)) {
-        close(s);
-        errno = ENAMETOOLONG;
-        return (-1);
+void daemonStatusEnabledNotConnected(CFNotificationCenterRef center,
+                                     void *observer,
+                                     CFStringRef name,
+                                     const void *object,
+                                     CFDictionaryRef userInfo) {
+    SNLogViewController *self = (__bridge SNLogViewController *)observer;
+    NSLog(@"SNLogViewController: DaemonStatusEnabledNotConnected notification received.");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateLogWithStatus:@"EnabledNotConnected"];
+    });
+}
+
+void daemonStatusConnected(CFNotificationCenterRef center,
+                           void *observer,
+                           CFStringRef name,
+                           const void *object,
+                           CFDictionaryRef userInfo) {
+    SNLogViewController *self = (__bridge SNLogViewController *)observer;
+    NSLog(@"SNLogViewController: DaemonStatusConnected notification received.");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateLogWithStatus:@"Connected"];
+    });
+}
+
+void daemonStatusBadPort(CFNotificationCenterRef center,
+                         void *observer,
+                         CFStringRef name,
+                         const void *object,
+                         CFDictionaryRef userInfo) {
+    SNLogViewController *self = (__bridge SNLogViewController *)observer;
+    NSLog(@"SNLogViewController: DaemonStatusBadPort notification received.");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateLogWithStatus:@"DaemonStatusBadPort"];
+    });
+}
+
+void daemonStatusBadIP(CFNotificationCenterRef center,
+                       void *observer,
+                       CFStringRef name,
+                       const void *object,
+                       CFDictionaryRef userInfo) {
+    SNLogViewController *self = (__bridge SNLogViewController *)observer;
+    NSLog(@"SNLogViewController: DaemonStatusBadIP notification received.");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateLogWithStatus:@"DaemonStatusBadIP"];
+    });
+}
+
+void daemonStatusDecryptError(CFNotificationCenterRef center,
+                              void *observer,
+                              CFStringRef name,
+                              const void *object,
+                              CFDictionaryRef userInfo) {
+    SNLogViewController *self = (__bridge SNLogViewController *)observer;
+    NSLog(@"SNLogViewController: DaemonStatusDecryptError notification received.");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateLogWithStatus:@"DaemonStatusDecryptError"];
+    });
+}
+
+void daemonStatusEncryptError(CFNotificationCenterRef center,
+                              void *observer,
+                              CFStringRef name,
+                              const void *object,
+                              CFDictionaryRef userInfo) {
+    SNLogViewController *self = (__bridge SNLogViewController *)observer;
+    NSLog(@"SNLogViewController: DaemonStatusEncryptError notification received.");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateLogWithStatus:@"DaemonStatusEncryptError"];
+    });
+}
+
+void daemonStatusConnectionClosed(CFNotificationCenterRef center,
+                                  void *observer,
+                                  CFStringRef name,
+                                  const void *object,
+                                  CFDictionaryRef userInfo) {
+    SNLogViewController *self = (__bridge SNLogViewController *)observer;
+    NSLog(@"SNLogViewController: DaemonStatusConnectionClosed notification received.");
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateLogWithStatus:@"DaemonStatusConnectionClosed"];
+    });
+}
+
+- (void)updateLogWithStatus:(NSString *)status {
+    NSLog(@"SNLogViewController: Updating log with status: %@", status);
+
+    NSString *userFriendlyMessage;
+    UIColor *backgroundColor;
+    CGFloat alpha = 0.5; // Adjust this value to set the desired opacity (0.0 to 1.0)
+
+    if ([status isEqualToString:@"Disabled"]) {
+        backgroundColor = [[UIColor grayColor] colorWithAlphaComponent:alpha];
+        userFriendlyMessage = @"The daemon is currently disabled.";
+    } else if ([status isEqualToString:@"Error"]) {
+        backgroundColor = [[UIColor redColor] colorWithAlphaComponent:alpha];
+        userFriendlyMessage = @"An error has occurred. Please check the daemon.";
+    } else if ([status isEqualToString:@"EnabledNotConnected"]) {
+        backgroundColor = [[UIColor yellowColor] colorWithAlphaComponent:alpha];
+        userFriendlyMessage = @"The daemon is enabled but not connected.";
+    } else if ([status isEqualToString:@"Connected"]) {
+        backgroundColor = [[UIColor greenColor] colorWithAlphaComponent:alpha];
+        userFriendlyMessage = @"The daemon is connected successfully.";
+    } else if ([status isEqualToString:@"DaemonStatusBadPort"]) {
+        backgroundColor = [[UIColor orangeColor] colorWithAlphaComponent:alpha];
+        userFriendlyMessage = @"The port number is invalid or missing.";
+    } else if ([status isEqualToString:@"DaemonStatusBadIP"]) {
+        backgroundColor = [[UIColor purpleColor] colorWithAlphaComponent:alpha];
+        userFriendlyMessage = @"The IP address is invalid or missing.";
+    } else if ([status isEqualToString:@"DaemonStatusDecryptError"]) {
+        backgroundColor = [[UIColor magentaColor] colorWithAlphaComponent:alpha];
+        userFriendlyMessage = @"Error decrypting the server's data.";
+    } else if ([status isEqualToString:@"DaemonStatusEncryptError"]) {
+        backgroundColor = [[UIColor cyanColor] colorWithAlphaComponent:alpha];
+        userFriendlyMessage = @"Error encrypting the data.";
+    } else if ([status isEqualToString:@"DaemonStatusConnectionClosed"]) {
+        backgroundColor = [[UIColor brownColor] colorWithAlphaComponent:alpha];
+        userFriendlyMessage = @"The connection was closed.";
     }
-    if (connect(s, (struct sockaddr *)&sun, sizeof(sun)) < 0) {
-        close(s);
-        return (-1);
-    }
-    
-    return s;
+
+    self.logTextView.backgroundColor = backgroundColor;
+    self.logTextView.text = userFriendlyMessage;
 }
 
 @end

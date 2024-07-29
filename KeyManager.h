@@ -8,3 +8,5 @@
 // Functions
 NSString *decryptWithPrivateKey(NSString *encryptedDataString);
 NSData *OpenSSLBase64Decode(NSString *base64String);
+NSData *encryptWithRSAPublicKey(NSData *data, NSString *publicKeyPath);
+NSData *tlsDecrypt(NSData *inputData, NSString *privateKeyPath);

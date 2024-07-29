@@ -9,7 +9,7 @@ int main() {
         return 1;
     }
 
-    printf("Restarting Skyglow Notifications Daemon\n");
+    printf("[sndrestart] Restarting Skyglow Notifications Daemon\n");
     system("launchctl unload /Library/LaunchDaemons/com.skyglow.snd.plist");
     system("launchctl load /Library/LaunchDaemons/com.skyglow.snd.plist");
     return 0;

@@ -42,12 +42,6 @@
     }
 }
 
-
-- (void)viewDaemonLogs {
-    ViewController *logViewController = [[ViewController alloc] init];
-    [self.navigationController pushViewController:logViewController animated:YES];
-}
-
 - (void)showGuide {
     GuideViewController *guideVC = [[GuideViewController alloc] init];
     [self.navigationController pushViewController:guideVC animated:YES];
@@ -90,41 +84,54 @@
 
 - (void)generateKeys {
     NSString *bundlePath = @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Keys";
-    NSString *privateKeyPath = [bundlePath stringByAppendingPathComponent:@"private_key.pem"];
-    NSString *publicKeyPath = [bundlePath stringByAppendingPathComponent:@"public_key.pem"];
 
-    // Generate RSA key
-    RSA *rsa = RSA_new();
-    BIGNUM *bn = BN_new();
-    BN_set_word(bn, RSA_F4); // RSA_F4 is a common public exponent
+    // Define paths for server keys
+    NSString *serverPrivateKeyPath = [bundlePath stringByAppendingPathComponent:@"server_private_key.pem"];
+    NSString *serverPublicKeyPath = [bundlePath stringByAppendingPathComponent:@"public_key.pem"];
 
-    if (RSA_generate_key_ex(rsa, 2048, bn, NULL) != 1) {
-        // Handle key generation error
-        NSLog(@"Failed to generate RSA key");
+    // Define paths for client keys
+    NSString *clientPrivateKeyPath = [bundlePath stringByAppendingPathComponent:@"private_key.pem"];
+    NSString *clientPublicKeyPath = [bundlePath stringByAppendingPathComponent:@"client_public_key.pem"];
+
+    // Function to generate key pair
+    void (^generateKeyPair)(NSString *, NSString *) = ^(NSString *privateKeyPath, NSString *publicKeyPath) {
+        RSA *rsa = RSA_new();
+        BIGNUM *bn = BN_new();
+        BN_set_word(bn, RSA_F4); // RSA_F4 is a common public exponent
+
+        if (RSA_generate_key_ex(rsa, 2048, bn, NULL) != 1) {
+            // Handle key generation error
+            NSLog(@"Failed to generate RSA key");
+            RSA_free(rsa);
+            BN_free(bn);
+            return;
+        }
+
+        // Save private key
+        FILE *privateKeyFile = fopen([privateKeyPath UTF8String], "w");
+        if (!privateKeyFile || PEM_write_RSAPrivateKey(privateKeyFile, rsa, NULL, NULL, 0, NULL, NULL) != 1) {
+            // Handle error
+            NSLog(@"Failed to write private key");
+        }
+        if (privateKeyFile) fclose(privateKeyFile);
+
+        // Save public key in X.509 SubjectPublicKeyInfo format
+        FILE *publicKeyFile = fopen([publicKeyPath UTF8String], "w");
+        if (!publicKeyFile || PEM_write_RSA_PUBKEY(publicKeyFile, rsa) != 1) {
+            // Handle error
+            NSLog(@"Failed to write public key");
+        }
+        if (publicKeyFile) fclose(publicKeyFile);
+
         RSA_free(rsa);
         BN_free(bn);
-        return;
-    }
+    };
 
-    // Save private key
-    FILE *privateKeyFile = fopen([privateKeyPath UTF8String], "w");
-    if (!privateKeyFile || PEM_write_RSAPrivateKey(privateKeyFile, rsa, NULL, NULL, 0, NULL, NULL) != 1) {
-        // Handle error
-        NSLog(@"Failed to write private key");
-    }
-    if (privateKeyFile) fclose(privateKeyFile);
+    // Generate server key pair
+    generateKeyPair(serverPrivateKeyPath, serverPublicKeyPath);
 
-    // Save public key in X.509 SubjectPublicKeyInfo format
-    FILE *publicKeyFile = fopen([publicKeyPath UTF8String], "w");
-    if (!publicKeyFile || PEM_write_RSA_PUBKEY(publicKeyFile, rsa) != 1) {
-        // Handle error
-        NSLog(@"Failed to write public key");
-    }
-    if (publicKeyFile) fclose(publicKeyFile);
-
-    RSA_free(rsa);
-    BN_free(bn);
+    // Generate client key pair
+    generateKeyPair(clientPrivateKeyPath, clientPublicKeyPath);
 }
-
 
 @end
