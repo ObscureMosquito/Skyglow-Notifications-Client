@@ -7,7 +7,6 @@
     NSData *data = [decryptedMessage dataUsingEncoding:NSUTF8StringEncoding];
     NSDictionary *messageDict = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
 
-    NSString *sender = messageDict[@"sender"];
     NSString *message = messageDict[@"message"];
     NSString *bundleID = messageDict[@"topic"]; // 'topic' is the bundle ID
     NSString *messageID = messageDict[@"message_id"];
@@ -20,12 +19,7 @@
 
     id localNotification = [[UILocalNotificationClass alloc] init];
 
-    NSString *alertBody;
-    if (sender) {
-        alertBody = [NSString stringWithFormat:@"%@: %@", sender, message];
-    } else {
-        alertBody = message; // Use the message directly if no sender is provided
-    }
+    NSString *alertBody = message;
 
     // Set the dynamically determined properties
     [localNotification performSelector:@selector(setAlertBody:) withObject:alertBody];
