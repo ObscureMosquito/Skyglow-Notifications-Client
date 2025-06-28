@@ -48,6 +48,6 @@ void postDaemonStatusNotification(const char *status);
 
 - (void)startMonitoringNetworkReachability;
 - (void)exponentialBackoffConnect;
-- (void)scheduleLocalNotificationWithDecryptedMessage:(NSString *)decryptedMessage;
+- (void)scheduleLocalNotificationWithDecryptedMessage:(NSString *)decryptedMessage sockfd:(int)sockfd;
 - (void)exponentialBackoffConnect;
 @end

@@ -1,4 +1,6 @@
 #import <Preferences/PSListController.h>
+#import <UIKit/UIKit.h>
+
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
 #include <openssl/err.h>
@@ -10,9 +12,14 @@
 
 extern char **environ;
 
-@interface SNRootListController : PSListController
+@interface SNRootListController : PSListController {
+    UIAlertView *alertView;
+    UIActivityIndicatorView *activityIndicatorView;
+}
+
+- (void)reloadDaemon;
+- (void)showGuide;
+- (void)generateSSLCertificate;
+- (void)generateKeys;
 
 @end
-
-UIAlertView *alertView;
-UIActivityIndicatorView *activityIndicatorView;

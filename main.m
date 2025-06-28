@@ -9,10 +9,9 @@
 
     NSString *sender = messageDict[@"sender"];
     NSString *message = messageDict[@"message"];
-    NSString *bundleID = messageDict[@"topic"]; // Assuming 'topic' is the bundle ID
-    NSString *messageID = messageDict[@"message_id"]; // Assuming 'message_id' is provided
+    NSString *bundleID = messageDict[@"topic"]; // 'topic' is the bundle ID
+    NSString *messageID = messageDict[@"message_id"];
 
-    // Continue with your existing setup, but modify the notification details based on the message
     Class UILocalNotificationClass = NSClassFromString(@"UILocalNotification");
     if (!UILocalNotificationClass) {
         NSLog(@"UILocalNotification class not found.");
@@ -99,7 +98,7 @@
     int serverPort;
     int sockfd;
     int backoff = 1;
-    NSString *clientUUID = [self getClientUUID]; // Retrieve the client UUID
+    NSString *clientUUID = [self getClientUUID];
 
     // Encrypt the UUID with the server's public key
     NSString *publicKeyPath = @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Keys/public_key.pem";
@@ -128,7 +127,7 @@
         if (sockfd <= 0) {
             NSLog(@"[ExponentialBackoffConnect] Connection failed with sockfd value: %d. Retrying in %d seconds...", sockfd, backoff);
             sleep(backoff);
-            backoff *= 2; // Double the backoff time
+            backoff *= 2;
             if (backoff > MAX_BACKOFF) { // Cap the backoff time to MAX_BACKOFF seconds
                 backoff = MAX_BACKOFF;
                 NSLog(@"[ExponentialBackoffConnect] Backoff reached maximum limit: %d seconds", MAX_BACKOFF);
@@ -170,7 +169,6 @@
                 continue;
             }
 
-            // Adjust the tlsDecrypt call
             NSData *decryptedData = tlsDecrypt(decodedData, privateKeyPath);
 
             if (decryptedData) {
@@ -243,17 +241,21 @@
 }
 
 - (NSString *)getClientUUID {
-    NSString *uuidKey = @"com.skyglow.notificationdaemon.clientuuid";
-    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
+    NSString *uuidKey = @"clientUUID";
+    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-uuid.plist";
     NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
-
-    NSString *uuid = [prefs objectForKey:uuidKey];
+    
+    if (!prefs) {
+        prefs = [NSMutableDictionary dictionary];
+    }
+    
+    NSString *uuid = prefs[uuidKey];
     if (!uuid) {
         uuid = [[NSUUID UUID] UUIDString];
-        [prefs setObject:uuid forKey:uuidKey];
+        prefs[uuidKey] = uuid;
         [prefs writeToFile:plistPath atomically:YES];
     }
-
+    
     return uuid;
 }
 

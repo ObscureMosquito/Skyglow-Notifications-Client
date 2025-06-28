@@ -7,7 +7,7 @@ NSData *OpenSSLBase64Decode(NSString *base64String) {
     size_t length = strlen(input);
 
     BIO *b64 = BIO_new(BIO_f_base64());
-    BIO *bio = BIO_new_mem_buf(input, (int)length);
+    BIO *bio = BIO_new_mem_buf((void *)input, (int)length);
     bio = BIO_push(b64, bio);
     BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
 
@@ -49,7 +49,7 @@ NSData *tlsDecrypt(NSData *inputData, NSString *privateKeyPath) {
 
     if (resultLength == -1) {
         free(decryptedBytes);
-        char *errorBuf[120];
+        char errorBuf[120];
         ERR_load_crypto_strings();
         ERR_error_string(ERR_get_error(), errorBuf);
         NSLog(@"Decryption Error: %s", errorBuf);
