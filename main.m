@@ -1,15 +1,25 @@
 #import "main.h"
+#include "Protocol.h"
+#include <Foundation/Foundation.h>
 
 @implementation NotificationDaemon
 
-- (void)scheduleLocalNotificationWithDecryptedMessage:(NSString *)decryptedMessage sockfd:(int)sockfd {
-    // Parse the JSON string
-    NSData *data = [decryptedMessage dataUsingEncoding:NSUTF8StringEncoding];
-    NSDictionary *messageDict = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-
+- (void)processNotificationMessage:(NSDictionary *)messageDict {
     NSString *message = messageDict[@"message"];
     NSString *bundleID = messageDict[@"topic"]; // 'topic' is the bundle ID
     NSString *messageID = messageDict[@"message_id"];
+    NSString *alertAction = messageDict[@"alert_action"];
+    NSString *alertSound = messageDict[@"alert_sound"];
+
+    if ([alertSound isEqual:@""]) {
+        alertSound = NULL;
+    }
+
+
+    // According to apple's docs on this, it should be able to set any of the datatypes in this list, JSON by itself does not allow this.
+    // Since we are switching to binary for sending data, maybe it would be worth it to encode in a PLIST like apple recommends? I dunno.
+    // https://developer.apple.com/library/archive/documentation/General/Conceptual/DevPedia-CocoaCore/PropertyList.html#//apple_ref/doc/uid/TP40008195-CH44
+    NSMutableDictionary *userInfo = messageDict[@"user_info"];
 
     Class UILocalNotificationClass = NSClassFromString(@"UILocalNotification");
     if (!UILocalNotificationClass) {
@@ -23,27 +33,9 @@
 
     // Set the dynamically determined properties
     [localNotification performSelector:@selector(setAlertBody:) withObject:alertBody];
-    [localNotification performSelector:@selector(setAlertAction:) withObject:@"Open"];
-    [localNotification performSelector:@selector(setSoundName:) withObject:UILocalNotificationDefaultSoundName];
-
-    // Check for the presence of "extra" key and conditionally include it
-    NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
-    if (messageDict[@"extra"]) { // Check if "extra" key exists
-        userInfo[@"extra"] = messageDict[@"extra"];
-    }
-
-    if (messageDict[@"extra1"]) { // Check if "extra" key exists
-        userInfo[@"extra1"] = messageDict[@"extra1"];
-    }
-
-    if (messageDict[@"extra2"]) { // Check if "extra" key exists
-        userInfo[@"extra2"] = messageDict[@"extra2"];
-    }
-
-    if (messageDict[@"extra3"]) { // Check if "extra" key exists
-        userInfo[@"extra3"] = messageDict[@"extra3"];
-    }
-
+    [localNotification performSelector:@selector(setAlertAction:) withObject:alertAction];
+    [localNotification performSelector:@selector(setSoundName:) withObject:alertSound];
+    
     if (userInfo.count > 0) {
         NSLog(@"Setting userInfo with data: %@", [userInfo copy]);
         [localNotification performSelector:@selector(setUserInfo:) withObject:[userInfo copy]];
@@ -78,13 +70,18 @@
         }
 
         // Send the encrypted acknowledgment
-        ssize_t bytesSent = send(sockfd, [encryptedAckData bytes], [encryptedAckData length], 0);
-        if (bytesSent == -1) {
-            perror("Failed to send acknowledgment");
-        } else {
-            NSLog(@"Acknowledgment sent for message ID: %@", messageID);
-        }
+        // ssize_t bytesSent = send(sockfd, [encryptedAckData bytes], [encryptedAckData length], 0);
+        // if (bytesSent == -1) {
+        //     perror("Failed to send acknowledgment");
+        // } else {
+        //     NSLog(@"Acknowledgment sent for message ID: %@", messageID);
+        // }
     }
+}
+
+- (void)handleWelcomeMessage {
+    // login time
+    startLogin()
 }
 
 - (void)exponentialBackoffConnect {
@@ -254,41 +251,6 @@
 }
 
 @end
-
-int connectToServer(const char *serverIP, int port) {
-    struct sockaddr_in serverAddr;
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        perror("Error creating socket");
-        return -1;
-    } else {
-        printf("Socket created successfully.\n");
-    }
-
-    memset(&serverAddr, 0, sizeof(serverAddr));
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(port);
-
-    int addr_status = inet_pton(AF_INET, serverIP, &serverAddr.sin_addr);
-    if (addr_status <= 0) {
-        if (addr_status == 0)
-            fprintf(stderr, "inet_pton failed: Not in presentation format\n");
-        else
-            perror("inet_pton failed");
-        close(sockfd);
-        return -1;
-    }
-
-    printf("Trying to connect...\n");
-    if (connect(sockfd, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
-        perror("Error connecting to server");
-        close(sockfd);
-        return -1;
-    }
-
-    printf("Connected successfully to %s on port %d\n", serverIP, port);
-    return sockfd;
-}
 
 static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) {
     BOOL isReachable = flags & kSCNetworkFlagsReachable;

@@ -15,6 +15,7 @@
 #import <Foundation/Foundation.h>
 #import <SystemConfiguration/SystemConfiguration.h>
 #import "KeyManager.h"
+#import "Protocol.h"
 
 #define MAX_BACKOFF 256 // Maximum backoff time in seconds
 
@@ -38,7 +39,6 @@ NSString *privateKeyPath = @"/Library/PreferenceBundles/SkyglowNotificationsDaem
 BOOL *isReachableWithoutRequiredConnection = NULL;
 
 // Functions
-int connectToServer(const char *serverIP, int port);
 static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info);
 void postDaemonStatusNotification(const char *status);
 
@@ -48,6 +48,6 @@ void postDaemonStatusNotification(const char *status);
 
 - (void)startMonitoringNetworkReachability;
 - (void)exponentialBackoffConnect;
-- (void)scheduleLocalNotificationWithDecryptedMessage:(NSString *)decryptedMessage sockfd:(int)sockfd;
+- (void)processNotificationMessage:(NSDictionary *)messageDict;
 - (void)exponentialBackoffConnect;
 @end
