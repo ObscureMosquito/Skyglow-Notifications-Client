@@ -57,7 +57,7 @@ void ackNotification(NSString *notificationUUID) {
 }
 
 
-void connectToServer(const char *serverIP, int port, NSString *serverCert) {
+int connectToServer(const char *serverIP, int port, NSString *serverCert) {
     SSL_library_init();
     SSL_load_error_strings();
     OpenSSL_add_all_algorithms();
@@ -67,7 +67,7 @@ void connectToServer(const char *serverIP, int port, NSString *serverCert) {
     if (!sslctx) {
         connectionStatus = @"InternalError";
         NSLog(@"Failed to create SSL_CTX");
-        return;
+        return 1;
     }
 
     // import server SSL certificate
@@ -75,7 +75,7 @@ void connectToServer(const char *serverIP, int port, NSString *serverCert) {
         connectionStatus = @"ServerSSLCertLoadFailure";
         NSLog(@"Failed to load server SSL Certificate");
         SSL_CTX_free(sslctx);
-        return;
+        return 2;
     }
 
     ssl = SSL_new(sslctx);
@@ -83,7 +83,7 @@ void connectToServer(const char *serverIP, int port, NSString *serverCert) {
         connectionStatus = @"SSLObjectCreationFailue";
         NSLog(@"Failed to create SSL object");
         SSL_CTX_free(sslctx);
-        return;
+        return 3;
     }
 
     struct sockaddr_in serverAddr;
@@ -94,7 +94,7 @@ void connectToServer(const char *serverIP, int port, NSString *serverCert) {
         SSL_free(ssl);
         SSL_CTX_free(sslctx);
         sock = -1;
-        return;
+        return 4;
     }
 
     printf("Socket created successfully.\n");
@@ -112,7 +112,7 @@ void connectToServer(const char *serverIP, int port, NSString *serverCert) {
         connectionStatus = @"InvalidConnectionData";
         close(sockfd);
         sock = -1;
-        return;
+        return 5;
     }
 
     printf("Trying to connect...\n");
@@ -121,7 +121,7 @@ void connectToServer(const char *serverIP, int port, NSString *serverCert) {
         perror("Error connecting to server");
         close(sockfd);
         sock = -1;
-        return;
+        return 6;
     }
 
     SSL_set_fd(ssl, sockfd);
@@ -132,11 +132,12 @@ void connectToServer(const char *serverIP, int port, NSString *serverCert) {
         SSL_free(ssl);
         SSL_CTX_free(sslctx);
         sock = -1;
-        return;
+        return 7;
     }
 
     connectionStatus = @"ConnectedNotAuthenticated";
     printf("Connected successfully to %s on port %d\n", serverIP, port);
+    return 0;
 }
 
 
@@ -149,19 +150,24 @@ void dealloc() {
     connectionStatus = @"Disconnected";
 }
 
-void handleMessage(NotificationDaemon *daemon) {
+// 0 = normal
+// 1 = server requested disconnect
+// 2 = critical error (probably disconnect?)
+// 3 = data read error
+// 4 = auth fail
+int handleMessage(NotificationDaemon *daemon) {
     NSError *error = nil;
     uint32_t length = 0;
     if (SSL_read(ssl, &length, 4) != 4) {
         NSLog(@"Failed to read reply length");
-        return;
+        return 3;
     }
     length = ntohl(length);
 
     NSMutableData *recievedDataRaw = [NSMutableData dataWithLength:length];
     if (SSL_read(ssl, [recievedDataRaw mutableBytes], length) != length) {
         NSLog(@"Failed to read payload");
-        return;
+        return 3;
     }
 
     NSDictionary *recievedData = [NSPropertyListSerialization propertyListWithData:recievedDataRaw
@@ -170,6 +176,7 @@ void handleMessage(NotificationDaemon *daemon) {
                                                                       error:&error];
     if (!recievedData) {
         NSLog(@"Deserialization error: %@", error);
+        return 2;
     }
 
     MessageTypesRecieved messageType = [recievedData[@"$type"] unsignedIntegerValue];
@@ -177,7 +184,7 @@ void handleMessage(NotificationDaemon *daemon) {
     switch (messageType) {
         case Hello: {
             // some logic to start authentication?
-            break;
+            return 0;
         }
 
         case LoginChallenge:{
@@ -189,7 +196,7 @@ void handleMessage(NotificationDaemon *daemon) {
             if (!decryptedBytes) {
                 NSLog(@"Failed to allocate memory for decryption");
                 dealloc();
-                return;
+                return 2;
             }
 
             // decrypt payload
@@ -200,8 +207,7 @@ void handleMessage(NotificationDaemon *daemon) {
                 ERR_load_crypto_strings();
                 ERR_error_string(ERR_get_error(), errorBuf);
                 NSLog(@"Decryption Error: %s", errorBuf);
-                dealloc();
-                return;
+                return 2;
             }
 
             NSData *decryptedData = [NSData dataWithBytesNoCopy:decryptedBytes length:resultLength freeWhenDone:YES];
@@ -212,8 +218,7 @@ void handleMessage(NotificationDaemon *daemon) {
 
             if (challengeData[0] != user_address) {
                 // reject
-                dealloc();
-                return;
+                return 4;
             }
 
             
@@ -226,8 +231,7 @@ void handleMessage(NotificationDaemon *daemon) {
             NSTimeInterval upperBound = nowEpoch + 1 * 60;  // 1 minute in the future
             if (challengeTimestamp >= lowerBound && challengeTimestamp <= upperBound) {
                 // reject
-                dealloc();
-                return;
+                return 4;
             }
 
             NSMutableDictionary *challengeResponce = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
@@ -235,7 +239,7 @@ void handleMessage(NotificationDaemon *daemon) {
                                 challengeData[2], @"timestamp",
                                 nil];
             sendMessage(LoginChallengeResponse, challengeResponce);
-            break;
+            return 0;
         }
         case AuthenticationSuccessful: {
             // yippe
@@ -244,18 +248,20 @@ void handleMessage(NotificationDaemon *daemon) {
             checkOfflineNotifications();
             connectionStatus = @"Connected"; // wooooo
             NSLog(@"Sucessfully logged into server!");
-
+            return 0;
         }
         case RecieveNotification:
             [daemon processNotificationMessage:recievedData];
-            break;
+            return 0;
         case ServerDisconnect:
             connectionStatus = @"Disconnected";
             dealloc();
-            return;
+            return 1;
         default:
-            break;
+        // fallback, should i disconnect instead?
+            return 0;
     }
+
 }
 
 

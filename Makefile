@@ -5,7 +5,7 @@ include $(THEOS)/makefiles/common.mk
 
 TOOL_NAME = SkyglowNotificationsDaemon
 
-SkyglowNotificationsDaemon_FILES = main.m KeyManager.m CommonDefinitions.m
+SkyglowNotificationsDaemon_FILES = main.m KeyManager.m CommonDefinitions.m Protocol.m
 SkyglowNotificationsDaemon_CFLAGS = -Wno-deprecated-declarations -Wno-objc-method-access -Wno-module-import-in-extern-c
 SkyglowNotificationsDaemon_LDFLAGS = -stdlib=libstdc++ -lstdc++
 SkyglowNotificationsDaemon_CODESIGN_FLAGS = -Sentitlements.plist

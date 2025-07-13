@@ -39,7 +39,7 @@ NSString *privateKeyPath = @"/Library/PreferenceBundles/SkyglowNotificationsDaem
 BOOL *isReachableWithoutRequiredConnection = NULL;
 
 // Functions
-static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info);
+static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) __attribute__((used));
 void postDaemonStatusNotification(const char *status);
 
 @interface NotificationDaemon : NSObject {

@@ -1,4 +1,5 @@
 #import "main.h"
+#include "openssl/pem.h"
 #include "Protocol.h"
 #include <Foundation/Foundation.h>
 
@@ -10,10 +11,6 @@
     NSString *messageID = messageDict[@"message_id"];
     NSString *alertAction = messageDict[@"alert_action"];
     NSString *alertSound = messageDict[@"alert_sound"];
-
-    if ([alertSound isEqual:@""]) {
-        alertSound = NULL;
-    }
 
 
     // According to apple's docs on this, it should be able to set any of the datatypes in this list, JSON by itself does not allow this.
@@ -56,51 +53,23 @@
     }
 
     if (messageID) {
-        NSString *ackMessage = [NSString stringWithFormat:@"ACK:%@", messageID];
-        NSLog(@"Preparing to send acknowledgment for message ID: %@", messageID);
-
-        // Encrypt the acknowledgment message
-        NSString *publicKeyPath = @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Keys/public_key.pem";
-        NSData *ackData = [ackMessage dataUsingEncoding:NSUTF8StringEncoding];
-        NSData *encryptedAckData = encryptWithRSAPublicKey(ackData, publicKeyPath);
-
-        if (!encryptedAckData) {
-            NSLog(@"Failed to encrypt acknowledgment message");
-            return;
-        }
-
-        // Send the encrypted acknowledgment
-        // ssize_t bytesSent = send(sockfd, [encryptedAckData bytes], [encryptedAckData length], 0);
-        // if (bytesSent == -1) {
-        //     perror("Failed to send acknowledgment");
-        // } else {
-        //     NSLog(@"Acknowledgment sent for message ID: %@", messageID);
-        // }
+        ackNotification(messageID);
     }
 }
 
 - (void)handleWelcomeMessage {
     // login time
-    startLogin()
+    NSString *clientAddress = [self getClientAddress];
+    RSA *privKey = [self getClientPrivKey];
+    startLogin(clientAddress, privKey);
 }
 
 - (void)exponentialBackoffConnect {
     NSLog(@"[ExponentialBackoffConnect] Started connection attempts");
     int serverPort;
-    int sockfd;
+    int connectionResult;
     int backoff = 1;
-    NSString *clientUUID = [self getClientUUID];
-
-    // Encrypt the UUID with the server's public key
-    NSString *publicKeyPath = @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Keys/public_key.pem";
-    NSData *uuidData = [clientUUID dataUsingEncoding:NSUTF8StringEncoding];
-    NSData *encryptedUUIDData = encryptWithRSAPublicKey(uuidData, publicKeyPath);
-
-    if (!encryptedUUIDData) {
-        NSLog(@"Failed to encrypt UUID");
-        postDaemonStatusNotification(kDaemonStatusEncryptError);
-        return;
-    }
+    NSString *serverPubKey = [self getServerPubKey];
 
     postDaemonStatusNotification(kDaemonStatusEnabledNotConnected);
 
@@ -114,9 +83,10 @@
             return;
         }
 
-        sockfd = connectToServer(serverIP, serverPort);
-        if (sockfd <= 0) {
-            NSLog(@"[ExponentialBackoffConnect] Connection failed with sockfd value: %d. Retrying in %d seconds...", sockfd, backoff);
+        // TODO: thiss section should probably be totally rewritten.
+        connectionResult = connectToServer(serverIP, serverPort, serverPubKey);
+        if (connectionResult != 0) {
+            NSLog(@"[ExponentialBackoffConnect] Connection failed with sockfd value: %d. Retrying in %d seconds...", connectionResult, backoff);
             sleep(backoff);
             backoff *= 2;
             if (backoff > MAX_BACKOFF) { // Cap the backoff time to MAX_BACKOFF seconds
@@ -130,58 +100,12 @@
 
         NSLog(@"[ExponentialBackoffConnect] Connected to server at %s:%d", serverIP, serverPort);
 
-        // Send encrypted UUID to the server
-        ssize_t bytesSent = send(sockfd, [encryptedUUIDData bytes], [encryptedUUIDData length], 0);
-        if (bytesSent != [encryptedUUIDData length]) {
-            NSLog(@"[ExponentialBackoffConnect] Failed to send encrypted UUID to the server.");
-            close(sockfd);
-            postDaemonStatusNotification(kDaemonStatusEnabledNotConnected);
-            continue; // Retry connection
+
+        while (1) {
+            // handle
         }
 
-        char buffer[1024];
-        ssize_t bytesRead;
-
-        while ((bytesRead = recv(sockfd, buffer, sizeof(buffer) - 1, 0)) > 0) {
-            buffer[bytesRead] = '\0';
-            NSString *base64EncodedString = [NSString stringWithUTF8String:buffer];
-            NSLog(@"Received Base64 Encoded Encrypted Message: %@", base64EncodedString);
-
-            if (base64EncodedString == nil || [base64EncodedString length] == 0) {
-                NSLog(@"Received invalid base64 encoded message.");
-                continue;
-            }
-
-            NSData *decodedData = OpenSSLBase64Decode(base64EncodedString);
-            NSLog(@"Decoded Base64 message: %@", decodedData);
-
-            if (decodedData == nil) {
-                NSLog(@"Failed to decode base64 encoded message.");
-                continue;
-            }
-
-            NSData *decryptedData = tlsDecrypt(decodedData, privateKeyPath);
-
-            if (decryptedData) {
-                NSString *decryptedMessageNSString = [[NSString alloc] initWithData:decryptedData encoding:NSUTF8StringEncoding];
-                NSLog(@"Decrypted Message: %@", decryptedMessageNSString);
-                [self scheduleLocalNotificationWithDecryptedMessage:decryptedMessageNSString sockfd:sockfd];
-                NSLog(@"[ExponentialBackoffConnect] Received and decrypted message: %@", decryptedMessageNSString);
-            } else {
-                NSLog(@"[ExponentialBackoffConnect] Decryption failed.");
-                postDaemonStatusNotification(kDaemonStatusDecryptError);
-            }
-        }
-
-        if (bytesRead == 0) {
-            NSLog(@"[ExponentialBackoffConnect] Server closed the connection. Reconnecting...");
-            postDaemonStatusNotification(kDaemonStatusConnectionClosed);
-        } else if (bytesRead < 0) {
-            perror("[ExponentialBackoffConnect] recv error");
-            postDaemonStatusNotification(kDaemonStatusError);
-        }
-
-        close(sockfd); // Close the socket before reconnecting
+        close(connectionResult); // Close the socket before reconnecting
         NSLog(@"[ExponentialBackoffConnect] Socket closed, preparing for next connection attempt.");
         postDaemonStatusNotification(kDaemonStatusEnabledNotConnected);
         backoff = 1; // Reset backoff for the next connection attempt
@@ -231,23 +155,66 @@
     return 0;
 }
 
-- (NSString *)getClientUUID {
-    NSString *uuidKey = @"clientUUID";
-    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-uuid.plist";
+- (NSString *)getClientAddress {
+    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
     NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
     
     if (!prefs) {
-        prefs = [NSMutableDictionary dictionary];
+        return nil;
     }
     
-    NSString *uuid = prefs[uuidKey];
-    if (!uuid) {
-        uuid = [[NSUUID UUID] UUIDString];
-        prefs[uuidKey] = uuid;
-        [prefs writeToFile:plistPath atomically:YES];
+    NSString *address = prefs[@"device_address"];
+    
+    return address;
+}
+
+- (NSString *)getServerPubKey {
+    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
+    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
+    
+    if (!prefs) {
+        return nil;
     }
     
-    return uuid;
+    NSString *serverPubKeyString = prefs[@"server_pub_key"];
+    return serverPubKeyString;
+}
+
+- (RSA *)getClientPrivKey {
+    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
+    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
+    
+    if (!prefs) {
+        return nil;
+    }
+    
+    NSString *clientPrivateKeyString = prefs[@"client_priv_key"];
+    if (!clientPrivateKeyString) {
+        NSLog(@"No server public key found in preferences");
+        return nil;
+    }
+    
+    const char *pemData = [clientPrivateKeyString UTF8String];
+    
+    // Create a memory BIO
+    BIO *bio = BIO_new_mem_buf((void *)pemData, -1); // -1 means calculate the length
+    if (!bio) {
+        NSLog(@"Failed to create memory BIO");
+        return nil;
+    }
+    
+    // Read the RSA key from the BIO
+    RSA *clientPrivKey = PEM_read_bio_RSAPrivateKey(bio, NULL, NULL, NULL);
+    
+    // Free the BIO
+    BIO_free(bio);
+    
+    if (!clientPrivKey) {
+        NSLog(@"Failed to parse RSA public key from string");
+        return nil;
+    }
+    
+    return clientPrivKey;
 }
 
 @end
