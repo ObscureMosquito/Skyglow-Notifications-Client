@@ -1,7 +1,6 @@
 #import "Protocol.h"
 #include <Foundation/NSObjCRuntime.h>
 #include <Foundation/Foundation.h>
-#include "main.h"
 #include <objc/NSObjCRuntime.h>
 
 typedef enum {
@@ -19,6 +18,8 @@ typedef enum {
     AckNotification,
     ClientDisconnect,
 } MessageTypesSent;
+
+NSString *connectionStatus = @"Disconnected"; // Define the extern variable with an initial state
 
 SSL *ssl = nil;
 SSL_CTX *sslctx = nil;
@@ -155,7 +156,7 @@ void dealloc() {
 // 2 = critical error (probably disconnect?)
 // 3 = data read error
 // 4 = auth fail
-int handleMessage(NotificationDaemon *daemon) {
+int handleMessage() {
     NSError *error = nil;
     uint32_t length = 0;
     if (SSL_read(ssl, &length, 4) != 4) {
@@ -251,7 +252,7 @@ int handleMessage(NotificationDaemon *daemon) {
             return 0;
         }
         case RecieveNotification:
-            [daemon processNotificationMessage:recievedData];
+            // [daemon processNotificationMessage:recievedData];
             return 0;
         case ServerDisconnect:
             connectionStatus = @"Disconnected";
