@@ -83,6 +83,8 @@
             return;
         }
 
+        setNotificationDelegate(self);
+
         // TODO: thiss section should probably be totally rewritten.
         connectionResult = connectToServer(serverIP, serverPort, serverPubKey);
         if (connectionResult != 0) {
@@ -103,8 +105,19 @@
 
         while (1) {
             // handle
+            int result = handleMessage();
+            switch (result) {
+                case 0:
+                break;
+
+                case 1:
+                case 2:
+                case 3:
+                goto disconnect;
+            }
         }
 
+        disconnect:
         close(connectionResult); // Close the socket before reconnecting
         NSLog(@"[ExponentialBackoffConnect] Socket closed, preparing for next connection attempt.");
         postDaemonStatusNotification(kDaemonStatusEnabledNotConnected);

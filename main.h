@@ -35,14 +35,13 @@
 // Global variables
 char *serverIP;
 char *serverPortStr;
-NSString *privateKeyPath = @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Keys/private_key.pem";
 BOOL *isReachableWithoutRequiredConnection = NULL;
 
 // Functions
 static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) __attribute__((used));
 void postDaemonStatusNotification(const char *status);
 
-@interface NotificationDaemon : NSObject {
+@interface NotificationDaemon :  NSObject <NotificationDelegate>  {
     SCNetworkReachabilityRef _reachabilityRef;
 }
 

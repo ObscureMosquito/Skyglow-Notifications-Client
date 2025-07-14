@@ -11,11 +11,13 @@
 
 extern NSString *connectionStatus;
 
-// @protocol NotificationDaemon <NSObject>
-// - (void)processNotificationMessage:(NSDictionary *)notificationData;
-// @end
+@protocol NotificationDelegate <NSObject>
+- (void)processNotificationMessage:(NSDictionary *)notificationData;
+@end
+
 
 void startLogin(NSString *address, RSA *auth_privKey);
 int connectToServer(const char *serverIP, int port, NSString *serverCert);
 void ackNotification(NSString *notificationUUID);
 int handleMessage();
+void setNotificationDelegate(id<NotificationDelegate> delegate);

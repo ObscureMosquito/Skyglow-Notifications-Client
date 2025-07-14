@@ -19,7 +19,13 @@ typedef enum {
     ClientDisconnect,
 } MessageTypesSent;
 
-NSString *connectionStatus = @"Disconnected"; // Define the extern variable with an initial state
+NSString *connectionStatus = @"Disconnected";
+
+id<NotificationDelegate> notificationDelegate = nil;
+
+void setNotificationDelegate(id<NotificationDelegate> delegate) { // Objc is hard
+    notificationDelegate = delegate;
+}
 
 SSL *ssl = nil;
 SSL_CTX *sslctx = nil;
@@ -252,7 +258,12 @@ int handleMessage() {
             return 0;
         }
         case RecieveNotification:
-            // [daemon processNotificationMessage:recievedData];
+            if (notificationDelegate != nil) {
+                [notificationDelegate processNotificationMessage:recievedData];
+            } else {
+                NSLog(@"Warning: Notification received but no delegate is set to handle it");
+                return 2;
+            }
             return 0;
         case ServerDisconnect:
             connectionStatus = @"Disconnected";
