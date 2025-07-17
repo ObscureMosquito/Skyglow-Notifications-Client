@@ -2,6 +2,9 @@
 #include <Foundation/NSObjCRuntime.h>
 #include <Foundation/Foundation.h>
 #include <objc/NSObjCRuntime.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/bio.h>
 
 typedef enum {
     Hello,
@@ -69,7 +72,7 @@ int connectToServer(const char *serverIP, int port, NSString *serverCert) {
     SSL_load_error_strings();
     OpenSSL_add_all_algorithms();
 
-    const SSL_METHOD *method = DTLS_client_method();
+    const SSL_METHOD *method = SSLv23_client_method(); // TODO: Update this to a newer version of OpenSSL god dam!
     sslctx = SSL_CTX_new(method);
     if (!sslctx) {
         connectionStatus = @"InternalError";
@@ -77,13 +80,38 @@ int connectToServer(const char *serverIP, int port, NSString *serverCert) {
         return 1;
     }
 
+    SSL_CTX_set_options(sslctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3); // turn this from awful to slightly less awful
+
     // import server SSL certificate
-    if (SSL_CTX_load_verify_locations(sslctx, [serverCert UTF8String], nil) != 1) {
+    BIO *bio = BIO_new_mem_buf((void*)[serverCert UTF8String], -1);
+    if (!bio) {
         connectionStatus = @"ServerSSLCertLoadFailure";
-        NSLog(@"Failed to load server SSL Certificate");
+        NSLog(@"Failed to create memory BIO for certificate");
         SSL_CTX_free(sslctx);
         return 2;
     }
+
+    X509 *cert = PEM_read_bio_X509(bio, NULL, 0, NULL);
+    if (!cert) {
+        connectionStatus = @"ServerSSLCertLoadFailure";
+        NSLog(@"Failed to parse SSL Certificate data");
+        BIO_free(bio);
+        SSL_CTX_free(sslctx);
+        return 2;
+    }
+
+    X509_STORE *store = SSL_CTX_get_cert_store(sslctx);
+    if (X509_STORE_add_cert(store, cert) != 1) {
+        connectionStatus = @"ServerSSLCertLoadFailure";
+        NSLog(@"Failed to add certificate to store");
+        X509_free(cert);
+        BIO_free(bio);
+        SSL_CTX_free(sslctx);
+        return 2;
+    }
+
+    X509_free(cert);
+    BIO_free(bio);
 
     ssl = SSL_new(sslctx);
     if (!ssl) {

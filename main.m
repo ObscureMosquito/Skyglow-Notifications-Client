@@ -311,8 +311,8 @@ int main() {
         NotificationDaemon *daemon = [[NotificationDaemon alloc] init];
         [daemon startMonitoringNetworkReachability];
 
-        NSString *ip = [prefs objectForKey:@"notificationServerAddress"];
-        NSString *port = [prefs objectForKey:@"notificationServerPort"];
+        NSString *ip = @"10.0.0.77"; // TODO: This is hardcoded for now, this needs to be queried from the TXT record.
+        NSString *port = @"7373";
         BOOL isEnabled = [[prefs objectForKey:@"enabled"] boolValue];
 
         if (!isEnabled) {

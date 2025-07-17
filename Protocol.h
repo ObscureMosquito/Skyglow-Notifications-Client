@@ -3,9 +3,9 @@
 #include <arpa/inet.h>
 #include <SystemConfiguration/SCNetworkReachability.h>
 
-#import <openssl/ssl.h>
-#import <openssl/err.h>
-
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/bio.h>
 
 #define protocolVersion "1.0.0"
 
