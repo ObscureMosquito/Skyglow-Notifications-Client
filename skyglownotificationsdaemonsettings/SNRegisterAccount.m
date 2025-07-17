@@ -267,7 +267,7 @@ NSString* RegisterAccount(NSString *server_address) {
 
         // Make the body
         NSMutableDictionary *requestData = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
-                                publicKeyString, @"pubKey", 
+                                publicKeyString, @"pub_key", 
                                 nil];
 
         NSError *err = nil;
