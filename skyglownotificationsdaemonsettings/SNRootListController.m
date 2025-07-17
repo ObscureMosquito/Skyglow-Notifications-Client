@@ -1,3 +1,4 @@
+#include "skyglownotificationsdaemonsettings/SNRegisterAccount.h"
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import "SNRootListController.h"
@@ -45,8 +46,8 @@
     [self.navigationController pushViewController:guideVC animated:YES];
 }
 
-- (void)generateSSLCertificate {
-    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Generating Certificate"
+- (void)registerDevice {
+    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Registering Device"
                                                     message:@"\n" // Increase the number of line breaks for additional spacing
                                                    delegate:nil
                                           cancelButtonTitle:nil
@@ -70,11 +71,22 @@
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // Generate the keys
-        [self generateKeys];
+        NSString *serverAddress = [self getServerAddressFromPreferences];
+        NSLog(@"[Skyglow Notifications] Registering with server %@", serverAddress);
+        NSString *result = RegisterAccount(serverAddress);
+        NSLog(@"[Skyglow Notifications] Registering with server finsished with %@. (null means sucess)", result);
 
         dispatch_async(dispatch_get_main_queue(), ^{
             // Dismiss the alert
             [alert dismissWithClickedButtonIndex:0 animated:YES];
+
+            if (result) {
+                [[[UIAlertView alloc] initWithTitle:@"Failed to Register Device!"
+                                                    message:[NSString stringWithFormat:@"An error has occured while trying to register your device. (%@)", result]
+                                                   delegate:nil
+                                          cancelButtonTitle:@"Okay"
+                                          otherButtonTitles:nil] show];
+            }
         });
     });
 }
@@ -130,6 +142,11 @@
 
     // Generate client key pair
     generateKeyPair(clientPrivateKeyPath, clientPublicKeyPath);
+}
+
+- (NSString *)getServerAddressFromPreferences {
+    // how u do dis? im just gonna hard code it for now
+    return @"test.preloading.dev";
 }
 
 @end

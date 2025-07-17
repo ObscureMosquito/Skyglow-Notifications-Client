@@ -10,7 +10,7 @@ KEYS_PATH="/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/
 launchctl unload "${PLIST_PATH}"
 
 # Remove existing plist for update
-rm -rf "${PLIST_PATH}"
+# rm -rf "${PLIST_PATH}"
 
 echo "Removal Script Complete"
 

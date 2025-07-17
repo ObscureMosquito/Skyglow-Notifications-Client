@@ -28,7 +28,6 @@
 
     NSString *alertBody = message;
 
-    // Set the dynamically determined properties
     [localNotification performSelector:@selector(setAlertBody:) withObject:alertBody];
     [localNotification performSelector:@selector(setAlertAction:) withObject:alertAction];
     [localNotification performSelector:@selector(setSoundName:) withObject:alertSound];

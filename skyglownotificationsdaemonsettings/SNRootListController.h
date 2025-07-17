@@ -9,6 +9,7 @@
 #include <spawn.h>
 #include <stdio.h>
 #include <sys/wait.h>
+#include "SNRegisterAccount.h"
 
 extern char **environ;
 
@@ -19,7 +20,7 @@ extern char **environ;
 
 - (void)reloadDaemon;
 - (void)showGuide;
-- (void)generateSSLCertificate;
+- (void)registerDevice;
 - (void)generateKeys;
 
 @end

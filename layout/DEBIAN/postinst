@@ -3,24 +3,12 @@
 echo "Running Installation Script"
 
 # Define the path to your bundle, plist file, and daemon binary
-BUNDLE_PATH="/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle"
+# BUNDLE_PATH="/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle"
 PLIST_PATH="/Library/LaunchDaemons/com.skyglow.snd.plist"
 DAEMON_BINARY_PATH="/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/sndrestart" # Path to your daemon binary
 
 # Remove existing plist for update
-rm "${PLIST_PATH}"
-
-# Check and create the Keys directory if it doesn't exist
-if [ ! -d "$BUNDLE_PATH/Keys" ]; then
-    echo "Creating Keys directory."
-    mkdir -p "$BUNDLE_PATH/Keys"
-
-    # Set permissions to allow the mobile user to access this directory
-    chown mobile:mobile "$BUNDLE_PATH/Keys"
-    chmod 755 "$BUNDLE_PATH/Keys"
-else
-    echo "Keys directory already exists."
-fi
+# rm "${PLIST_PATH}"
 
 # Check and create the plist file if it doesn't exist
 if [ ! -f "$PLIST_PATH" ]; then
