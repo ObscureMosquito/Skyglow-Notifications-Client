@@ -231,7 +231,6 @@ int handleMessage() {
         }
 
         case LoginChallenge:{
-            NSLog(@"I got called, right?");
             NSData *challengeEncrypted = recievedData[@"challenge"];
 
             // allocate the decrypted payload buffer? I don't get this.
@@ -284,7 +283,6 @@ int handleMessage() {
                                 challengeData[2], @"timestamp",
                                 nil];
             sendMessage(LoginChallengeResponse, challengeResponce);
-            NSLog(@"And I suceeded, right?");
             return 0;
         }
         case AuthenticationSuccessful: {

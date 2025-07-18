@@ -1,4 +1,5 @@
 #import "main.h"
+#include <Foundation/NSObjCRuntime.h>
 #include "openssl/pem.h"
 #include "Protocol.h"
 #include <Foundation/Foundation.h>
@@ -6,16 +7,17 @@
 @implementation NotificationDaemon
 
 - (void)processNotificationMessage:(NSDictionary *)messageDict {
-    NSString *message = messageDict[@"message"];
+    NSLog(@"Sending a notification");
+    NSLog(@"Complete messageDict contents: %@", messageDict);
+
+    NSString *alertBody = messageDict[@"message"];
     NSString *bundleID = messageDict[@"topic"]; // 'topic' is the bundle ID
     NSString *messageID = messageDict[@"message_id"];
     NSString *alertAction = messageDict[@"alert_action"];
     NSString *alertSound = messageDict[@"alert_sound"];
 
+    NSLog(@"A notification has been recived. Topic: `%@`, Message: `%@`, Message ID: `%@`", bundleID, alertBody, messageID);
 
-    // According to apple's docs on this, it should be able to set any of the datatypes in this list, JSON by itself does not allow this.
-    // Since we are switching to binary for sending data, maybe it would be worth it to encode in a PLIST like apple recommends? I dunno.
-    // https://developer.apple.com/library/archive/documentation/General/Conceptual/DevPedia-CocoaCore/PropertyList.html#//apple_ref/doc/uid/TP40008195-CH44
     NSMutableDictionary *userInfo = messageDict[@"user_info"];
 
     Class UILocalNotificationClass = NSClassFromString(@"UILocalNotification");
@@ -26,13 +28,11 @@
 
     id localNotification = [[UILocalNotificationClass alloc] init];
 
-    NSString *alertBody = message;
-
     [localNotification performSelector:@selector(setAlertBody:) withObject:alertBody];
     [localNotification performSelector:@selector(setAlertAction:) withObject:alertAction];
     [localNotification performSelector:@selector(setSoundName:) withObject:alertSound];
     
-    if (userInfo.count > 0) {
+    if (userInfo && userInfo.count > 0) {
         NSLog(@"Setting userInfo with data: %@", [userInfo copy]);
         [localNotification performSelector:@selector(setUserInfo:) withObject:[userInfo copy]];
     }
