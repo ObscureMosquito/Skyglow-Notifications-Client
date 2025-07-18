@@ -20,17 +20,17 @@
 #define MAX_BACKOFF 256 // Maximum backoff time in seconds
 
 // Darwin Notifications for settings statuses
-#define kDaemonStatusNotification "com.skyglow.notificationdaemon.status"
-#define kDaemonStatusKey "DaemonStatus"
-#define kDaemonStatusDisabled "Disabled"
-#define kDaemonStatusError "Error"
-#define kDaemonStatusEnabledNotConnected "EnabledNotConnected"
-#define kDaemonStatusConnected "Connected"
-#define kDaemonStatusBadPort "DaemonStatusBadPort"
-#define kDaemonStatusBadIP "DaemonStatusBadIP"
-#define kDaemonStatusDecryptError "DaemonStatusDecryptError"
-#define kDaemonStatusEncryptError "DaemonStatusEncryptError"
-#define kDaemonStatusConnectionClosed "DaemonStatusConnectionClosed"
+#define kDaemonStatusNewStatus "com.skyglow.snd.request_update"
+
+#define kStatusDisabled @"Disabled"
+#define kStatusError @"Error"
+#define kStatusErrorInAuth @"ErrorInAuth"
+#define kStatusEnabledNotConnected @"EnabledNotConnected"
+#define kStatusConnectedNotAuthenticated @"ConnectedNotAuthenticated"
+#define kStatusConnected @"Connected"
+#define kStatusConnectionClosed @"ConnectionClosed"
+#define kStatusServerConfigBad @"ServerConfigBad"
+
 
 // Global variables
 char *serverIP;
@@ -39,7 +39,7 @@ BOOL *isReachableWithoutRequiredConnection = NULL;
 
 // Functions
 static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) __attribute__((used));
-void postDaemonStatusNotification(const char *status);
+void updateStatus(NSString *status);
 
 @interface NotificationDaemon :  NSObject <NotificationDelegate>  {
     SCNetworkReachabilityRef _reachabilityRef;

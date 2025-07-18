@@ -286,10 +286,12 @@ int handleMessage() {
             return 0;
         }
         case AuthenticationSuccessful: {
-            // yippe
-
+            // yippee
             connectionStatus = @"Connected"; // wooooo
             NSLog(@"Sucessfully logged into server!");
+            
+            [notificationDelegate authenticationSuccessful];
+
             // lets go check offline notifications
             checkOfflineNotifications();
             return 0;

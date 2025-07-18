@@ -91,62 +91,46 @@
     });
 }
 
-
-- (void)generateKeys {
-    NSString *bundlePath = @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Keys";
-
-    // Define paths for server keys
-    NSString *serverPrivateKeyPath = [bundlePath stringByAppendingPathComponent:@"server_private_key.pem"];
-    NSString *serverPublicKeyPath = [bundlePath stringByAppendingPathComponent:@"public_key.pem"];
-
-    // Define paths for client keys
-    NSString *clientPrivateKeyPath = [bundlePath stringByAppendingPathComponent:@"private_key.pem"];
-    NSString *clientPublicKeyPath = [bundlePath stringByAppendingPathComponent:@"client_public_key.pem"];
-
-    // Function to generate key pair
-    void (^generateKeyPair)(NSString *, NSString *) = ^(NSString *privateKeyPath, NSString *publicKeyPath) {
-        RSA *rsa = RSA_new();
-        BIGNUM *bn = BN_new();
-        BN_set_word(bn, RSA_F4); // RSA_F4 is a common public exponent
-
-        if (RSA_generate_key_ex(rsa, 2048, bn, NULL) != 1) {
-            // Handle key generation error
-            NSLog(@"Failed to generate RSA key");
-            RSA_free(rsa);
-            BN_free(bn);
-            return;
-        }
-
-        // Save private key
-        FILE *privateKeyFile = fopen([privateKeyPath UTF8String], "w");
-        if (!privateKeyFile || PEM_write_RSAPrivateKey(privateKeyFile, rsa, NULL, NULL, 0, NULL, NULL) != 1) {
-            // Handle error
-            NSLog(@"Failed to write private key");
-        }
-        if (privateKeyFile) fclose(privateKeyFile);
-
-        // Save public key in X.509 SubjectPublicKeyInfo format
-        FILE *publicKeyFile = fopen([publicKeyPath UTF8String], "w");
-        if (!publicKeyFile || PEM_write_RSA_PUBKEY(publicKeyFile, rsa) != 1) {
-            // Handle error
-            NSLog(@"Failed to write public key");
-        }
-        if (publicKeyFile) fclose(publicKeyFile);
-
-        RSA_free(rsa);
-        BN_free(bn);
-    };
-
-    // Generate server key pair
-    generateKeyPair(serverPrivateKeyPath, serverPublicKeyPath);
-
-    // Generate client key pair
-    generateKeyPair(clientPrivateKeyPath, clientPublicKeyPath);
+- (NSString *)getServerAddressFromPreferences {
+    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    
+    NSString *serverAddress = [prefs objectForKey:@"notificationServerAddress"];
+    
+    // Return default or user-specified address
+    if (serverAddress.length > 0) {
+        return serverAddress;
+    } else {
+        return @""; // Fallback to default if not set
+    }
 }
 
-- (NSString *)getServerAddressFromPreferences {
-    // how u do dis? im just gonna hard code it for now
-    return @"test.preloading.dev";
+
+- (void)enabledToggled:(id)value specifier:(id)specifier {
+    NSLog(@"[Skyglow Notifications] Toggle changed to %@, saving and reloading daemon", value);
+    
+    
+    // [[[UIAlertView alloc] initWithTitle:@"Device is not registered yet!"
+    //                                                 message:@"In order to enable Skyglow Notifications, you must first register. Enter the address of the server you want to register to, then press \"Register Device with Server\". The rest should be done automatically."
+    //                                                delegate:nil
+    //                                       cancelButtonTitle:@"Okay"
+    //                                       otherButtonTitles:nil] show];
+
+    // Save the value to preferences
+    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
+    NSMutableDictionary *prefs;
+    
+    if ([[NSFileManager defaultManager] fileExistsAtPath:plistPath]) {
+        prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
+    } else {
+        prefs = [NSMutableDictionary dictionary];
+    }
+    
+    [prefs setObject:value forKey:@"enabled"];
+    [prefs writeToFile:plistPath atomically:YES];
+    
+    // Now reload the daemon
+    [self reloadDaemon];
 }
 
 @end

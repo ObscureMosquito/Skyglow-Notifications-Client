@@ -6,7 +6,7 @@ include $(THEOS)/makefiles/common.mk
 
 BUNDLE_NAME = SkyglowNotificationsDaemonSettings
 
-SkyglowNotificationsDaemonSettings_FILES = SNRootListController.m SNGuideViewController.m SNLogViewController.m SNCustomViewCell.m SNRegisterAccount.m
+SkyglowNotificationsDaemonSettings_FILES = SNRootListController.m SNGuideViewController.m SNLogViewController.m SNCustomViewCell.m SNRegisterAccount.m ../ServerLocationFinder.m
 SkyglowNotificationsDaemonSettings_FRAMEWORKS = UIKit
 SkyglowNotificationsDaemonSettings_PRIVATE_FRAMEWORKS = Preferences CoreGraphics CFNetwork
 SkyglowNotificationsDaemonSettings_LDFLAGS = -stdlib=libstdc++ -lstdc++

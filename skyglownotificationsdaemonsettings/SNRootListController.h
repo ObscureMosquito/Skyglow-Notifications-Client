@@ -21,6 +21,5 @@ extern char **environ;
 - (void)reloadDaemon;
 - (void)showGuide;
 - (void)registerDevice;
-- (void)generateKeys;
 
 @end

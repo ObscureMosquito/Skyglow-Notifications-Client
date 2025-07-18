@@ -1,4 +1,5 @@
 #import "main.h"
+#include "ServerLocationFinder.h"
 #include <Foundation/NSObjCRuntime.h>
 #include "openssl/pem.h"
 #include "Protocol.h"
@@ -63,6 +64,10 @@
     startLogin(clientAddress, privKey);
 }
 
+- (void)authenticationSuccessful {
+    updateStatus(kStatusConnected);
+}
+
 - (void)exponentialBackoffConnect {
     NSLog(@"[ExponentialBackoffConnect] Started connection attempts");
     int serverPort;
@@ -70,7 +75,7 @@
     int backoff = 1;
     NSString *serverPubKey = [self getServerPubKey];
 
-    postDaemonStatusNotification(kDaemonStatusEnabledNotConnected);
+    updateStatus(kStatusEnabledNotConnected);
 
     while (1) {
         serverPort = atoi(serverPortStr);
@@ -78,7 +83,7 @@
 
         if (serverPort <= 0) {
             NSLog(@"[ExponentialBackoffConnect] Invalid server port: %d", serverPort);
-            postDaemonStatusNotification(kDaemonStatusBadPort);
+            updateStatus(kStatusServerConfigBad);
             return;
         }
 
@@ -97,7 +102,7 @@
             continue; // Retry connection
         }
 
-        postDaemonStatusNotification(kDaemonStatusConnected);
+        updateStatus(kStatusConnectedNotAuthenticated);
 
         NSLog(@"[ExponentialBackoffConnect] Connected to server at %s:%d", serverIP, serverPort);
 
@@ -120,7 +125,7 @@
         disconnect:
         close(connectionResult); // Close the socket before reconnecting
         NSLog(@"[ExponentialBackoffConnect] Socket closed, preparing for next connection attempt.");
-        postDaemonStatusNotification(kDaemonStatusEnabledNotConnected);
+        updateStatus(kStatusEnabledNotConnected);
         backoff = 1; // Reset backoff for the next connection attempt
     }
 }
@@ -244,46 +249,21 @@ static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReach
         [daemon exponentialBackoffConnect];
     } else {
         NSLog(@"Network became unreachable.");
-        postDaemonStatusNotification(kDaemonStatusEnabledNotConnected);
+        updateStatus(kStatusEnabledNotConnected);
     }
 }
 
-void postDaemonStatusNotification(const char *status) {
-    NSLog(@"postDaemonStatusNotification: Posting notification with status %s", status);
-
-    CFStringRef notificationName;
-
-    if (strcmp(status, kDaemonStatusDisabled) == 0) {
-        notificationName = CFSTR(kDaemonStatusDisabled);
-    } else if (strcmp(status, kDaemonStatusError) == 0) {
-        notificationName = CFSTR(kDaemonStatusError);
-    } else if (strcmp(status, kDaemonStatusEnabledNotConnected) == 0) {
-        notificationName = CFSTR(kDaemonStatusEnabledNotConnected);
-    } else if (strcmp(status, kDaemonStatusConnected) == 0) {
-        notificationName = CFSTR(kDaemonStatusConnected);
-    } else if (strcmp(status, kDaemonStatusBadPort) == 0) {
-        notificationName = CFSTR(kDaemonStatusBadPort);
-    } else if (strcmp(status, kDaemonStatusBadIP) == 0) {
-        notificationName = CFSTR(kDaemonStatusBadIP);
-    } else if (strcmp(status, kDaemonStatusDecryptError) == 0) {
-        notificationName = CFSTR(kDaemonStatusDecryptError);
-    } else if (strcmp(status, kDaemonStatusEncryptError) == 0) {
-        notificationName = CFSTR(kDaemonStatusEncryptError);
-    } else if (strcmp(status, kDaemonStatusConnectionClosed) == 0) {
-        notificationName = CFSTR(kDaemonStatusConnectionClosed);
-    } else {
-        NSLog(@"postDaemonStatusNotification: Unknown status.");
-        return;
-    }
-
-    // Post the notification
+void updateStatus(NSString *status) {
+    NSDictionary *statusDict = @{
+        @"lastUpdated": [NSDate date],
+        @"currentStatus": status
+    };
+    [statusDict writeToFile:@"/var/mobile/Library/Preferences/com.skyglow.sndp.status.plist" atomically:YES];
     CFNotificationCenterPostNotificationWithOptions(CFNotificationCenterGetDarwinNotifyCenter(),
-                                                    notificationName,
+                                                    CFSTR(kDaemonStatusNewStatus),
                                                     NULL,
                                                     NULL,
                                                     kCFNotificationDeliverImmediately);
-
-    NSLog(@"postDaemonStatusNotification: Notification posted successfully.");
 }
 
 BOOL isValidIPAddress(NSString *ipAddress) {
@@ -305,32 +285,46 @@ int main() {
         NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
         if (!prefs) {
             NSLog(@"Failed to read preferences.");
-            postDaemonStatusNotification(kDaemonStatusError);
+            updateStatus(kStatusError);
             return -1;
         }
+
+        NSString *profilePlistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
+        NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePlistPath];
+        
 
         NotificationDaemon *daemon = [[NotificationDaemon alloc] init];
         [daemon startMonitoringNetworkReachability];
 
-        NSString *ip = @"10.0.0.77"; // TODO: This is hardcoded for now, this needs to be queried from the TXT record.
-        NSString *port = @"7373";
+        NSDictionary *txtRecords = QueryServerLocation([@"_sgn." stringByAppendingString:[profile objectForKey:@"server_address"]]);
+
+        if (!txtRecords) {
+            NSLog(@"Failed to locate server.");
+            updateStatus(kStatusError);
+            return -1;
+        }
+
+        NSString *ip = txtRecords[@"tcp_addr"];
+        NSString *port = txtRecords[@"tcp_port"];
         BOOL isEnabled = [[prefs objectForKey:@"enabled"] boolValue];
 
         if (!isEnabled) {
             NSLog(@"[Main] Daemon is disabled, aborting");
-            postDaemonStatusNotification(kDaemonStatusDisabled);
+            updateStatus(kStatusDisabled);
             return 0;
         }
 
+        updateStatus(kStatusEnabledNotConnected);
+
         if (ip == nil || !isValidIPAddress(ip)) {
             NSLog(@"[Main] Invalid or missing IP address in preferences.");
-            postDaemonStatusNotification(kDaemonStatusBadIP);
+            updateStatus(kStatusServerConfigBad);
             return -1;
         }
 
         if (port == nil || !isValidPort(port)) {
             NSLog(@"[Main] Invalid or missing port in preferences.");
-            postDaemonStatusNotification(kDaemonStatusBadPort);
+            updateStatus(kStatusServerConfigBad);
             return -1;
         }
 
@@ -352,7 +346,7 @@ int main() {
 
         if (!isReachableWithoutRequiredConnection) {
             NSLog(@"[Main] Initial network check: Network is not reachable, staying dormant.");
-            postDaemonStatusNotification(kDaemonStatusEnabledNotConnected);
+            updateStatus(kStatusEnabledNotConnected);
         } else {
             [daemon exponentialBackoffConnect];
         }

@@ -14,6 +14,7 @@ extern NSString *connectionStatus;
 @protocol NotificationDelegate <NSObject>
 - (void)processNotificationMessage:(NSDictionary *)notificationData;
 - (void)handleWelcomeMessage;
+- (void)authenticationSuccessful;
 @end
 
 
