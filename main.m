@@ -112,6 +112,7 @@
                 case 1:
                 case 2:
                 case 3:
+                case 4:
                 goto disconnect;
             }
         }
@@ -200,9 +201,9 @@
         return nil;
     }
     
-    NSString *clientPrivateKeyString = prefs[@"client_priv_key"];
+    NSString *clientPrivateKeyString = prefs[@"privateKey"];
     if (!clientPrivateKeyString) {
-        NSLog(@"No server public key found in preferences");
+        NSLog(@"No client private key found in preferences");
         return nil;
     }
     

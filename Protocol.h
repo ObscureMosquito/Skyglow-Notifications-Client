@@ -7,12 +7,13 @@
 #include <openssl/err.h>
 #include <openssl/bio.h>
 
-#define protocolVersion "1.0.0"
+#define protocolVersion @"1.0.0"
 
 extern NSString *connectionStatus;
 
 @protocol NotificationDelegate <NSObject>
 - (void)processNotificationMessage:(NSDictionary *)notificationData;
+- (void)handleWelcomeMessage;
 @end
 
 

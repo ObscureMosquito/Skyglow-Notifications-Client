@@ -7,19 +7,19 @@
 #include <openssl/bio.h>
 
 typedef enum {
-    Hello,
-    LoginChallenge,
-    RecieveNotification,
-    AuthenticationSuccessful,
-    ServerDisconnect,
+    Hello = 0,
+    LoginChallenge = 1,
+    RecieveNotification = 2,
+    AuthenticationSuccessful = 3,
+    ServerDisconnect = 4,
 } MessageTypesRecieved;
 
 typedef enum {
-    LoginRequest,
-    LoginChallengeResponse,
-    PollUnackedNotifications,
-    AckNotification,
-    ClientDisconnect,
+    LoginRequest = 0,
+    LoginChallengeResponse = 1,
+    PollUnackedNotifications = 2,
+    AckNotification = 3,
+    ClientDisconnect = 4,
 } MessageTypesSent;
 
 NSString *connectionStatus = @"Disconnected";
@@ -39,6 +39,7 @@ NSString *user_address = nil;
 RSA *user_privKey = nil;
 
 void sendMessage(MessageTypesSent messageType, NSMutableDictionary *dataToSend) {
+    NSLog(@"Sending message with type %u", messageType);
     dataToSend[@"$type"] = @(messageType);
 
     NSError *error = nil;
@@ -57,13 +58,13 @@ void sendMessage(MessageTypesSent messageType, NSMutableDictionary *dataToSend) 
 }
 
 void checkOfflineNotifications() {
-    sendMessage(PollUnackedNotifications, [NSMutableDictionary alloc]);
+    sendMessage(PollUnackedNotifications, [[NSMutableDictionary alloc] init]);
 }
 void ackNotification(NSString *notificationUUID) {
     NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
                                 notificationUUID, @"notification", 
                                 nil];
-    sendMessage(LoginRequest, dict);
+    sendMessage(AckNotification, dict);
 }
 
 
@@ -215,14 +216,22 @@ int handleMessage() {
     }
 
     MessageTypesRecieved messageType = [recievedData[@"$type"] unsignedIntegerValue];
+    NSLog(@"Recived a message of type %u", messageType);
     
     switch (messageType) {
         case Hello: {
             // some logic to start authentication?
+            if (notificationDelegate != nil) {
+                [notificationDelegate handleWelcomeMessage];
+            } else {
+                NSLog(@"Warning: Hello message received but no delegate is set to handle it");
+                return 2;
+            }
             return 0;
         }
 
         case LoginChallenge:{
+            NSLog(@"I got called, right?");
             NSData *challengeEncrypted = recievedData[@"challenge"];
 
             // allocate the decrypted payload buffer? I don't get this.
@@ -248,11 +257,11 @@ int handleMessage() {
             NSData *decryptedData = [NSData dataWithBytesNoCopy:decryptedBytes length:resultLength freeWhenDone:YES];
             NSString *decryptedString = [[NSString alloc] initWithData:decryptedData encoding:NSUTF8StringEncoding];
             NSArray *challengeData = [decryptedString componentsSeparatedByString:@","];
-
             // user@example.com,Nonce,Timestamp
 
-            if (challengeData[0] != user_address) {
+            if (![challengeData[0] isEqualToString:user_address]) {
                 // reject
+                NSLog(@"Invalid Challenge! User address %@ (expected %@)", challengeData[0],user_address);
                 return 4;
             }
 
@@ -264,8 +273,9 @@ int handleMessage() {
             // Calculate bounds
             NSTimeInterval lowerBound = nowEpoch - 5 * 60;  // 5 minutes ago
             NSTimeInterval upperBound = nowEpoch + 1 * 60;  // 1 minute in the future
-            if (challengeTimestamp >= lowerBound && challengeTimestamp <= upperBound) {
+            if (challengeTimestamp < lowerBound || challengeTimestamp > upperBound) {
                 // reject
+                NSLog(@"Invalid Challenge! Timestamp check failed! (got %@)", challengeData[2]);
                 return 4;
             }
 
@@ -274,15 +284,16 @@ int handleMessage() {
                                 challengeData[2], @"timestamp",
                                 nil];
             sendMessage(LoginChallengeResponse, challengeResponce);
+            NSLog(@"And I suceeded, right?");
             return 0;
         }
         case AuthenticationSuccessful: {
             // yippe
 
-            // lets go check offline notifications
-            checkOfflineNotifications();
             connectionStatus = @"Connected"; // wooooo
             NSLog(@"Sucessfully logged into server!");
+            // lets go check offline notifications
+            checkOfflineNotifications();
             return 0;
         }
         case RecieveNotification:
