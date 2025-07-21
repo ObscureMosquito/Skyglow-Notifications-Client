@@ -17,4 +17,5 @@ SkyglowNotificationsDaemon_LIBRARIES = ssl crypto
 include $(THEOS_MAKE_PATH)/tool.mk
 
 SUBPROJECTS += skyglownotificationsdaemonsettings
+SUBPROJECTS += SkyglowNotificationsAPNSHook
 include $(THEOS_MAKE_PATH)/aggregate.mk

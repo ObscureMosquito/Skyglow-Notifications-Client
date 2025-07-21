@@ -49,4 +49,5 @@ void updateStatus(NSString *status);
 - (void)exponentialBackoffConnect;
 - (void)processNotificationMessage:(NSDictionary *)messageDict;
 - (void)exponentialBackoffConnect;
+- (NSData*)generateDeviceToken:(NSString*)bundleID error:(NSError*)err;
 @end

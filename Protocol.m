@@ -12,6 +12,7 @@ typedef enum {
     RecieveNotification = 2,
     AuthenticationSuccessful = 3,
     ServerDisconnect = 4,
+    DeviceTokenRegisterAck = 5,
 } MessageTypesRecieved;
 
 typedef enum {
@@ -20,6 +21,7 @@ typedef enum {
     PollUnackedNotifications = 2,
     AckNotification = 3,
     ClientDisconnect = 4,
+    RegisterDeviceToken = 5,
 } MessageTypesSent;
 
 NSString *connectionStatus = @"Disconnected";
@@ -67,6 +69,13 @@ void ackNotification(NSString *notificationUUID) {
     sendMessage(AckNotification, dict);
 }
 
+void registerDeviceToken(NSData *deviceTokenChecksum, NSString *bundleId) {
+    NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
+                                deviceTokenChecksum, @"deviceTokenChecksum", 
+                                bundleId, @"appBundleId", 
+                                nil];
+    sendMessage(RegisterDeviceToken, dict);
+}
 
 int connectToServer(const char *serverIP, int port, NSString *serverCert) {
     SSL_library_init();

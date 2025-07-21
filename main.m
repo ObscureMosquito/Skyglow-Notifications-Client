@@ -17,8 +17,6 @@
     NSString *alertAction = messageDict[@"alert_action"];
     NSString *alertSound = messageDict[@"alert_sound"];
 
-    NSLog(@"A notification has been recived. Topic: `%@`, Message: `%@`, Message ID: `%@`", bundleID, alertBody, messageID);
-
     NSMutableDictionary *userInfo = messageDict[@"user_info"];
 
     Class UILocalNotificationClass = NSClassFromString(@"UILocalNotification");
@@ -55,6 +53,11 @@
     if (messageID) {
         ackNotification(messageID);
     }
+}
+
+// Stub
+- (NSData*)generateDeviceToken:(NSString*)bundleID error:(NSError*)err {
+    return nil;
 }
 
 - (void)handleWelcomeMessage {
