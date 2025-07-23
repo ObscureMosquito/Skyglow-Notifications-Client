@@ -1,3 +1,4 @@
+#include "DBManager.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,7 +15,6 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <SystemConfiguration/SystemConfiguration.h>
-#import "KeyManager.h"
 #import "Protocol.h"
 
 #define MAX_BACKOFF 256 // Maximum backoff time in seconds
@@ -35,7 +35,9 @@
 // Global variables
 char *serverIP;
 char *serverPortStr;
+NSString *serverAddress;
 BOOL *isReachableWithoutRequiredConnection = NULL;
+DBManager *db;
 
 // Functions
 static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) __attribute__((used));

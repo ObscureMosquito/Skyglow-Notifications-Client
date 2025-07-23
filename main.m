@@ -4,6 +4,9 @@
 #include "openssl/pem.h"
 #include "Protocol.h"
 #include <Foundation/Foundation.h>
+#include <CommonCrypto/CommonDigest.h>
+#import "CryptoManager.h"
+#import "DBManager.h"
 
 @implementation NotificationDaemon
 
@@ -57,7 +60,58 @@
 
 // Stub
 - (NSData*)generateDeviceToken:(NSString*)bundleID error:(NSError*)err {
-    return nil;
+    // Securely generate 16 bytes, (K in protocol)
+    uint8_t K[16];
+    int status = SecRandomCopyBytes(kSecRandomDefault, (sizeof K)/(sizeof K[0]), K);
+    if (status != errSecSuccess) {
+        err = [NSError errorWithDomain:@"Failed to generate secure secret!" code:1 userInfo:nil];
+        return nil;
+    }
+
+    // create routing key
+    unsigned char hashedValueChar[32];
+    SHA256_CTX sha256;
+    SHA256_Init(&sha256);
+    SHA256_Update(&sha256, K, 16);
+    SHA256_Final(hashedValueChar, &sha256);
+    CC_SHA256(K, 16, hashedValueChar);    
+    NSData *routingKey = [NSData dataWithBytes:hashedValueChar length:32];
+    
+    // create e2ee key
+    NSString *hkdfSalt = [NSString stringWithFormat:@"%@%@", serverAddress, @"Hello from the Skyglow Notifications developers!"];
+    NSData *keyMaterial = [NSData dataWithBytes:K length:sizeof(K)];
+    NSData *e2eeKey = deriveE2EEKey(keyMaterial, hkdfSalt, 16);
+
+    // store our key
+    BOOL result = [db storeTokenData:routingKey e2eeKey:e2eeKey bundleID:bundleID];
+    if (!result) {
+        err = [NSError errorWithDomain:@"Failed to store created token!" code:2 userInfo:nil];
+        return nil;
+    }
+
+    // send to server
+    registerDeviceToken(routingKey,bundleID);
+
+    // TODO: some stuff for server comms (check for responce)
+
+    // create final device token
+    NSData *serverAddrData = [serverAddress dataUsingEncoding:NSUTF8StringEncoding];
+    NSMutableData *paddedServerAddr = [NSMutableData dataWithCapacity:16];
+    
+    if (serverAddrData.length < 16) {
+        // If server address is less than 16 bytes, add padding
+        [paddedServerAddr appendData:serverAddrData];
+        NSUInteger paddingNeeded = 16 - serverAddrData.length;
+        uint8_t zeroPadding[paddingNeeded];
+        memset(zeroPadding, 0, paddingNeeded); // Using zero as padding
+        [paddedServerAddr appendBytes:zeroPadding length:paddingNeeded];
+    }
+    
+    // Combine padded server address with K
+    NSMutableData *deviceKey = [NSMutableData dataWithData:paddedServerAddr];
+    [deviceKey appendBytes:K length:16];
+
+    return deviceKey;
 }
 
 - (void)handleWelcomeMessage {
@@ -299,6 +353,12 @@ int main() {
         NotificationDaemon *daemon = [[NotificationDaemon alloc] init];
         [daemon startMonitoringNetworkReachability];
 
+        serverAddress = [profile objectForKey:@"server_address"];
+        if ([serverAddress length] > 16) {
+            updateStatus(kStatusServerConfigBad);
+            return -1;
+        }
+        
         NSDictionary *txtRecords = QueryServerLocation([@"_sgn." stringByAppendingString:[profile objectForKey:@"server_address"]]);
 
         if (!txtRecords) {
@@ -311,6 +371,13 @@ int main() {
         NSString *port = txtRecords[@"tcp_port"];
         BOOL isEnabled = [[prefs objectForKey:@"enabled"] boolValue];
 
+        db = [[DBManager alloc] init];
+        if (db == nil) {
+            NSLog(@"Failed to init the DB!");
+            updateStatus(kStatusError);
+            return -1;
+        }
+        
         if (!isEnabled) {
             NSLog(@"[Main] Daemon is disabled, aborting");
             updateStatus(kStatusDisabled);
@@ -318,6 +385,8 @@ int main() {
         }
 
         updateStatus(kStatusEnabledNotConnected);
+
+
 
         if (ip == nil || !isValidIPAddress(ip)) {
             NSLog(@"[Main] Invalid or missing IP address in preferences.");
