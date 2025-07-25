@@ -331,12 +331,13 @@ int handleMessage() {
 }
 
 
-void startLogin(NSString *address, RSA *auth_privKey) {
+void startLogin(NSString *address, RSA *auth_privKey, NSString *language) {
     user_address = address;
     user_privKey = auth_privKey;
     NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
                                 address, @"address", 
                                 protocolVersion, @"version",
+                                language, @"lang",
                                 nil];
     sendMessage(LoginRequest, dict);
 }

@@ -165,7 +165,8 @@
     // login time
     NSString *clientAddress = [self getClientAddress];
     RSA *privKey = [self getClientPrivKey];
-    startLogin(clientAddress, privKey);
+    NSString *language = [[NSLocale preferredLanguages] firstObject];
+    startLogin(clientAddress, privKey, language);
 }
 
 - (void)authenticationSuccessful {

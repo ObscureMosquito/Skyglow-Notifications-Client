@@ -19,7 +19,7 @@ extern NSString *connectionStatus;
 @end
 
 
-void startLogin(NSString *address, RSA *auth_privKey);
+void startLogin(NSString *address, RSA *auth_privKey, NSString *language);
 int connectToServer(const char *serverIP, int port, NSString *serverCert);
 void ackNotification(NSString *notificationUUID);
 int handleMessage();
