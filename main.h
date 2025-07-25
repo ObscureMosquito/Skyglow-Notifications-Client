@@ -45,6 +45,9 @@ void updateStatus(NSString *status);
 
 @interface NotificationDaemon :  NSObject <NotificationDelegate>  {
     SCNetworkReachabilityRef _reachabilityRef;
+    dispatch_semaphore_t _tokenRegistrationSemaphore;
+    BOOL _tokenRegistrationCompleted;
+    NSString *_pendingBundleID;
 }
 
 - (void)startMonitoringNetworkReachability;

@@ -5,7 +5,7 @@
 }
 
 + (DBManager *)sharedStorage;
-- (BOOL)storeTokenData:(NSData *)routingKey e2eeKey:(NSData *)e2eeKey bundleID:(NSString *)bundleID;
+- (BOOL)storeTokenData:(NSData *)routingKey e2eeKey:(NSData *)e2eeKey bundleID:(NSString *)bundleID token:(NSData *)token;
 - (NSDictionary *)dataForRoutingKey:(NSData *)routingKey;
 - (NSArray *)dataForBundleID:(NSString *)bundleID;
 

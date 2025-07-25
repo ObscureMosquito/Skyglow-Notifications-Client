@@ -15,6 +15,7 @@ extern NSString *connectionStatus;
 - (void)processNotificationMessage:(NSDictionary *)notificationData;
 - (void)handleWelcomeMessage;
 - (void)authenticationSuccessful;
+- (void)deviceTokenRegistrationCompleted:(NSString *)bundleId;
 @end
 
 

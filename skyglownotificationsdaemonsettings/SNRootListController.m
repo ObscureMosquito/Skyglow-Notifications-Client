@@ -70,6 +70,15 @@
     });
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Remove the SQLite DB 
+        NSString *dbPath = @"/var/mobile/Library/SkyglowNotifications/sqlite.db";
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+        
+        if ([fileManager fileExistsAtPath:dbPath]) {
+            NSError *error = nil;
+            [fileManager removeItemAtPath:dbPath error:&error];
+        }
+
         // Generate the keys
         NSString *serverAddress = [self getServerAddressFromPreferences];
         NSLog(@"[Skyglow Notifications] Registering with server %@", serverAddress);

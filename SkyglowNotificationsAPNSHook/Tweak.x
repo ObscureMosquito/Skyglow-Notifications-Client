@@ -134,20 +134,17 @@ static NSData *requestDeviceTokenFromDaemon(NSString *bundleID) {
             id<UIApplicationDelegate> delegate = [UIApplication sharedApplication].delegate;
                     
             if (deviceToken) {
-                    // Call the delegate method if it implements it
-                    if ([delegate respondsToSelector:@selector(application:didRegisterForRemoteNotificationsWithDeviceToken:)]) {
-                        [delegate application:[UIApplication sharedApplication] didRegisterForRemoteNotificationsWithDeviceToken:deviceToken];
-                        NSLog(@"[Skyglow APNS Hook] Sent device token to app");
-                    }
+                // Call the delegate method if it implements it
+                if ([delegate respondsToSelector:@selector(application:didRegisterForRemoteNotificationsWithDeviceToken:)]) {
+                    [delegate application:[UIApplication sharedApplication] didRegisterForRemoteNotificationsWithDeviceToken:deviceToken];
+                    NSLog(@"[Skyglow APNS Hook] Sent device token to app");
+                }
                 
             } else {
-                // Fallback on main thread
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    NSLog(@"[Skyglow APNS Hook] Failed to get token from daemon!");
-                    if ([delegate respondsToSelector:@selector(application:didFailToRegisterForRemoteNotificationsWithError:)]) {
-                        [delegate application:[UIApplication sharedApplication] didFailToRegisterForRemoteNotificationsWithError:[NSError errorWithDomain:@"token stuff failed. oops :(" code:0 userInfo:nil]];
-                    }
-                });
+                NSLog(@"[Skyglow APNS Hook] Failed to get token from daemon!");
+                if ([delegate respondsToSelector:@selector(application:didFailToRegisterForRemoteNotificationsWithError:)]) {
+                    [delegate application:[UIApplication sharedApplication] didFailToRegisterForRemoteNotificationsWithError:[NSError errorWithDomain:@"token stuff failed. oops :(" code:0 userInfo:nil]];
+                }
             }
         });
     });

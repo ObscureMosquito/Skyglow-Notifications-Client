@@ -29,7 +29,7 @@
         }
         
         char *errorMsg;
-        const char *sql = "CREATE TABLE IF NOT EXISTS notifications (routing_key BLOB PRIMARY KEY, e2ee_key BLOB, bundle_id TEXT)";
+        const char *sql = "CREATE TABLE IF NOT EXISTS notifications (routing_key BLOB PRIMARY KEY, e2ee_key BLOB, bundle_id TEXT, token BLOB)";
         if (sqlite3_exec(database, sql, NULL, NULL, &errorMsg) != SQLITE_OK) {
             NSLog(@"Error creating table: %s", errorMsg);
             sqlite3_free(errorMsg);
@@ -38,8 +38,8 @@
     return self;
 }
 
-- (BOOL)storeTokenData:(NSData *)routingKey e2eeKey:(NSData *)e2eeKey bundleID:(NSString *)bundleID {
-    const char *sql = "INSERT OR REPLACE INTO notifications VALUES (?, ?, ?)";
+- (BOOL)storeTokenData:(NSData *)routingKey e2eeKey:(NSData *)e2eeKey bundleID:(NSString *)bundleID token:(NSData *)token {
+    const char *sql = "INSERT OR REPLACE INTO notifications VALUES (?, ?, ?, ?)";
     sqlite3_stmt *stmt;
     
     if (sqlite3_prepare_v2(database, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -50,6 +50,7 @@
     sqlite3_bind_blob(stmt, 1, [routingKey bytes], [routingKey length], SQLITE_TRANSIENT);
     sqlite3_bind_blob(stmt, 2, [e2eeKey bytes], [e2eeKey length], SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 3, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 4, [token bytes], [token length], SQLITE_TRANSIENT);
     
     BOOL success = (sqlite3_step(stmt) == SQLITE_DONE);
     sqlite3_finalize(stmt);
@@ -93,7 +94,7 @@
 }
 
 - (NSArray *)dataForBundleID:(NSString *)bundleID {
-    const char *sql = "SELECT routing_key, e2ee_key, bundle_id FROM notifications WHERE bundle_id = ?";
+    const char *sql = "SELECT routing_key, e2ee_key, bundle_id, token FROM notifications WHERE bundle_id = ?";
     sqlite3_stmt *stmt;
     NSMutableArray *results = [NSMutableArray array];
     
@@ -114,11 +115,17 @@
             // Get bundle ID
             const char *bundleIDChars = (const char *)sqlite3_column_text(stmt, 2);
             NSString *retrievedBundleID = bundleIDChars ? [NSString stringWithUTF8String:bundleIDChars] : nil;
+
+            // Get token
+            const void *tokenBytes = sqlite3_column_blob(stmt, 3);
+            int tokenLength = sqlite3_column_bytes(stmt, 3);
+            NSData *token = [NSData dataWithBytes:tokenBytes length:tokenLength];
             
             NSDictionary *result = @{
                 @"routingKey": routingKey,
                 @"e2eeKey": e2eeKey,
-                @"bundleID": retrievedBundleID ?: [NSNull null]
+                @"bundleID": retrievedBundleID ?: [NSNull null],
+                @"token": token
             };
             
             [results addObject:result];

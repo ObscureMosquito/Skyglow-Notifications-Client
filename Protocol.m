@@ -313,6 +313,12 @@ int handleMessage() {
                 return 2;
             }
             return 0;
+        case DeviceTokenRegisterAck:
+            if (notificationDelegate != nil && 
+                [notificationDelegate respondsToSelector:@selector(deviceTokenRegistrationCompleted:)]) {
+                [notificationDelegate deviceTokenRegistrationCompleted:recievedData[@"bundleId"]];
+            }
+            return 0;
         case ServerDisconnect:
             connectionStatus = @"Disconnected";
             dealloc();
