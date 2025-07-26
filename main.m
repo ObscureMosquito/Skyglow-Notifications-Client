@@ -21,8 +21,18 @@
     NSString *messageID = messageDict[@"message_id"];
     NSString *alertAction = messageDict[@"alert_action"];
     NSString *alertSound = messageDict[@"alert_sound"];
+    NSData *routingKey = messageDict[@"routing_key"];
 
     NSMutableDictionary *userInfo = messageDict[@"user_info"];
+
+    // get the routing data
+    NSDictionary *routingData = [db dataForRoutingKey:routingKey];
+
+    // check if this routing key matches
+    if (![routingData[@"bundleID"] isEqualToString:bundleID]) {
+        // this is invalid
+        return;
+    }
 
     Class UILocalNotificationClass = NSClassFromString(@"UILocalNotification");
     if (!UILocalNotificationClass) {
