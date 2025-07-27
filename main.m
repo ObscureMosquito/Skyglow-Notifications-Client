@@ -1,4 +1,5 @@
 #import "main.h"
+#include <CoreFoundation/CFBase.h>
 #include "ServerLocationFinder.h"
 #include <Foundation/NSObjCRuntime.h>
 #include "openssl/pem.h"
@@ -16,23 +17,76 @@
     NSLog(@"Sending a notification");
     NSLog(@"Complete messageDict contents: %@", messageDict);
 
-    NSString *alertBody = messageDict[@"message"];
-    NSString *bundleID = messageDict[@"topic"]; // 'topic' is the bundle ID
-    NSString *messageID = messageDict[@"message_id"];
-    NSString *alertAction = messageDict[@"alert_action"];
-    NSString *alertSound = messageDict[@"alert_sound"];
+    // get routing data
     NSData *routingKey = messageDict[@"routing_key"];
-
-    NSMutableDictionary *userInfo = messageDict[@"user_info"];
-
-    // get the routing data
     NSDictionary *routingData = [db dataForRoutingKey:routingKey];
-
-    // check if this routing key matches
+    
+    // cross-check bundle ids
+    NSString *bundleID = messageDict[@"topic"]; // 'topic' is the bundle ID
     if (![routingData[@"bundleID"] isEqualToString:bundleID]) {
         // this is invalid
         return;
     }
+
+    NSString *alertBody = nil;
+    NSString *messageID = messageDict[@"message_id"];
+    NSString *alertAction = nil;
+    NSString *alertSound = nil;
+    
+
+    NSMutableDictionary *userInfo = messageDict[@"user_info"];
+
+    if (messageDict[@"is_encrypted"]) {
+        // our message uses E2EE
+
+        // json or plist
+        NSString *outputType =  messageDict[@"type"];
+
+        NSData *ciphertext =  messageDict[@"ciphertext"];
+        NSData *iv =  messageDict[@"iv"];
+        NSData *tag =  messageDict[@"tag"];
+        NSData *decrypted = decryptAESGCM(ciphertext, routingData[@"e2eeKey"], iv, tag, routingKey);
+
+        if ([outputType isEqualToString:@"json"]) {
+            NSError *error = nil;
+            NSDictionary *data = [NSJSONSerialization JSONObjectWithData:decrypted options:0 error:nil];
+            if (!data) {
+                NSLog(@"Deserialization error of encrypted data: %@", error);
+                return;
+            }
+
+            alertBody = messageDict[@"message"];
+            alertAction = messageDict[@"alert_action"];
+            alertSound = messageDict[@"alert_sound"];
+
+            userInfo = messageDict[@"user_info"];
+        } else if ([outputType isEqualToString:@"plist"]) {
+            NSError *error = nil;
+            NSDictionary *data = [NSPropertyListSerialization propertyListWithData:decrypted
+                                                                            options:NSPropertyListImmutable
+                                                                            format:nil
+                                                                            error:&error];
+            if (!data) {
+                NSLog(@"Deserialization error of encrypted data: %@", error);
+                return;
+            }
+
+            alertBody = messageDict[@"message"];
+            alertAction = messageDict[@"alert_action"];
+            alertSound = messageDict[@"alert_sound"];
+
+            userInfo = messageDict[@"user_info"];
+        } else {
+            return;
+        }
+    } else {
+        alertBody = messageDict[@"message"];
+        alertAction = messageDict[@"alert_action"];
+        alertSound = messageDict[@"alert_sound"];
+
+        userInfo = messageDict[@"user_info"];
+    }
+
 
     Class UILocalNotificationClass = NSClassFromString(@"UILocalNotification");
     if (!UILocalNotificationClass) {

@@ -28,3 +28,47 @@ NSData *deriveE2EEKey(NSData *keyMaterial, NSString *saltString, NSUInteger outp
     free(outKey);
     return result;
 }
+
+NSData *decryptAESGCM(NSData *ciphertext, NSData *key, NSData *iv, NSData *authTag, NSData *aad) {
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) return nil;
+
+    int len;
+    int plaintextLen = 0;
+    NSMutableData *plaintext = [NSMutableData dataWithLength:ciphertext.length];
+
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1 ||
+        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, (int)iv.length, NULL) != 1 ||
+        EVP_DecryptInit_ex(ctx, NULL, NULL, key.bytes, iv.bytes) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return nil;
+    }
+
+    if (aad && aad.length > 0) {
+        if (EVP_DecryptUpdate(ctx, NULL, &len, aad.bytes, (int)aad.length) != 1) {
+            EVP_CIPHER_CTX_free(ctx);
+            return nil;
+        }
+    }
+
+    if (EVP_DecryptUpdate(ctx, plaintext.mutableBytes, &len, ciphertext.bytes, (int)ciphertext.length) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return nil;
+    }
+    plaintextLen = len;
+
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, (int)authTag.length, (void *)authTag.bytes) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return nil;
+    }
+
+    if (EVP_DecryptFinal_ex(ctx, plaintext.mutableBytes + len, &len) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        return nil;
+    }
+    plaintextLen += len;
+
+    EVP_CIPHER_CTX_free(ctx);
+    [plaintext setLength:plaintextLen];
+    return plaintext;
+}
