@@ -1,5 +1,6 @@
 #include "skyglownotificationsdaemonsettings/SNRegisterAccount.h"
 #import <Foundation/Foundation.h>
+#include <Foundation/NSObjCRuntime.h>
 #import <UIKit/UIKit.h>
 #import "SNRootListController.h"
 #import "SNGuideViewController.h"
@@ -77,6 +78,9 @@
         if ([fileManager fileExistsAtPath:dbPath]) {
             NSError *error = nil;
             [fileManager removeItemAtPath:dbPath error:&error];
+            if (error != nil) {
+                NSLog(@"An error occured while deleting the DB! %@", error);
+            }
         }
 
         // Generate the keys
