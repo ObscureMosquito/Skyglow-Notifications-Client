@@ -1,4 +1,5 @@
 #import "main.h"
+#include <objc/NSObjCRuntime.h>
 #include <CoreFoundation/CFBase.h>
 #include "ServerLocationFinder.h"
 #include <Foundation/NSObjCRuntime.h>
@@ -32,6 +33,7 @@
     NSString *messageID = messageDict[@"message_id"];
     NSString *alertAction = nil;
     NSString *alertSound = nil;
+    NSNumber *badgeNumber = nil;
     
 
     NSMutableDictionary *userInfo = messageDict[@"user_info"];
@@ -58,6 +60,7 @@
             alertBody = messageDict[@"message"];
             alertAction = messageDict[@"alert_action"];
             alertSound = messageDict[@"alert_sound"];
+            badgeNumber = messageDict[@"badge_number"];
 
             userInfo = messageDict[@"user_info"];
         } else if ([outputType isEqualToString:@"plist"]) {
@@ -83,6 +86,7 @@
         alertBody = messageDict[@"message"];
         alertAction = messageDict[@"alert_action"];
         alertSound = messageDict[@"alert_sound"];
+        badgeNumber = messageDict[@"badge_number"];
 
         userInfo = messageDict[@"user_info"];
     }
@@ -99,6 +103,10 @@
     [localNotification performSelector:@selector(setAlertBody:) withObject:alertBody];
     [localNotification performSelector:@selector(setAlertAction:) withObject:alertAction];
     [localNotification performSelector:@selector(setSoundName:) withObject:alertSound];
+    if (badgeNumber != nil) {
+        [localNotification setApplicationIconBadgeNumber:[badgeNumber integerValue]];
+    }
+
     
     if (userInfo && userInfo.count > 0) {
         NSLog(@"Setting userInfo with data: %@", [userInfo copy]);
