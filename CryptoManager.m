@@ -29,7 +29,18 @@ NSData *deriveE2EEKey(NSData *keyMaterial, NSString *saltString, NSUInteger outp
     return result;
 }
 
-NSData *decryptAESGCM(NSData *ciphertext, NSData *key, NSData *iv, NSData *authTag, NSData *aad) {
+NSData *decryptAESGCM(NSData *ciphertextWithTag, NSData *key, NSData *iv, NSData *aad) {
+    // AES-GCM tag is always 16 bytes
+    const NSUInteger tagLength = 16;
+    if (ciphertextWithTag.length < tagLength) {
+        NSLog(@"Decrypt: ciphertext too short");
+        return nil;
+    }
+
+    // Split ciphertext and tag
+    NSData *ciphertext = [ciphertextWithTag subdataWithRange:NSMakeRange(0, ciphertextWithTag.length - tagLength)];
+    NSData *authTag   = [ciphertextWithTag subdataWithRange:NSMakeRange(ciphertextWithTag.length - tagLength, tagLength)];
+
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return nil;
 

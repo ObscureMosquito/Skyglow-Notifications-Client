@@ -38,18 +38,24 @@
 
     NSMutableDictionary *userInfo = messageDict[@"user_info"];
 
-    if (messageDict[@"is_encrypted"]) {
+    if ([messageDict[@"is_encrypted"] boolValue]) {
         // our message uses E2EE
 
         // json or plist
-        NSString *outputType =  messageDict[@"type"];
+        NSString *outputType =  messageDict[@"data_type"];
 
         NSData *ciphertext =  messageDict[@"ciphertext"];
         NSData *iv =  messageDict[@"iv"];
-        NSData *tag =  messageDict[@"tag"];
-        NSData *decrypted = decryptAESGCM(ciphertext, routingData[@"e2eeKey"], iv, tag, routingKey);
+        // NSData *tag =  messageDict[@"tag"];
+        NSData *decrypted = decryptAESGCM(ciphertext, routingData[@"e2eeKey"], iv, nil);
+
+        if (!decrypted) {
+            NSLog(@"Decryption error!");
+            return;
+        }
 
         if ([outputType isEqualToString:@"json"]) {
+            NSLog(@"%@", decrypted);
             NSError *error = nil;
             NSDictionary *data = [NSJSONSerialization JSONObjectWithData:decrypted options:0 error:nil];
             if (!data) {
@@ -57,12 +63,12 @@
                 return;
             }
 
-            alertBody = messageDict[@"message"];
-            alertAction = messageDict[@"alert_action"];
-            alertSound = messageDict[@"alert_sound"];
-            badgeNumber = messageDict[@"badge_number"];
+            alertBody = data[@"message"];
+            alertAction = data[@"alert_action"];
+            alertSound = data[@"alert_sound"];
+            badgeNumber = data[@"badge_number"];
 
-            userInfo = messageDict[@"user_info"];
+            userInfo = data[@"user_info"];
         } else if ([outputType isEqualToString:@"plist"]) {
             NSError *error = nil;
             NSDictionary *data = [NSPropertyListSerialization propertyListWithData:decrypted
@@ -74,11 +80,11 @@
                 return;
             }
 
-            alertBody = messageDict[@"message"];
-            alertAction = messageDict[@"alert_action"];
-            alertSound = messageDict[@"alert_sound"];
+            alertBody = data[@"message"];
+            alertAction = data[@"alert_action"];
+            alertSound = data[@"alert_sound"];
 
-            userInfo = messageDict[@"user_info"];
+            userInfo = data[@"user_info"];
         } else {
             return;
         }
@@ -103,10 +109,9 @@
     [localNotification performSelector:@selector(setAlertBody:) withObject:alertBody];
     [localNotification performSelector:@selector(setAlertAction:) withObject:alertAction];
     [localNotification performSelector:@selector(setSoundName:) withObject:alertSound];
-    if (badgeNumber != nil) {
+    if (badgeNumber != nil && ![badgeNumber isEqual:[NSNull null]]) {
         [localNotification setApplicationIconBadgeNumber:[badgeNumber integerValue]];
     }
-
     
     if (userInfo && userInfo.count > 0) {
         NSLog(@"Setting userInfo with data: %@", [userInfo copy]);
@@ -170,7 +175,7 @@
     // create e2ee key
     NSString *hkdfSalt = [NSString stringWithFormat:@"%@%@", serverAddress, @"Hello from the Skyglow Notifications developers!"];
     NSData *keyMaterial = [NSData dataWithBytes:K length:sizeof(K)];
-    NSData *e2eeKey = deriveE2EEKey(keyMaterial, hkdfSalt, 16);
+    NSData *e2eeKey = deriveE2EEKey(keyMaterial, hkdfSalt, 32);
 
     // create final device token
     NSData *serverAddrData = [serverAddress dataUsingEncoding:NSUTF8StringEncoding];
