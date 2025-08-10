@@ -22,12 +22,7 @@
     NSData *routingKey = messageDict[@"routing_key"];
     NSDictionary *routingData = [db dataForRoutingKey:routingKey];
     
-    // cross-check bundle ids
-    NSString *bundleID = messageDict[@"topic"]; // 'topic' is the bundle ID
-    if (![routingData[@"bundleID"] isEqualToString:bundleID]) {
-        // this is invalid
-        return;
-    }
+    NSString *bundleID = routingData[@"bundleID"];
 
     NSString *alertBody = nil;
     NSString *messageID = messageDict[@"message_id"];

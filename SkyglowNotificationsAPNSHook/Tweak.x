@@ -84,7 +84,7 @@ static NSData *requestDeviceTokenFromDaemon(NSString *bundleID) {
     response->header.msgh_local_port = clientPort;
     
     // Use a timeout to avoid hanging indefinitely
-    mach_msg_timeout_t timeout = 5000; // 5 seconds
+    mach_msg_timeout_t timeout = 20000; // 20 seconds
     
     NSLog(@"[Skyglow APNS Hook] Waiting for response with buffer size: %lu", sizeof(receiveBuffer));
     
