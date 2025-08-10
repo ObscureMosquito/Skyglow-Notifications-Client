@@ -62,7 +62,7 @@ void sendMessage(MessageTypesSent messageType, NSMutableDictionary *dataToSend) 
 void checkOfflineNotifications() {
     sendMessage(PollUnackedNotifications, [[NSMutableDictionary alloc] init]);
 }
-void ackNotification(NSString *notificationUUID) {
+void ackNotification(NSString *notificationUUID, int status) {
     NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
                                 notificationUUID, @"notification", 
                                 nil];

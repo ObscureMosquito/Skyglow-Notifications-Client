@@ -16,7 +16,7 @@
 
 - (void)processNotificationMessage:(NSDictionary *)messageDict {
     NSLog(@"Sending a notification");
-    NSLog(@"Complete messageDict contents: %@", messageDict);
+    // NSLog(@"Complete messageDict contents: %@", messageDict);
 
     // get routing data
     NSData *routingKey = messageDict[@"routing_key"];
@@ -29,6 +29,10 @@
     NSString *alertAction = nil;
     NSString *alertSound = nil;
     NSNumber *badgeNumber = nil;
+
+    if (!messageID) {
+        return;
+    }
     
 
     NSMutableDictionary *userInfo = messageDict[@"user_info"];
@@ -46,6 +50,7 @@
 
         if (!decrypted) {
             NSLog(@"Decryption error!");
+            ackNotification(messageID, 1); // could not encrypt
             return;
         }
 
@@ -55,6 +60,7 @@
             NSDictionary *data = [NSJSONSerialization JSONObjectWithData:decrypted options:0 error:nil];
             if (!data) {
                 NSLog(@"Deserialization error of encrypted data: %@", error);
+                ackNotification(messageID, 2); // could not deserialize notification
                 return;
             }
 
@@ -72,6 +78,7 @@
                                                                             error:&error];
             if (!data) {
                 NSLog(@"Deserialization error of encrypted data: %@", error);
+                ackNotification(messageID, 2); // could not deserialize notification
                 return;
             }
 
@@ -96,6 +103,7 @@
     Class UILocalNotificationClass = NSClassFromString(@"UILocalNotification");
     if (!UILocalNotificationClass) {
         NSLog(@"UILocalNotification class not found.");
+        ackNotification(messageID, 3); // Internal error
         return;
     }
 
@@ -126,10 +134,7 @@
     } else {
         NSLog(@"SBSLocalNotificationClient class not found.");
     }
-
-    if (messageID) {
-        ackNotification(messageID);
-    }
+    ackNotification(messageID, 0); // success
 }
 
 - (void)deviceTokenRegistrationCompleted:(NSString *)bundleId {

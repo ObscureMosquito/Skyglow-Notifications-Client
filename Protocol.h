@@ -21,7 +21,7 @@ extern NSString *connectionStatus;
 
 void startLogin(NSString *address, RSA *auth_privKey, NSString *language);
 int connectToServer(const char *serverIP, int port, NSString *serverCert);
-void ackNotification(NSString *notificationUUID);
+void ackNotification(NSString *notificationUUID, int status);
 int handleMessage();
 void setNotificationDelegate(id<NotificationDelegate> delegate);
 void registerDeviceToken(NSData *deviceTokenChecksum, NSString *bundleId);
