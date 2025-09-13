@@ -200,40 +200,21 @@
     NSMutableData *deviceKey = [NSMutableData dataWithData:paddedServerAddr];
     [deviceKey appendBytes:K length:16];
 
+     // send to server
+    BOOL didSucceed = registerDeviceToken(routingKey, bundleID);
+
+    if (didSucceed == NO) {
+        NSLog(@"Timeout waiting for token registration acknowledgment");
+        err = [NSError errorWithDomain:@"Token registration acknowledgment timeout" code:3 userInfo:nil];
+        return nil;
+    }
+
     // store our key
     BOOL result = [db storeTokenData:routingKey e2eeKey:e2eeKey bundleID:bundleID token:deviceKey];
     if (!result) {
         err = [NSError errorWithDomain:@"Failed to store created token!" code:2 userInfo:nil];
         return nil;
     }
-
-    // some stuff for communication
-    _tokenRegistrationSemaphore = dispatch_semaphore_create(0);
-    _tokenRegistrationCompleted = NO;
-    _pendingBundleID = bundleID;
-    
-    // send to server
-    registerDeviceToken(routingKey, bundleID);
-    
-    // Wait for acknowledgment with timeout (10 seconds)
-    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC);
-    long waitingResult = dispatch_semaphore_wait(_tokenRegistrationSemaphore, timeout);
-    
-    // Clean up
-    _pendingBundleID = nil;
-    
-    if (waitingResult != 0) {
-        NSLog(@"Timeout waiting for token registration acknowledgment");
-        err = [NSError errorWithDomain:@"Token registration acknowledgment timeout" code:3 userInfo:nil];
-        return nil;
-    }
-    
-    if (!_tokenRegistrationCompleted) {
-        NSLog(@"Token registration failed");
-        err = [NSError errorWithDomain:@"Token registration failed" code:4 userInfo:nil];
-        return nil;
-    }
-    
     
     return deviceKey;
 }

@@ -40,6 +40,9 @@ int sock = -1;
 NSString *user_address = nil;
 RSA *user_privKey = nil;
 
+static NSMutableDictionary *tokenAckWaiters = nil;
+static dispatch_once_t tokenAckWaitersOnce;
+
 void sendMessage(MessageTypesSent messageType, NSMutableDictionary *dataToSend) {
     NSLog(@"Sending message with type %u", messageType);
     dataToSend[@"$type"] = @(messageType);
@@ -69,12 +72,30 @@ void ackNotification(NSString *notificationUUID, int status) {
     sendMessage(AckNotification, dict);
 }
 
-void registerDeviceToken(NSData *deviceTokenChecksum, NSString *bundleId) {
+BOOL registerDeviceToken(NSData *deviceTokenChecksum, NSString *bundleId) {
+    dispatch_once(&tokenAckWaitersOnce, ^{
+        tokenAckWaiters = [[NSMutableDictionary alloc] init];
+    });
+
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    @synchronized(tokenAckWaiters) {
+        tokenAckWaiters[bundleId] = sema;
+    }
+
     NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
-                                deviceTokenChecksum, @"deviceTokenChecksum", 
-                                bundleId, @"appBundleId", 
+                                deviceTokenChecksum, @"deviceTokenChecksum",
+                                bundleId, @"appBundleId",
                                 nil];
     sendMessage(RegisterDeviceToken, dict);
+
+    // Wait for up to 5 seconds for the ack
+    long result = dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+
+    @synchronized(tokenAckWaiters) {
+        [tokenAckWaiters removeObjectForKey:bundleId];
+    }
+
+    return (result == 0);
 }
 
 int connectToServer(const char *serverIP, int port, NSString *serverCert) {
@@ -313,12 +334,25 @@ int handleMessage() {
                 return 2;
             }
             return 0;
-        case DeviceTokenRegisterAck:
+        case DeviceTokenRegisterAck: {
+            NSString *ackBundleId = recievedData[@"bundleId"];
+            // Signal any waiter for this bundleId
+            dispatch_once(&tokenAckWaitersOnce, ^{
+                tokenAckWaiters = [[NSMutableDictionary alloc] init];
+            });
+            dispatch_semaphore_t sema = nil;
+            @synchronized(tokenAckWaiters) {
+                sema = tokenAckWaiters[ackBundleId];
+            }
+            if (sema) {
+                dispatch_semaphore_signal(sema);
+            }
             if (notificationDelegate != nil && 
                 [notificationDelegate respondsToSelector:@selector(deviceTokenRegistrationCompleted:)]) {
-                [notificationDelegate deviceTokenRegistrationCompleted:recievedData[@"bundleId"]];
+                [notificationDelegate deviceTokenRegistrationCompleted:ackBundleId];
             }
             return 0;
+        }
         case ServerDisconnect:
             connectionStatus = @"Disconnected";
             dealloc();

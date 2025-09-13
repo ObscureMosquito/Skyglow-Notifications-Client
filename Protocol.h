@@ -24,4 +24,4 @@ int connectToServer(const char *serverIP, int port, NSString *serverCert);
 void ackNotification(NSString *notificationUUID, int status);
 int handleMessage();
 void setNotificationDelegate(id<NotificationDelegate> delegate);
-void registerDeviceToken(NSData *deviceTokenChecksum, NSString *bundleId);
+BOOL registerDeviceToken(NSData *deviceTokenChecksum, NSString *bundleId);
