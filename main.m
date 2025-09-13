@@ -12,20 +12,6 @@
 #import "TweakMachMessages.h"
 #include <bootstrap.h>
 
-// Local safe string copy (always NUL-terminates when size > 0)
-static size_t sg_strlcpy(char *dst, const char *src, size_t size) {
-    if (!dst || !src) return 0;
-    size_t n = 0;
-    if (size) {
-        while (n + 1 < size && src[n]) {
-            dst[n] = src[n];
-            n++;
-        }
-        dst[n] = '\0';
-    }
-    while (src[n]) n++; // finish counting
-    return n;
-}
 
 static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
     if (topic == nil || topic.length == 0) {
@@ -92,13 +78,14 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
     msg.body.msgh_descriptor_count = 0;
     msg.type = SKYGLOW_REQUEST_PUSH;
 
-    // Safe copy topic (bounded)
-    size_t tLen = sg_strlcpy(msg.topic,
-                             (const char *)topicData.bytes,
-                             sizeof(msg.topic));
-    if (tLen >= sizeof(msg.topic)) {
-        NSLog(@"[SendPush] Topic truncated (%zu >= %zu): %@",
-              tLen, sizeof(msg.topic), topic);
+    // topic
+    size_t maxTopic = sizeof(msg.topic) - 1;
+    size_t copyLen = MIN((size_t)topicData.length, maxTopic);
+    memcpy(msg.topic, topicData.bytes, copyLen);
+    msg.topic[copyLen] = '\0';
+    if (copyLen < topicData.length) {
+        NSLog(@"[SendPush] Topic truncated (%zu > %zu): %@",
+              (size_t)topicData.length, maxTopic, topic);
     }
 
     msg.userInfoLength = (uint32_t)plistData.length;
