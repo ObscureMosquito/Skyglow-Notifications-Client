@@ -12,6 +12,126 @@
 #import "TweakMachMessages.h"
 #include <bootstrap.h>
 
+// Local safe string copy (always NUL-terminates when size > 0)
+static size_t sg_strlcpy(char *dst, const char *src, size_t size) {
+    if (!dst || !src) return 0;
+    size_t n = 0;
+    if (size) {
+        while (n + 1 < size && src[n]) {
+            dst[n] = src[n];
+            n++;
+        }
+        dst[n] = '\0';
+    }
+    while (src[n]) n++; // finish counting
+    return n;
+}
+
+static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
+    if (topic == nil || topic.length == 0) {
+        NSLog(@"[SendPush] Missing topic");
+        return KERN_INVALID_ARGUMENT;
+    }
+
+    // Convert topic to UTF8 once (fail if cannot be represented)
+    NSData *topicData = [topic dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:NO];
+    if (!topicData || topicData.length == 0) {
+        NSLog(@"[SendPush] Topic UTF8 conversion failed");
+        return KERN_INVALID_ARGUMENT;
+    }
+
+    // Serialize payload (treat nil as empty dictionary)
+    NSData *plistData = nil;
+    if (userInfo) {
+        NSError *err = nil;
+        plistData = [NSPropertyListSerialization dataWithPropertyList:userInfo
+                                                               format:NSPropertyListBinaryFormat_v1_0
+                                                              options:0
+                                                                error:&err];
+        if (!plistData) {
+            NSLog(@"[SendPush] Payload serialization failed: %@", err);
+            return KERN_INVALID_ARGUMENT;
+        }
+    } else {
+        plistData = [NSData data];
+    }
+
+    mach_port_t bootstrapPort = MACH_PORT_NULL;
+    kern_return_t kr = task_get_bootstrap_port(mach_task_self(), &bootstrapPort);
+    if (kr != KERN_SUCCESS || bootstrapPort == MACH_PORT_NULL) {
+        NSLog(@"[SendPush] task_get_bootstrap_port: %s", mach_error_string(kr));
+        return (kr == KERN_SUCCESS) ? KERN_FAILURE : kr;
+    }
+
+    mach_port_t servicePort = MACH_PORT_NULL;
+    kr = bootstrap_look_up(bootstrapPort, SKYGLOW_MACH_SERVICE_NAME_PUSH, &servicePort);
+    if (kr != KERN_SUCCESS || servicePort == MACH_PORT_NULL) {
+        NSLog(@"[SendPush] bootstrap_look_up(%s): %s",
+              SKYGLOW_MACH_SERVICE_NAME_PUSH, mach_error_string(kr));
+        return (kr == KERN_SUCCESS) ? KERN_FAILURE : kr;
+    }
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winvalid-offsetof"
+    const size_t maxInline = sizeof(((MachPushRequestMessage*)0)->userInfoData);
+#pragma clang diagnostic pop
+
+    // Refuse oversize payload instead of silent truncation
+    if (plistData.length > maxInline) {
+        NSLog(@"[SendPush] Payload too large (%lu > %lu) – refusing",
+              (unsigned long)plistData.length, (unsigned long)maxInline);
+        return KERN_RESOURCE_SHORTAGE;
+    }
+
+    MachPushRequestMessage msg;
+    memset(&msg, 0, sizeof(msg));
+
+    msg.header.msgh_bits        = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+    msg.header.msgh_remote_port = servicePort;
+    msg.header.msgh_id          = SKYGLOW_REQUEST_PUSH;
+    msg.body.msgh_descriptor_count = 0;
+    msg.type = SKYGLOW_REQUEST_PUSH;
+
+    // Safe copy topic (bounded)
+    size_t tLen = sg_strlcpy(msg.topic,
+                             (const char *)topicData.bytes,
+                             sizeof(msg.topic));
+    if (tLen >= sizeof(msg.topic)) {
+        NSLog(@"[SendPush] Topic truncated (%zu >= %zu): %@",
+              tLen, sizeof(msg.topic), topic);
+    }
+
+    msg.userInfoLength = (uint32_t)plistData.length;
+    if (plistData.length) {
+        memcpy(msg.userInfoData, plistData.bytes, plistData.length);
+    }
+
+    size_t usedSize = offsetof(MachPushRequestMessage, userInfoData) + plistData.length;
+    // 4-byte align
+    usedSize = (usedSize + 3) & ~(size_t)3;
+
+    if (usedSize > sizeof(msg) || usedSize > UINT32_MAX) {
+        NSLog(@"[SendPush] Internal size computation invalid (%zu)", usedSize);
+        return KERN_INVALID_ARGUMENT;
+    }
+    msg.header.msgh_size = (mach_msg_size_t)usedSize;
+
+    NSLog(@"[SendPush] topic='%@' payload=%u bytes totalMsgSize=%u",
+          topic, msg.userInfoLength, msg.header.msgh_size);
+
+    kr = mach_msg(&msg.header,
+                  MACH_SEND_MSG,
+                  msg.header.msgh_size,
+                  0,
+                  MACH_PORT_NULL,
+                  MACH_MSG_TIMEOUT_NONE,
+                  MACH_PORT_NULL);
+    if (kr != KERN_SUCCESS) {
+        NSLog(@"[SendPush] mach_msg send failed: %s (%d)",
+              mach_error_string(kr), kr);
+    }
+    return kr;
+}
 @implementation NotificationDaemon
 
 - (void)processNotificationMessage:(NSDictionary *)messageDict {
@@ -24,18 +144,14 @@
     
     NSString *bundleID = routingData[@"bundleID"];
 
-    NSString *alertBody = nil;
     NSString *messageID = messageDict[@"message_id"];
-    NSString *alertAction = nil;
-    NSString *alertSound = nil;
-    NSNumber *badgeNumber = nil;
 
     if (!messageID) {
         return;
     }
     
 
-    NSMutableDictionary *userInfo = messageDict[@"user_info"];
+    NSDictionary *userInfo = nil;
 
     if ([messageDict[@"is_encrypted"] boolValue]) {
         // our message uses E2EE
@@ -63,13 +179,8 @@
                 ackNotification(messageID, 2); // could not deserialize notification
                 return;
             }
+            userInfo = data;
 
-            alertBody = data[@"message"];
-            alertAction = data[@"alert_action"];
-            alertSound = data[@"alert_sound"];
-            badgeNumber = data[@"badge_number"];
-
-            userInfo = data[@"user_info"];
         } else if ([outputType isEqualToString:@"plist"]) {
             NSError *error = nil;
             NSDictionary *data = [NSPropertyListSerialization propertyListWithData:decrypted
@@ -82,58 +193,18 @@
                 return;
             }
 
-            alertBody = data[@"message"];
-            alertAction = data[@"alert_action"];
-            alertSound = data[@"alert_sound"];
-
-            userInfo = data[@"user_info"];
+            
+            userInfo = data;
         } else {
             return;
         }
     } else {
-        alertBody = messageDict[@"message"];
-        alertAction = messageDict[@"alert_action"];
-        alertSound = messageDict[@"alert_sound"];
-        badgeNumber = messageDict[@"badge_number"];
-
-        userInfo = messageDict[@"user_info"];
+        userInfo = messageDict[@"data"];
     }
 
-
-    Class UILocalNotificationClass = NSClassFromString(@"UILocalNotification");
-    if (!UILocalNotificationClass) {
-        NSLog(@"UILocalNotification class not found.");
-        ackNotification(messageID, 3); // Internal error
-        return;
-    }
-
-    id localNotification = [[UILocalNotificationClass alloc] init];
-
-    [localNotification performSelector:@selector(setAlertBody:) withObject:alertBody];
-    [localNotification performSelector:@selector(setAlertAction:) withObject:alertAction];
-    [localNotification performSelector:@selector(setSoundName:) withObject:alertSound];
-    if (badgeNumber != nil && ![badgeNumber isEqual:[NSNull null]]) {
-        [localNotification setApplicationIconBadgeNumber:[badgeNumber integerValue]];
-    }
+    NSLog(@"SendPush");
+    SendPush(bundleID, userInfo);
     
-    if (userInfo && userInfo.count > 0) {
-        NSLog(@"Setting userInfo with data: %@", [userInfo copy]);
-        [localNotification performSelector:@selector(setUserInfo:) withObject:[userInfo copy]];
-    }
-
-    // Find the SBSLocalNotificationClient class and schedule the notification
-    Class SBSLocalNotificationClientClass = objc_getClass("SBSLocalNotificationClient");
-    if (SBSLocalNotificationClientClass) {
-        SEL scheduleSelector = @selector(scheduleLocalNotification:bundleIdentifier:waitUntilDone:);
-        if ([SBSLocalNotificationClientClass respondsToSelector:scheduleSelector]) {
-            // Dynamically call the method to schedule the notification
-            ((void (*)(id, SEL, id, id, char))objc_msgSend)(SBSLocalNotificationClientClass, scheduleSelector, localNotification, bundleID, (char)NO);
-        } else {
-            NSLog(@"SBSLocalNotificationClient does not respond to selector scheduleLocalNotification:bundleIdentifier:waitUntilDone:.");
-        }
-    } else {
-        NSLog(@"SBSLocalNotificationClient class not found.");
-    }
     ackNotification(messageID, 0); // success
 }
 
@@ -418,14 +489,14 @@
     }
 
     // Register the service
-    kr = bootstrap_register(bootstrap_port, SKYGLOW_MACH_SERVICE_NAME, serverPort);
+    kr = bootstrap_register(bootstrap_port, SKYGLOW_MACH_SERVICE_NAME_TOKEN, serverPort);
     if (kr != KERN_SUCCESS) {
         NSLog(@"Failed to register mach service: %s", mach_error_string(kr));
         mach_port_deallocate(mach_task_self(), serverPort);
         return;
     }
 
-    NSLog(@"Successfully registered mach service: %s", SKYGLOW_MACH_SERVICE_NAME);
+    NSLog(@"Successfully registered mach service: %s", SKYGLOW_MACH_SERVICE_NAME_TOKEN);
 
     // Start a thread to listen for messages
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{

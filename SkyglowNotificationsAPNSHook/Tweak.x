@@ -22,10 +22,10 @@ static NSData *requestDeviceTokenFromDaemon(NSString *bundleID) {
     }
     
     // Look up the server port
-    kr = bootstrap_look_up(bootstrap_port, SKYGLOW_MACH_SERVICE_NAME, &serverPort);
+    kr = bootstrap_look_up(bootstrap_port, SKYGLOW_MACH_SERVICE_NAME_TOKEN, &serverPort);
     if (kr != KERN_SUCCESS) {
         NSLog(@"[Skyglow APNS Hook] Failed to look up service %s: %s", 
-              SKYGLOW_MACH_SERVICE_NAME, mach_error_string(kr));
+              SKYGLOW_MACH_SERVICE_NAME_TOKEN, mach_error_string(kr));
         mach_port_deallocate(mach_task_self(), clientPort);
         return nil;
     }
