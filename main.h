@@ -15,7 +15,7 @@
 #import <Foundation/Foundation.h>
 #import <SystemConfiguration/SystemConfiguration.h>
 #import "Protocol.h"
-#import "MachMsgs.h"
+#import "AppMachMsgs.h"
 
 #define MAX_BACKOFF 256 // Maximum backoff time in seconds
 

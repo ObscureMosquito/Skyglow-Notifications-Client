@@ -74,16 +74,16 @@ static void MachServerLoop() {
     });
 }
 
-// // Uninstall feedback trigger
-// %hook SBApplicationUninstallationOperation
-// -(void)main {
-//     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-//         NSString *bundleId = [self valueForKey:@"_bundleIdentifier"];
-//         NSLog(@"[SGN Springboard] App is being uninstalled! %@", bundleId);
-//         // Send bundleId to all clients
-//         if (bundleId) {
-//             NotifyAllClients([bundleId UTF8String]);
-//         }
-//     });
-// }
-// %end
+// Uninstall feedback trigger
+%hook SBApplicationUninstallationOperation
+-(void)main {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *bundleId = [self valueForKey:@"_bundleIdentifier"];
+        NSLog(@"[SGN Springboard] App is being uninstalled! %@", bundleId);
+        // Send bundleId to all clients
+        if (bundleId) {
+            NotifyAllClients([bundleId UTF8String]);
+        }
+    });
+}
+%end
