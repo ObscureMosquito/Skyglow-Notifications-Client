@@ -120,6 +120,7 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
     }
     return kr;
 }
+
 @implementation NotificationDaemon
 
 - (void)processNotificationMessage:(NSDictionary *)messageDict {

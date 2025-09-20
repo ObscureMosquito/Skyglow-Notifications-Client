@@ -22,6 +22,7 @@ typedef enum {
     AckNotification = 3,
     ClientDisconnect = 4,
     RegisterDeviceToken = 5,
+    SendFeedback = 6,
 } MessageTypesSent;
 
 NSString *connectionStatus = @"Disconnected";
@@ -70,6 +71,15 @@ void ackNotification(NSString *notificationUUID, int status) {
                                 notificationUUID, @"notification", 
                                 nil];
     sendMessage(AckNotification, dict);
+}
+
+void sendFeedback(NSData *routing_token, NSNumber *type, NSString* reason) {
+    NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
+                                routing_token, @"routing_token", 
+                                type, @"type", 
+                                reason, @"reason", 
+                                nil];
+    sendMessage(SendFeedback, dict);
 }
 
 BOOL registerDeviceToken(NSData *deviceTokenChecksum, NSString *bundleId) {

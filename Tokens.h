@@ -17,4 +17,5 @@
 }
 
 - (NSData*)generateDeviceToken:(NSString*)bundleID error:(NSError*)err;
+-(BOOL)removeDeviceTokenForBundleId:(NSString*)bundleId reason:(NSString*)reason;
 @end

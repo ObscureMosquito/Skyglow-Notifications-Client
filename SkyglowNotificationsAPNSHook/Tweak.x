@@ -34,7 +34,7 @@ static NSData *requestDeviceTokenFromDaemon(NSString *bundleID) {
     NSLog(@"[Skyglow APNS Hook] Client port: %d, Server port: %d", clientPort, serverPort);
     
     // Prepare request message
-    MachRequestMessage request;
+    MachTokenRequestMessage request;
     bzero(&request, sizeof(request));
     
     // Set up the request - use correct bits for RPC style
@@ -43,7 +43,7 @@ static NSData *requestDeviceTokenFromDaemon(NSString *bundleID) {
         MACH_MSG_TYPE_MAKE_SEND     // local port right
     ) | MACH_MSGH_BITS_COMPLEX;     // indicate complex message
     
-    request.header.msgh_size = sizeof(MachRequestMessage);
+    request.header.msgh_size = sizeof(MachTokenRequestMessage);
     request.header.msgh_remote_port = serverPort;
     request.header.msgh_local_port = clientPort;
     request.header.msgh_id = 100;
@@ -74,8 +74,8 @@ static NSData *requestDeviceTokenFromDaemon(NSString *bundleID) {
     
     // Use a larger buffer for receiving
     // Add extra space to handle any potential message size issues
-    char receiveBuffer[sizeof(MachResponseMessage) + 512];
-    MachResponseMessage *response = (MachResponseMessage *)receiveBuffer;
+    char receiveBuffer[sizeof(MachTokenResponseMessage) + 512];
+    MachTokenResponseMessage *response = (MachTokenResponseMessage *)receiveBuffer;
     
     // Zero out the buffer
     memset(receiveBuffer, 0, sizeof(receiveBuffer));

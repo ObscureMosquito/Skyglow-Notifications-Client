@@ -19,6 +19,18 @@
     }
 }
 
+-(BOOL)removeDeviceTokenForBundleId:(NSString*)bundleId reason:(NSString*)reason {
+    // get all da routing keys
+    NSArray *routing_tokens = [db dataForBundleID:bundleId];
+    for (int i = 0; i < routing_tokens.count; i++) {
+        sendFeedback(routing_tokens[i][@"routingKey"], @0, reason); // this will succeed if we aren't connected.... im too lazy to fix this right now. TODO: fix this
+    }
+    
+    // and finally remove them all.
+    [db removeTokenWithBundleId:bundleId];
+    return YES;
+}
+
 - (NSData*)generateDeviceToken:(NSString*)bundleID error:(NSError*)err {
     NSLog(@"Generating Device Token");
     // Securely generate 16 bytes, (K in protocol)

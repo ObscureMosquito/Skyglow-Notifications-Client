@@ -8,6 +8,7 @@
 #define SKYGLOW_MACH_SERVICE_NAME_PUSH  "com.skyglow.sgn.push"
 #define SKYGLOW_MAX_TOKEN_SIZE 32
 #define SKYGLOW_MAX_TOPIC_SIZE 128
+#define SKYGLOW_MAX_REASON_SIZE 64
 #define SKYGLOW_MAX_USERINFO_SIZE 1024
 
 // Make sure structures are aligned properly for IPC
@@ -23,25 +24,27 @@ typedef enum {
 
 typedef struct {
     mach_msg_header_t header;
-    // Add a body descriptor for complex messages
     mach_msg_body_t body;
     MachMessageType type;
-    char bundleID[256];
-    // Add padding to ensure proper alignment
-    uint8_t padding[4];
 } MachRequestMessage;
 
 typedef struct {
     mach_msg_header_t header;
-    // Add a body descriptor for complex messages
+    mach_msg_body_t body;
+    MachMessageType type;
+    char bundleID[256];
+    uint8_t padding[4];
+} MachTokenRequestMessage;
+
+typedef struct {
+    mach_msg_header_t header;
     mach_msg_body_t body;
     MachMessageType type;
     uint32_t tokenLength;
     char tokenData[SKYGLOW_MAX_TOKEN_SIZE];
     char error[256];
-    // Add padding to ensure proper alignment
     uint8_t padding[4];
-} MachResponseMessage;
+} MachTokenResponseMessage;
 
 typedef struct {
     mach_msg_header_t header;
@@ -54,10 +57,10 @@ typedef struct {
 
 typedef struct {
     mach_msg_header_t header;
-    // Add a body descriptor for complex messages
     mach_msg_body_t body;
     MachMessageType type;
     char topic[SKYGLOW_MAX_TOPIC_SIZE];
+    char reason[SKYGLOW_MAX_REASON_SIZE];
 } MachFeedbackResponce;
 
 

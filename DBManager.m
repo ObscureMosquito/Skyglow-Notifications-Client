@@ -1,4 +1,5 @@
 #import "DBManager.h"
+#include <Foundation/Foundation.h>
 
 @implementation DBManager
 
@@ -134,6 +135,23 @@
     }
     
     return results;
+}
+
+- (BOOL)removeTokenWithBundleId:(NSString *)bundleID {
+    const char *sql = "DELETE FROM routing_key WHERE bundle_id = ?";
+    sqlite3_stmt *stmt;
+    
+    if (sqlite3_prepare_v2(database, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        NSLog(@"Error preparing statement: %s", sqlite3_errmsg(database));
+        return NO;
+    }
+    
+sqlite3_bind_text(stmt, 1, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
+    
+    BOOL success = (sqlite3_step(stmt) == SQLITE_DONE);
+    sqlite3_finalize(stmt);
+    
+    return success;
 }
 
 - (void)dealloc {

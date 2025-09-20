@@ -17,6 +17,11 @@ static mach_port_t gSkyglowPort = MACH_PORT_NULL;
 @end
 
 
+@interface SBApplicationUninstallationOperation : NSObject
+{
+    NSString *_bundleIdentifier;
+}
+@end
 
 
 static void SendNotification(NSString *topic, NSDictionary *userInfo) {
@@ -61,6 +66,99 @@ static void MachServerLoop() {
     }
 }
 
+// Uninstall feedback trigger
+%hook SBApplicationUninstallationOperation
+-(void)main {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *bundleId = [self valueForKey:@"_bundleIdentifier"];
+        NSLog(@"[SGN Springboard] App is being uninstalled! %@", bundleId);
+        // Send bundleId to all clients
+        if (bundleId) {
+            // Convert topic to UTF8 once (fail if cannot be represented)
+            NSData *topicData = [bundleId dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:NO];
+            if (!topicData || topicData.length == 0) {
+                NSLog(@"[SendFeedback] Topic UTF8 conversion failed");
+                return;
+            }
+
+            NSString *reason = @"App uninstalled";
+            NSData *reasonData = [reason dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:NO];
+
+            mach_port_t bootstrapPort = MACH_PORT_NULL;
+            kern_return_t kr = task_get_bootstrap_port(mach_task_self(), &bootstrapPort);
+            if (kr != KERN_SUCCESS || bootstrapPort == MACH_PORT_NULL) {
+                NSLog(@"[SendFeedback] task_get_bootstrap_port: %s", mach_error_string(kr));
+                return;
+            }
+
+            mach_port_t servicePort = MACH_PORT_NULL;
+            kr = bootstrap_look_up(bootstrapPort, SKYGLOW_MACH_SERVICE_NAME_TOKEN, &servicePort);
+            if (kr != KERN_SUCCESS || servicePort == MACH_PORT_NULL) {
+                NSLog(@"[SendFeedback] bootstrap_look_up(%s): %s",
+                    SKYGLOW_MACH_SERVICE_NAME_TOKEN, mach_error_string(kr));
+                return;
+            }
+
+            MachFeedbackResponce msg;
+            memset(&msg, 0, sizeof(msg));
+
+            msg.header.msgh_bits        = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+            msg.header.msgh_remote_port = servicePort;
+            msg.header.msgh_id          = SKYGLOW_FEEDBACK_DATA;
+            msg.body.msgh_descriptor_count = 0;
+            msg.type = SKYGLOW_FEEDBACK_DATA;
+
+            // topic
+            size_t maxTopic = sizeof(msg.topic) - 1;
+            size_t copyLen = MIN((size_t)topicData.length, maxTopic);
+            memcpy(msg.topic, topicData.bytes, copyLen);
+            msg.topic[copyLen] = '\0';
+            if (copyLen < topicData.length) {
+                NSLog(@"[SendFeedback] Feedback Topic truncated (%zu > %zu): %@",
+                    (size_t)topicData.length, maxTopic, bundleId);
+            }
+
+            // reason i hope
+            size_t maxReason = sizeof(msg.reason) - 1;
+            copyLen = MIN((size_t)reasonData.length, maxReason);
+            memcpy(msg.reason, reasonData.bytes, copyLen);
+            msg.reason[copyLen] = '\0';
+            if (copyLen < reasonData.length) {
+                NSLog(@"[SendFeedback] Feedback Reason truncated (%zu > %zu): %@",
+                    (size_t)reasonData.length, maxReason, reason);
+            }
+
+            size_t usedSize = sizeof(MachFeedbackResponce);
+            // 4-byte align
+            usedSize = (usedSize + 3) & ~(size_t)3;
+
+            if (usedSize > sizeof(msg) || usedSize > UINT32_MAX) {
+                NSLog(@"[SendFeedback] Internal size computation invalid (%zu)", usedSize);
+                return;
+            }
+            msg.header.msgh_size = (mach_msg_size_t)usedSize;
+
+            NSLog(@"[SendFeedback] topic='%@' totalMsgSize=%u",
+                bundleId, msg.header.msgh_size);
+
+            kr = mach_msg(&msg.header,
+                        MACH_SEND_MSG,
+                        msg.header.msgh_size,
+                        0,
+                        MACH_PORT_NULL,
+                        MACH_MSG_TIMEOUT_NONE,
+                        MACH_PORT_NULL);
+            if (kr != KERN_SUCCESS) {
+                NSLog(@"[SendFeedback] mach_msg send failed: %s (%d)",
+                    mach_error_string(kr), kr);
+            }
+            return;
+        }
+    });
+    %orig;
+}
+%end
+
 %ctor {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         kern_return_t kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &gSkyglowPort);
@@ -73,17 +171,3 @@ static void MachServerLoop() {
         MachServerLoop();
     });
 }
-
-// Uninstall feedback trigger
-%hook SBApplicationUninstallationOperation
--(void)main {
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSString *bundleId = [self valueForKey:@"_bundleIdentifier"];
-        NSLog(@"[SGN Springboard] App is being uninstalled! %@", bundleId);
-        // Send bundleId to all clients
-        if (bundleId) {
-            NotifyAllClients([bundleId UTF8String]);
-        }
-    });
-}
-%end
