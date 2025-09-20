@@ -17,7 +17,8 @@ typedef enum {
     SKYGLOW_REQUEST_TOKEN = 1,
     SKYGLOW_RESPONSE_TOKEN = 2,
     SKYGLOW_ERROR = 3,
-    SKYGLOW_REQUEST_PUSH = 4
+    SKYGLOW_REQUEST_PUSH = 4,
+    SKYGLOW_FEEDBACK_DATA = 5,
 } MachMessageType;
 
 typedef struct {
@@ -50,6 +51,15 @@ typedef struct {
     char topic[SKYGLOW_MAX_TOPIC_SIZE];
     char userInfoData[SKYGLOW_MAX_USERINFO_SIZE]; // serialized plist (binary)
 } MachPushRequestMessage;
+
+typedef struct {
+    mach_msg_header_t header;
+    // Add a body descriptor for complex messages
+    mach_msg_body_t body;
+    MachMessageType type;
+    char topic[SKYGLOW_MAX_TOPIC_SIZE];
+} MachFeedbackResponce;
+
 
 #pragma pack()
 

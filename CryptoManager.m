@@ -1,5 +1,42 @@
 #import "CryptoManager.h"
 
+RSA* getClientPrivKey() {
+    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
+    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
+    
+    if (!prefs) {
+        return nil;
+    }
+    
+    NSString *clientPrivateKeyString = prefs[@"privateKey"];
+    if (!clientPrivateKeyString) {
+        NSLog(@"No client private key found in preferences");
+        return nil;
+    }
+    
+    const char *pemData = [clientPrivateKeyString UTF8String];
+    
+    // Create a memory BIO
+    BIO *bio = BIO_new_mem_buf((void *)pemData, -1); // -1 means calculate the length
+    if (!bio) {
+        NSLog(@"Failed to create memory BIO");
+        return nil;
+    }
+    
+    // Read the RSA key from the BIO
+    RSA *clientPrivKey = PEM_read_bio_RSAPrivateKey(bio, NULL, NULL, NULL);
+    
+    // Free the BIO
+    BIO_free(bio);
+    
+    if (!clientPrivKey) {
+        NSLog(@"Failed to parse RSA public key from string");
+        return nil;
+    }
+    
+    return clientPrivKey;
+}
+
 NSData *deriveE2EEKey(NSData *keyMaterial, NSString *saltString, NSUInteger outputLength) {
     const EVP_MD *digest = EVP_sha256();
     unsigned char *outKey = malloc(outputLength);

@@ -2,9 +2,9 @@ TARGET := iphone:clang:latest:6.0
 export TARGET=iphone:clang:7.0
 ARCHS = armv7 armv7s
 include $(THEOS)/makefiles/common.mk
-
+ 
 TOOL_NAME = SkyglowNotificationsDaemon
-SkyglowNotificationsDaemon_FILES = main.m CommonDefinitions.m Protocol.m ServerLocationFinder.m DBManager.m CryptoManager.m
+SkyglowNotificationsDaemon_FILES = main.m CommonDefinitions.m Protocol.m ServerLocationFinder.m DBManager.m CryptoManager.m MachMsgs.m Tokens.m
 SkyglowNotificationsDaemon_CFLAGS = -Wno-deprecated-declarations -Wno-objc-method-access -Wno-module-import-in-extern-c -I$(THEOS_PROJECT_DIR)/openssl/include
 SkyglowNotificationsDaemon_LDFLAGS = -stdlib=libstdc++ -lstdc++ -L$(THEOS_PROJECT_DIR)/openssl/lib -lssl -lcrypto
 SkyglowNotificationsDaemon_CODESIGN_FLAGS = -Sentitlements.plist

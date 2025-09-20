@@ -1,4 +1,3 @@
-#include "DBManager.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +15,7 @@
 #import <Foundation/Foundation.h>
 #import <SystemConfiguration/SystemConfiguration.h>
 #import "Protocol.h"
+#import "MachMsgs.h"
 
 #define MAX_BACKOFF 256 // Maximum backoff time in seconds
 
@@ -33,11 +33,13 @@
 
 
 // Global variables
-char *serverIP;
-char *serverPortStr;
-NSString *serverAddress;
 BOOL *isReachableWithoutRequiredConnection = NULL;
-DBManager *db;
+MachMsgs *machMsgs;
+
+NSString *serverAddress = nil;
+DBManager *db = nil;
+char *serverIP = NULL;
+char *serverPortStr = NULL;
 
 // Functions
 static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) __attribute__((used));
@@ -45,14 +47,8 @@ void updateStatus(NSString *status);
 
 @interface NotificationDaemon :  NSObject <NotificationDelegate>  {
     SCNetworkReachabilityRef _reachabilityRef;
-    dispatch_semaphore_t _tokenRegistrationSemaphore;
-    BOOL _tokenRegistrationCompleted;
-    NSString *_pendingBundleID;
 }
 
 - (void)startMonitoringNetworkReachability;
 - (void)exponentialBackoffConnect;
-- (void)processNotificationMessage:(NSDictionary *)messageDict;
-- (void)exponentialBackoffConnect;
-- (NSData*)generateDeviceToken:(NSString*)bundleID error:(NSError*)err;
 @end

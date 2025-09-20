@@ -11,6 +11,7 @@
 #import "DBManager.h"
 #import "TweakMachMessages.h"
 #include <bootstrap.h>
+#import "Globals.h"
 
 
 static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
@@ -195,92 +196,10 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
     ackNotification(messageID, 0); // success
 }
 
-- (void)deviceTokenRegistrationCompleted:(NSString *)bundleId {
-    if ([bundleId isEqualToString:_pendingBundleID]) {
-        _tokenRegistrationCompleted = YES;
-        dispatch_semaphore_signal(_tokenRegistrationSemaphore);
-    }
-}
-
-- (NSData*)getDeviceToken:(NSString*)bundleID error:(NSError*)err { 
-    NSArray *previousTokens = [db dataForBundleID:bundleID];
-    if ([previousTokens count] == 0) {
-        return [self generateDeviceToken:bundleID error:err];
-    } else {
-        return previousTokens[0][@"token"];
-    }
-}
-
-- (NSData*)generateDeviceToken:(NSString*)bundleID error:(NSError*)err {
-    NSLog(@"Generating Device Token");
-    // Securely generate 16 bytes, (K in protocol)
-    uint8_t K[16];
-    int status = SecRandomCopyBytes(kSecRandomDefault, (sizeof K)/(sizeof K[0]), K);
-    if (status != errSecSuccess) {
-        err = [NSError errorWithDomain:@"Failed to generate secure secret!" code:1 userInfo:nil];
-        return nil;
-    }
-
-    // create routing key
-    unsigned char hashedValueChar[32];
-    SHA256_CTX sha256;
-    SHA256_Init(&sha256);
-    SHA256_Update(&sha256, K, 16);
-    SHA256_Final(hashedValueChar, &sha256);
-    CC_SHA256(K, 16, hashedValueChar);    
-    NSData *routingKey = [NSData dataWithBytes:hashedValueChar length:32];
-    
-    // create e2ee key
-    NSString *hkdfSalt = [NSString stringWithFormat:@"%@%@", serverAddress, @"Hello from the Skyglow Notifications developers!"];
-    NSData *keyMaterial = [NSData dataWithBytes:K length:sizeof(K)];
-    NSData *e2eeKey = deriveE2EEKey(keyMaterial, hkdfSalt, 32);
-
-    // create final device token
-    NSData *serverAddrData = [serverAddress dataUsingEncoding:NSUTF8StringEncoding];
-    NSMutableData *paddedServerAddr = [NSMutableData dataWithCapacity:16];
-    
-    if (serverAddrData.length < 16) {
-        // If server address is less than 16 bytes, add padding
-        [paddedServerAddr appendData:serverAddrData];
-        NSUInteger paddingNeeded = 16 - serverAddrData.length;
-        uint8_t zeroPadding[paddingNeeded];
-        memset(zeroPadding, 0, paddingNeeded); // Using zero as padding
-        [paddedServerAddr appendBytes:zeroPadding length:paddingNeeded];
-    } else if (serverAddrData.length > 16) {
-        // smth has gone critially wrong.
-        [paddedServerAddr appendBytes:[serverAddrData bytes] length:16];
-    } else {
-        // exactly 16 bytes
-        [paddedServerAddr appendData:serverAddrData];
-    }
-    
-    // Combine padded server address with K to ensure we have a 32-byte key
-    NSMutableData *deviceKey = [NSMutableData dataWithData:paddedServerAddr];
-    [deviceKey appendBytes:K length:16];
-
-     // send to server
-    BOOL didSucceed = registerDeviceToken(routingKey, bundleID);
-
-    if (didSucceed == NO) {
-        NSLog(@"Timeout waiting for token registration acknowledgment");
-        err = [NSError errorWithDomain:@"Token registration acknowledgment timeout" code:3 userInfo:nil];
-        return nil;
-    }
-
-    // store our key
-    BOOL result = [db storeTokenData:routingKey e2eeKey:e2eeKey bundleID:bundleID token:deviceKey];
-    if (!result) {
-        err = [NSError errorWithDomain:@"Failed to store created token!" code:2 userInfo:nil];
-        return nil;
-    }
-    
-    return deviceKey;
-}
-
 - (void)handleWelcomeMessage {
     // login time
     NSString *clientAddress = [self getClientAddress];
-    RSA *privKey = [self getClientPrivKey];
+    RSA *privKey = getClientPrivKey();
     NSString *language = [[NSLocale preferredLanguages] firstObject];
     startLogin(clientAddress, privKey, language);
 }
@@ -419,191 +338,11 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
     return serverPubKeyString;
 }
 
-- (RSA *)getClientPrivKey {
-    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
-    
-    if (!prefs) {
-        return nil;
-    }
-    
-    NSString *clientPrivateKeyString = prefs[@"privateKey"];
-    if (!clientPrivateKeyString) {
-        NSLog(@"No client private key found in preferences");
-        return nil;
-    }
-    
-    const char *pemData = [clientPrivateKeyString UTF8String];
-    
-    // Create a memory BIO
-    BIO *bio = BIO_new_mem_buf((void *)pemData, -1); // -1 means calculate the length
-    if (!bio) {
-        NSLog(@"Failed to create memory BIO");
-        return nil;
-    }
-    
-    // Read the RSA key from the BIO
-    RSA *clientPrivKey = PEM_read_bio_RSAPrivateKey(bio, NULL, NULL, NULL);
-    
-    // Free the BIO
-    BIO_free(bio);
-    
-    if (!clientPrivKey) {
-        NSLog(@"Failed to parse RSA public key from string");
-        return nil;
-    }
-    
-    return clientPrivKey;
+
+
+
+- (void)deviceTokenRegistrationCompleted:(NSString *)bundleId {
 }
-
-- (void)startMachServer {
-    kern_return_t kr;
-    mach_port_t serverPort;
-
-    // Create a mach port for our service
-    kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &serverPort);
-    if (kr != KERN_SUCCESS) {
-        NSLog(@"Failed to allocate mach port: %s", mach_error_string(kr));
-        return;
-    }
-
-    // Insert a send right
-    kr = mach_port_insert_right(mach_task_self(), serverPort, serverPort, MACH_MSG_TYPE_MAKE_SEND);
-    if (kr != KERN_SUCCESS) {
-        NSLog(@"Failed to insert send right: %s", mach_error_string(kr));
-        mach_port_deallocate(mach_task_self(), serverPort);
-        return;
-    }
-
-    // Register the service
-    kr = bootstrap_register(bootstrap_port, SKYGLOW_MACH_SERVICE_NAME_TOKEN, serverPort);
-    if (kr != KERN_SUCCESS) {
-        NSLog(@"Failed to register mach service: %s", mach_error_string(kr));
-        mach_port_deallocate(mach_task_self(), serverPort);
-        return;
-    }
-
-    NSLog(@"Successfully registered mach service: %s", SKYGLOW_MACH_SERVICE_NAME_TOKEN);
-
-    // Start a thread to listen for messages
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        [self handleMachMessages:serverPort];
-    });
-}
-
-// chatgpt :sob:
-- (void)handleMachMessages:(mach_port_t)serverPort {
-    while (1) {
-        // Use a buffer large enough for the MachRequestMessage structure plus extra space
-        char receiveBuffer[sizeof(MachRequestMessage) + 512];
-        MachRequestMessage *request = (MachRequestMessage *)receiveBuffer;
-        MachResponseMessage response;
-        kern_return_t kr;
-        
-        // Zero out the buffers
-        memset(receiveBuffer, 0, sizeof(receiveBuffer));
-        memset(&response, 0, sizeof(response));
-        
-        // Initialize header with the local port
-        request->header.msgh_local_port = serverPort;
-        
-        // Receive the message directly
-        kr = mach_msg(&request->header, MACH_RCV_MSG, 0, sizeof(receiveBuffer), 
-                     serverPort, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-        
-        if (kr != KERN_SUCCESS) {
-            NSLog(@"Error receiving mach message: %s (error code: %d)", 
-                 mach_error_string(kr), kr);
-                 
-            // If message is too large, try to receive and discard it to avoid getting stuck
-            if (kr == MACH_RCV_TOO_LARGE) {
-                NSLog(@"Message size exceeded buffer capacity.");
-                mach_msg_header_t header;
-                mach_msg(&header, MACH_RCV_MSG | MACH_RCV_LARGE, 0, 0, 
-                       serverPort, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-            }
-            continue;
-        }
-        
-        // Check if we got a valid bundle ID
-        if (request->bundleID[0] == '\0') {
-            NSLog(@"Received message with empty bundle ID, ignoring");
-            continue;
-        }
-        
-        NSLog(@"Received token request for bundle ID: %s (message size: %d)", 
-              request->bundleID, request->header.msgh_size);
-        
-        // Check if the remote port is valid
-        if (request->header.msgh_remote_port == MACH_PORT_NULL) {
-            NSLog(@"Request has an invalid remote port, cannot send response");
-            continue;
-        }
-        
-        // Print debug info about the request
-        NSLog(@"Request from port: %d to port: %d with ID: %d",
-              request->header.msgh_remote_port,
-              request->header.msgh_local_port,
-              request->header.msgh_id);
-        
-        // Set up response with proper complex message bits
-        // Replace MACH_MSGH_BITS_SET with MACH_MSGH_BITS
-        response.header.msgh_bits = MACH_MSGH_BITS(
-            MACH_MSG_TYPE_COPY_SEND,     // remote port right
-            0                           // no local port
-        ) | MACH_MSGH_BITS_COMPLEX;      // indicate complex message
-        
-        response.header.msgh_size = sizeof(MachResponseMessage);
-        response.header.msgh_remote_port = request->header.msgh_remote_port;
-        response.header.msgh_local_port = MACH_PORT_NULL;
-        response.header.msgh_id = request->header.msgh_id + 100;
-        
-        // Initialize body descriptor
-        response.body.msgh_descriptor_count = 0;
-        
-        NSLog(@"Processing request of type %d", request->type);
-        
-        if (request->type == SKYGLOW_REQUEST_TOKEN) {
-            NSString *bundleID = [NSString stringWithUTF8String:request->bundleID];
-            NSError *error = nil;
-            NSData *tokenData = [self getDeviceToken:bundleID error:error];
-            
-            if (tokenData && tokenData.length > 0) {
-                NSLog(@"Generated token for %@, length: %lu", bundleID, (unsigned long)tokenData.length);
-                response.type = SKYGLOW_RESPONSE_TOKEN;
-                response.tokenLength = (uint32_t)MIN(tokenData.length, SKYGLOW_MAX_TOKEN_SIZE);
-                memcpy(response.tokenData, [tokenData bytes], response.tokenLength);
-                strcpy(response.error, "");
-            } else {
-                NSLog(@"Failed to generate token for %@", bundleID);
-                response.type = SKYGLOW_ERROR;
-                response.tokenLength = 0;
-                if (error) {
-                    strcpy(response.error, [[error localizedDescription] UTF8String]);
-                } else {
-                    strcpy(response.error, "Unknown error generating device token");
-                }
-            }
-        } else {
-            NSLog(@"Unknown request type: %d", request->type);
-            response.type = SKYGLOW_ERROR;
-            response.tokenLength = 0;
-            strcpy(response.error, "Unknown request type");
-        }
-        
-        NSLog(@"Sending response of size %lu to port %d", sizeof(response), response.header.msgh_remote_port);
-        
-        // Send response
-        kr = mach_msg(&response.header, MACH_SEND_MSG, sizeof(response), 0, 
-                     MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-        if (kr != KERN_SUCCESS) {
-            NSLog(@"Error sending mach response: %s (error code: %d)", mach_error_string(kr), kr);
-        } else {
-            NSLog(@"Successfully sent response for bundle ID: %s", request->bundleID);
-        }
-    }
-}
-
 
 @end
 
@@ -659,12 +398,18 @@ int main() {
             return -1;
         }
 
+        BOOL isEnabled = [[prefs objectForKey:@"enabled"] boolValue];
+        if (!isEnabled) {
+            NSLog(@"[Main] Daemon is disabled, aborting");
+            updateStatus(kStatusDisabled);
+            return 0;
+        }
+
         NSString *profilePlistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
         NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePlistPath];
         
 
         NotificationDaemon *daemon = [[NotificationDaemon alloc] init];
-        [daemon startMachServer];
         [daemon startMonitoringNetworkReachability];
 
         serverAddress = [profile objectForKey:@"server_address"];
@@ -683,19 +428,12 @@ int main() {
 
         NSString *ip = txtRecords[@"tcp_addr"];
         NSString *port = txtRecords[@"tcp_port"];
-        BOOL isEnabled = [[prefs objectForKey:@"enabled"] boolValue];
-
+        
         db = [[DBManager alloc] init];
         if (db == nil) {
             NSLog(@"Failed to init the DB!");
             updateStatus(kStatusError);
             return -1;
-        }
-        
-        if (!isEnabled) {
-            NSLog(@"[Main] Daemon is disabled, aborting");
-            updateStatus(kStatusDisabled);
-            return 0;
         }
 
         updateStatus(kStatusEnabledNotConnected);
@@ -721,6 +459,10 @@ int main() {
         serverPortStr = strdup([port UTF8String]);
 
         NSLog(@"[Main] Address and port extracted from preference file: %s,%s", serverIP, serverPortStr);
+
+        // start mach server for tokens
+        MachMsgs *machMsgs = [[MachMsgs alloc] init];
+        [machMsgs startMachServer];
 
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 2, false);
 
