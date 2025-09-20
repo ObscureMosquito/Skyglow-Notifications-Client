@@ -138,7 +138,7 @@
 }
 
 - (BOOL)removeTokenWithBundleId:(NSString *)bundleID {
-    const char *sql = "DELETE FROM routing_key WHERE bundle_id = ?";
+    const char *sql = "DELETE FROM notifications WHERE bundle_id = ?";
     sqlite3_stmt *stmt;
     
     if (sqlite3_prepare_v2(database, sql, -1, &stmt, NULL) != SQLITE_OK) {
