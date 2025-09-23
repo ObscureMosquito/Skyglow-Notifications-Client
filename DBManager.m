@@ -22,6 +22,12 @@
       withIntermediateDirectories:YES 
                        attributes:nil 
                             error:NULL];
+
+        NSDictionary *attributes = @{
+            NSFileOwnerAccountID: @(501),
+            NSFileGroupOwnerAccountID: @(501)
+        };
+        [fm setAttributes:attributes ofItemAtPath:[dbPath stringByDeletingLastPathComponent] error:nil];
         
         if (sqlite3_open([dbPath UTF8String], &database) != SQLITE_OK) {
             NSLog(@"Failed to open database");

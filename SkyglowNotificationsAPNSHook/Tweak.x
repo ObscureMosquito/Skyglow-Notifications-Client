@@ -142,9 +142,9 @@ static NSData *requestDeviceTokenFromDaemon(NSString *bundleID) {
                 
             } else {
                 NSLog(@"[Skyglow APNS Hook] Failed to get token from daemon!");
-                if ([delegate respondsToSelector:@selector(application:didFailToRegisterForRemoteNotificationsWithError:)]) {
-                    [delegate application:[UIApplication sharedApplication] didFailToRegisterForRemoteNotificationsWithError:[NSError errorWithDomain:@"token stuff failed. oops :(" code:0 userInfo:nil]];
-                }
+                // if ([delegate respondsToSelector:@selector(application:didFailToRegisterForRemoteNotificationsWithError:)]) {
+                //     [delegate application:[UIApplication sharedApplication] didFailToRegisterForRemoteNotificationsWithError:[NSError errorWithDomain:@"token stuff failed. oops :(" code:0 userInfo:nil]];
+                // }
             }
         });
     });
