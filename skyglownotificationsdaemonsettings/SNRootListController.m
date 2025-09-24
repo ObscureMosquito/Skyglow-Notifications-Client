@@ -48,6 +48,9 @@
 }
 
 - (void)registerDevice {
+    [self.view endEditing:YES]; // closes keyboard
+    CFPreferencesAppSynchronize(CFSTR("com.skyglow.sndp")); // flush prefs to disk
+
     UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Registering Device"
                                                     message:@"\n" // Increase the number of line breaks for additional spacing
                                                    delegate:nil
@@ -71,6 +74,10 @@
     });
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Disable the server
+        [self enabledToggled:@NO specifier:nil];
+        [self reloadDaemon];
+        
         // Remove the SQLite DB 
         NSString *dbPath = @"/var/mobile/Library/SkyglowNotifications/sqlite.db";
         NSFileManager *fileManager = [NSFileManager defaultManager];
@@ -99,6 +106,10 @@
                                                    delegate:nil
                                           cancelButtonTitle:@"Okay"
                                           otherButtonTitles:nil] show];
+            } else {
+                // re-enable the daemon
+                [self enabledToggled:@YES specifier:nil];
+                [self reloadDaemon];
             }
         });
     });
