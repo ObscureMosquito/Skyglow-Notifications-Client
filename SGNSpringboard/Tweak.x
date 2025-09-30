@@ -322,9 +322,7 @@ static NSData *requestDeviceTokenFromDaemon(NSString *bundleID) {
 - (int)registerApplication:(id)application forEnvironment:(id)environment withTypes:(int)notificationTypes {
     NSLog(@"[SGN Springboard] registerApplication:%@ forEnvironment:%@ withTypes:%d", [application bundleIdentifier], environment, notificationTypes);
     
-    BOOL isNewClient = NO;
     BOOL needsUpdate = NO;
-    BOOL typesChanged = NO;
     
     NSString *bundleIdentifier = [application bundleIdentifier];
     
@@ -337,7 +335,6 @@ static NSData *requestDeviceTokenFromDaemon(NSString *bundleID) {
         client = [[%c(SBRemoteNotificationClient) alloc] initWithBundleIdentifier:bundleIdentifier];
         [bundleIdentifiersToClients setObject:client forKey:bundleIdentifier];
 
-        isNewClient = YES;
         needsUpdate = YES;
         
         NSLog(@"[SGN Springboard] Created new notification client for %@", bundleIdentifier);
@@ -355,7 +352,6 @@ static NSData *requestDeviceTokenFromDaemon(NSString *bundleID) {
 
     if (appEnabledTypes != requestedTypes) {
         [client setAppEnabledTypes:requestedTypes];
-        typesChanged = YES;
         needsUpdate = YES;
     }
     
@@ -428,13 +424,6 @@ static NSData *requestDeviceTokenFromDaemon(NSString *bundleID) {
     if (needsUpdate) {
         [[%c(SBApplicationPersistence) sharedInstance] setArchivedObject:client forKey:@"SBRemoteNotificationClient" bundleOrDisplayIdentifier:bundleIdentifier];
         [self performSelector:@selector(calculateTopics)];
-    }
-    
-    // Handle push store updates for non-system/internal applications
-    if (isNewClient || typesChanged) {
-        if (![application isSystemApplication] || ([application isSystemApplication] && ![application isInternalApplication])) {
-            [[%c(SBPushStore) sharedInstance] updatePushStores];
-        }
     }
     
     return needsUpdate;
