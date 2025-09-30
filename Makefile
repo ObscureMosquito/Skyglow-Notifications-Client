@@ -16,6 +16,5 @@ SkyglowNotificationsDaemon_LIBRARIES += sqlite3
 include $(THEOS_MAKE_PATH)/tool.mk
 
 SUBPROJECTS += skyglownotificationsdaemonsettings
-SUBPROJECTS += SkyglowNotificationsAPNSHook
 SUBPROJECTS += SGNSpringboard
 include $(THEOS_MAKE_PATH)/aggregate.mk
