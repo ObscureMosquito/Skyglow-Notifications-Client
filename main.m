@@ -406,6 +406,21 @@ int main() {
             return 0;
         }
 
+        // TIMEBOMB: This was when we were distributing during beta. Remove before final release
+        NSDate *now = [NSDate date];
+        NSDateComponents *components = [[NSDateComponents alloc] init];
+        components.year = 2025;
+        components.month = 11;
+        components.day = 1;
+        NSCalendar *calendar = [NSCalendar currentCalendar];
+        NSDate *cutoff = [calendar dateFromComponents:components];
+        if ([now compare:cutoff] != NSOrderedAscending) {
+            NSLog(@"This build is expired. Disabling...");
+            updateStatus(kStatusDisabled);
+            return -2;
+        }
+        // --- End of timebomb --- 
+
         NSString *profilePlistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
         NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePlistPath];
         

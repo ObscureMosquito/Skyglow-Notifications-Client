@@ -89,6 +89,9 @@ void daemonStatusStatusUpdate(CFNotificationCenterRef center,
     } else if ([currentStatus isEqualToString:@"ServerConfigBad"]) {
         backgroundColor = [UIColor purpleColor];
         userFriendlyMessage = @"The server configuration is incorrect.";
+    } else if ([currentStatus isEqualToString:@"FatalConnectionError"]) {
+        backgroundColor = [UIColor redColor];
+        userFriendlyMessage = @"A fatal error occured during the connection, cannot continue.";
     } else if ([currentStatus isEqualToString:@"DaemonStatusConnectionClosed"]) {
         backgroundColor = [UIColor brownColor];
         userFriendlyMessage = @"The connection was closed.";
