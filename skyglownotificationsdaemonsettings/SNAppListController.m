@@ -21,6 +21,7 @@
                                                                      detail:Nil
                                                                        cell:PSGroupCell
                                                                        edit:Nil];
+        [groupSpecifier setProperty:@"If the switch is on, Skyglow notifications will be used for sending notifications. If it's off, apple's built in notification service will be used for that app." forKey:@"footerText"];
         [specs addObject:groupSpecifier];
         
         NSDictionary *appStatus = [self getAppStatusFromPreferences];
