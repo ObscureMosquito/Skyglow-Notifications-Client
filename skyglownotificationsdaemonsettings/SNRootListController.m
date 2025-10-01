@@ -5,6 +5,8 @@
 #import "SNRootListController.h"
 #import "SNGuideViewController.h"
 #import "SNLogViewController.h"
+#import "SNAppToggleCell.h"
+#import "SNAppListController.h"
 
 #define kBundlePath @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle"
 

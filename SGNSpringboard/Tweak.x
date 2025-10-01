@@ -273,6 +273,34 @@ static NSData *requestDeviceTokenFromDaemon(NSString *bundleID) {
     }
 }
 
+// 0 = apns
+// 1 = skyglow
+static int isUsingAPNSOrSkyglow(NSString *bundleId) {
+    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
+    NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:plistPath] mutableCopy];
+    if (!prefs) {
+        NSLog(@"[SGN Springboard] Something has gone VERY wrong (sndp plist missing!)");
+        return 0; // smth went VERY wrong... or they just haven't configured SGN yet.
+    }
+
+    id existingAppStatus = prefs[@"appStatus"];
+    NSMutableDictionary *appStatus = nil;
+    if ([existingAppStatus isKindOfClass:[NSDictionary class]]) {
+        appStatus = [existingAppStatus mutableCopy];
+    } else {
+        appStatus = [NSMutableDictionary dictionary];
+    }
+
+    if (appStatus[bundleId] == nil) {
+        appStatus[bundleId] = @YES;
+        prefs[@"appStatus"] = appStatus;
+        [prefs writeToFile:plistPath atomically:YES];
+    }
+
+    // NSLog(@"[SGN Springboard] prefs[@appStatus][bundleId] -> %@", prefs[@"appStatus"][bundleId]);
+    return prefs[@"appStatus"][bundleId] ? 1 : 0;
+}
+
 // Needed to recreate the register function
 @interface SBRemoteNotificationClient : NSObject
 - (instancetype)initWithBundleIdentifier:(NSString *)bundleIdentifier;
@@ -396,15 +424,16 @@ static NSData *requestDeviceTokenFromDaemon(NSString *bundleID) {
     
     // check if we wanna use skyglow or apns
     NSData *publicToken = nil;
-    if (validConnection != nil) {
-        // APNS
-        // publicToken = [validConnection performSelector:@selector(publicToken)];
-        publicToken = nil; // i dont wanna deal with hell rn
-    }
-    
-    publicToken = requestDeviceTokenFromDaemon(bundleIdentifier);
-    
+    if (isUsingAPNSOrSkyglow(bundleIdentifier) == 1) {
+        // skyglow
+        publicToken = requestDeviceTokenFromDaemon(bundleIdentifier);
 
+    } else {
+        //apns 
+        if (validConnection != nil) {
+            publicToken = [validConnection performSelector:@selector(publicToken)];
+        }
+    }
     
     if (publicToken != nil) {
         NSLog(@"[SGN Springboard] Providing token to %@", bundleIdentifier);

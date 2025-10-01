@@ -152,8 +152,24 @@
 			<key>footerText</key>
 			<string>Made with love by Requis &amp; Preloading. Thanks to Electimon for the OpenSSL builds.</string>
 		</dict>
+		<!-- Add this to your Root.plist file where you want the app toggles to appear -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>App Notifications</string>
+		</dict>
+		<!-- This will be populated dynamically in code, but we'll add a placeholder -->
+		<dict>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>label</key>
+			<string>Configure Apps</string>
+			<key>detail</key>
+			<string>SNAppListController</string>
+		</dict>
 		</array>
 		<key>title</key>
-	<string>SkyGlow Notifications</string>
+	<string>Skyglow Notifications</string>
 </dict>
 </plist>
