@@ -47,6 +47,7 @@ void updateStatus(NSString *status);
 
 @interface NotificationDaemon :  NSObject <NotificationDelegate>  {
     SCNetworkReachabilityRef _reachabilityRef;
+    NSMutableArray *_disconnectionTimes;
 }
 
 - (void)startMonitoringNetworkReachability;

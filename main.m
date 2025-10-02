@@ -123,6 +123,26 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
 
 @implementation NotificationDaemon
 
+- (void)disableDaemon {
+    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
+    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
+    
+    if (!prefs) {
+        prefs = [NSMutableDictionary dictionary];
+    }
+    
+    [prefs setObject:@NO forKey:@"enabled"];
+    
+    BOOL success = [prefs writeToFile:plistPath atomically:YES];
+    if (success) {
+        NSLog(@"Successfully disabled daemon");
+    } else {
+        NSLog(@"Failed to update preferences file to disable daemon");
+    }
+    
+    updateStatus(kStatusDisabled);
+}
+
 - (void)processNotificationMessage:(NSDictionary *)messageDict {
     NSLog(@"Sending a notification");
     // NSLog(@"Complete messageDict contents: %@", messageDict);
@@ -209,6 +229,34 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
     updateStatus(kStatusConnected);
 }
 
+- (void)checkForRapidDisconnections {
+    // Remove disconnection times older than 10 seconds
+    NSDate *cutoffTime = [NSDate dateWithTimeIntervalSinceNow:-10.0];
+    NSMutableArray *recentDisconnects = [NSMutableArray array];
+    
+    for (NSDate *disconnectTime in _disconnectionTimes) {
+        if ([disconnectTime compare:cutoffTime] == NSOrderedDescending) {
+            [recentDisconnects addObject:disconnectTime];
+        }
+    }
+    
+    // Update our list to only include recent disconnects
+    [_disconnectionTimes removeAllObjects];
+    [_disconnectionTimes addObjectsFromArray:recentDisconnects];
+    
+    // Check if we've had 3 or more disconnects in the last 10 seconds
+    if ([_disconnectionTimes count] >= 3) {
+        NSLog(@"[WARNING] Detected %lu disconnections within 10 seconds. Disabling daemon.", 
+              (unsigned long)[_disconnectionTimes count]);
+        
+        // Disable the daemon
+        [self disableDaemon];
+        
+        // Exit the daemon process
+        exit(-3);
+    }
+}
+
 - (void)exponentialBackoffConnect {
     NSLog(@"[ExponentialBackoffConnect] Started connection attempts");
     int serverPort;
@@ -219,6 +267,8 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
     updateStatus(kStatusEnabledNotConnected);
 
     while (1) {
+        [self checkForRapidDisconnections];
+
         serverPort = atoi(serverPortStr);
         NSLog(@"[ExponentialBackoffConnect] Converted server port string to integer: %d", serverPort);
 
@@ -264,6 +314,7 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
         }
 
         disconnect:
+        [_disconnectionTimes addObject:[NSDate date]];
         close(connectionResult); // Close the socket before reconnecting
         NSLog(@"[ExponentialBackoffConnect] Socket closed, preparing for next connection attempt.");
         updateStatus(kStatusEnabledNotConnected);
@@ -405,21 +456,6 @@ int main() {
             updateStatus(kStatusDisabled);
             return 0;
         }
-
-        // TIMEBOMB: This was when we were distributing during beta. Remove before final release
-        NSDate *now = [NSDate date];
-        NSDateComponents *components = [[NSDateComponents alloc] init];
-        components.year = 2025;
-        components.month = 11;
-        components.day = 1;
-        NSCalendar *calendar = [NSCalendar currentCalendar];
-        NSDate *cutoff = [calendar dateFromComponents:components];
-        if ([now compare:cutoff] != NSOrderedAscending) {
-            NSLog(@"This build is expired. Disabling...");
-            updateStatus(kStatusDisabled);
-            return -2;
-        }
-        // --- End of timebomb --- 
 
         NSString *profilePlistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
         NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePlistPath];

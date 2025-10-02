@@ -74,24 +74,6 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>Warning: This is a beta build of Skyglow Notifications, redistribution is not allowed.</string>
-		</dict>
-		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string></string>
-        </dict>
-		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string></string>
-        </dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
 			<string>Daemon Status:</string>
 		</dict>
 		<dict>
