@@ -12,3 +12,9 @@ You will need to download and install the tweak, set up the server with your cre
 The best part of this tweak is it simplicity, it can be easily adapted to work with one or multiple services, allowing users to have notifications in their old iDevices easily, by listening for multiple notification for different apps in the same tweak.
 
 By default, the server will store any missed notifications and the client will be sent them when they reconnect in the next available window.
+
+## Contributors
+- [**ObscureMosquito:**](https://github.com/ObscureMosquito) ObscureMosquito, Requis, or otherwise me, created the tweak and architecture originally.
+
+
+- [**Preloading**:](https://github.com/Preloading) Apart from creating the server, completely revamped the comunication stack and protocol, added features like app registration and multi server support and improved security and reliability.
