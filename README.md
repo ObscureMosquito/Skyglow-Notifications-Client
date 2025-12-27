@@ -11,13 +11,14 @@ Simple Cydia Tweak that will open a low power TCP socket and constantly listen f
 2. Enter settings
 3. Enter into the notification server address the server you would like to use. A list of public servers are available below:
 - preloading.dev
-Tip: If you see a "Port" field, you are using an outdated version of Skyglow Notifications. Please update your version of skyglow notifications from Cydia
+> [!TIP]
+> If you see a "Port" field, you are using an outdated version of Skyglow Notifications. Please update your version of skyglow notifications from Cydia
 4. Hit the register button. It may take a bit to register with your server but as long as an error does not show up, it will have suceeded.
 5. Toggle the "Enabled" switch.
 6. You are all set up!
 
 #### Per App Settings:
-Sometimes you may encounter an app that still works with apple's built in APNS (like WA for legacy iOS). This menu lets you select if you want an app to use Skyglow Notifications, or Apple's notification service. For an app to show up on this list, it must
+Sometimes you may encounter an app that still works with apple's built in APNS (like WA for legacy iOS, or eBaY). This menu lets you select if you want an app to use Skyglow Notifications, or Apple's notification service. For an app to show up on this list, it must
 1. be an app that can send notifications
 2. tried to register for notifications since Skyglow Notifcations was installed 
 
