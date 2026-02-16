@@ -14,21 +14,21 @@
         NSMutableArray *specs = [NSMutableArray array];
         
         // Add header
-        PSSpecifier *groupSpecifier = [PSSpecifier preferenceSpecifierNamed:@"Toggle Skyglow Notifications per app"
+        PSSpecifier *groupSpecifier = [PSSpecifier preferenceSpecifierNamed:@"Toggle Notifications per app"
                                                                      target:self
                                                                         set:NULL
                                                                         get:NULL
                                                                      detail:Nil
                                                                        cell:PSGroupCell
                                                                        edit:Nil];
-        [groupSpecifier setProperty:@"If the switch is on, Skyglow notifications will be used for sending notifications. If it's off, apple's built in notification service will be used for that app." forKey:@"footerText"];
+        [groupSpecifier setProperty:@"If enabled, Skyglow notifications will be used for sending notifications. If it's off, apple's built in notification service will be used for that app." forKey:@"footerText"];
         [specs addObject:groupSpecifier];
         
         NSDictionary *appStatus = [self getAppStatusFromPreferences];
         
         if (!appStatus || appStatus.count == 0) {
             // If no apps configured yet, show placeholder
-            PSSpecifier *placeholderSpec = [PSSpecifier preferenceSpecifierNamed:@"No known apps. Open an app that sends notifications to toggle it on this list."
+            PSSpecifier *placeholderSpec = [PSSpecifier preferenceSpecifierNamed:@"No regisered applications."
                                                                          target:self
                                                                             set:NULL
                                                                             get:NULL

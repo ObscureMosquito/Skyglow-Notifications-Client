@@ -1,6 +1,7 @@
 TARGET := iphone:clang:16.5:6.0
-ARCHS = armv7 armv7s arm64 arm64e
+ARCHS = armv7
 include $(THEOS)/makefiles/common.mk
+THEOS_DEVICE_IP = iPod
  
 TOOL_NAME = SkyglowNotificationsDaemon
 SkyglowNotificationsDaemon_FILES = main.m CommonDefinitions.m Protocol.m ServerLocationFinder.m DBManager.m CryptoManager.m AppMachMsgs.m Tokens.m

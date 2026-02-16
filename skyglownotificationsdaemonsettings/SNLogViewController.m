@@ -12,6 +12,7 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     
+    // 1. Setup Frame and Initialization
     CGFloat offset = -39.0;
     CGRect frame = CGRectMake(0, offset, self.view.bounds.size.width, self.view.bounds.size.height);
 
@@ -22,9 +23,35 @@
     self.logTextView.center = CGPointMake(self.view.center.x, self.view.center.y + offset / 2);
     self.logTextView.layer.cornerRadius = 7;
     self.logTextView.clipsToBounds = YES;
+    self.logTextView.backgroundColor = [UIColor blackColor];
+    self.logTextView.textColor = [UIColor blackColor];
+    self.logTextView.font = [UIFont boldSystemFontOfSize:12.0];
+
+    CGFloat topPadding = 3.2; 
+    UIEdgeInsets insets = UIEdgeInsetsMake(topPadding, 0, 0, 0);
+    [self.logTextView setContentInset:insets];
+    [self.logTextView setContentOffset:CGPointMake(0, -topPadding) animated:NO];
+
     [self.view addSubview:self.logTextView];
     
-    // Register for each status notification
+    // 4. Add the Glossy Overlay
+    NSString *imagePath = @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Overlay-Gloss.png";
+    UIImage *glossImage = [UIImage imageWithContentsOfFile:imagePath];
+    
+    if (glossImage) {
+        UIImageView *overlayView = [[UIImageView alloc] initWithImage:glossImage];
+        
+        [overlayView setAlpha:0.6];
+        
+        overlayView.frame = self.logTextView.bounds;
+        overlayView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        overlayView.contentMode = UIViewContentModeScaleToFill;
+        overlayView.userInteractionEnabled = NO;
+        
+        [self.logTextView addSubview:overlayView];
+    }
+    
+    // Register for Notifications
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     (__bridge const void *)(self),
                                     &daemonStatusStatusUpdate,

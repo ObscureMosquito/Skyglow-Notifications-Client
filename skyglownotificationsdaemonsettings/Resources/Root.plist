@@ -5,11 +5,11 @@
 	<key>items</key>
 	<array>
 		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>Skyglow Notifications:</string>
-		</dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>Configuration</string>
+        </dict>
 		<dict>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
@@ -21,12 +21,6 @@
 			<string>enabled</string>
 			<key>label</key>
 			<string>Enabled</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>Notification Server Address:</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -43,10 +37,38 @@
 			<string>URL</string>
 		</dict>
 		<dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string></string>
+        </dict>
+		<dict>
+			<key>cellClass</key>
+			<string>SNCustomTableViewCell</string>
+			<key>cell</key>
+			<string>PSStaticTextCell</string>
+			<key>label</key>
+			<string></string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string></string>
+		</dict>
+		<dict>
 			<key>cell</key>
 			<string>PSButtonCell</string>
 			<key>label</key>
-			<string>Register Device with Server</string>
+			<string>Reload Daemon</string>
+			<key>action</key>
+			<string>reloadDaemon</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>Register with Server</string>
 			<key>action</key>
 			<string>registerDevice</string>
 		</dict>
@@ -58,47 +80,9 @@
         </dict>
 		<dict>
 			<key>cell</key>
-			<string>PSButtonCell</string>
-			<key>label</key>
-			<string>Reload Daemon</string>
-			<key>action</key>
-			<string>reloadDaemon</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>Daemon Status:</string>
-		</dict>
-		<dict>
-			<key>cellClass</key>
-			<string>SNCustomTableViewCell</string>
-			<key>cell</key>
-			<string>PSStaticTextCell</string> <!-- Or another appropriate cell type -->
-			<key>label</key>
-			<string></string> <!-- This can be empty or a placeholder -->
-		</dict>
-		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string></string>
-        </dict>
-		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string>Per App Settings:</string>
-        </dict>
-		<dict>
-			<key>cell</key>
 			<string>PSLinkCell</string>
 			<key>label</key>
-			<string>Toggle Skyglow per app</string>
+			<string>Toggle Per App</string>
 			<key>detail</key>
 			<string>SNAppListController</string>
 		</dict>
@@ -108,32 +92,6 @@
             <key>label</key>
             <string></string>
         </dict>
-		<!-- <dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
-			<string>Guide and Help:</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSButtonCell</string>
-			<key>label</key>
-			<string>Show me the guide</string>
-			<key>action</key>
-			<string>showGuide</string>
-		</dict>
-		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string></string>
-        </dict> -->
-		<!-- <dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>footerText</key>
-			<string>Hey! It is necessary that you provide a notification server order for Skyglow Notifications to work, if you dont know what you are doing, check out the guide.</string>
-		</dict> -->
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
