@@ -1,3 +1,4 @@
+#import <Foundation/Foundation.h>
 #import "openssl/evp.h"
 #import "openssl/kdf.h"
 #include <openssl/pem.h>

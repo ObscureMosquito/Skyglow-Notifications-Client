@@ -21,8 +21,6 @@
 			<string>enabled</string>
 			<key>label</key>
 			<string>Enabled</string>
-			<key>set</key>
-    		<string>enabledToggled:specifier:</string> 
 		</dict>
 		<dict>
 			<key>cell</key>

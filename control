@@ -6,6 +6,6 @@ Description: Low power daemon that runs in the background and fetches notificati
 Maintainer: Requis, Preloading
 Author: Requis, Preloading
 Section: Tweaks
-Depends: mobilesubstrate (>= 0.9.5000), preferenceloader, applist, firmware (<< 7.2)
+Depends: preferenceloader, applist, firmware (>= 6.0), mobilesubstrate | substitute | ellekit
 Conflicts: com.skyglow.snd7
 Depiction: http://cydia.skyglow.es/depictions/?p=com.skyglow.snd

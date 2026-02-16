@@ -1,17 +1,37 @@
-#!/bin/bash
+#!/bin/sh
+set -e
 
-echo "Running Removal Script"
+echo "[Skyglow] Running removal script"
 
-# Define the path to plist file
-PLIST_PATH="/Library/LaunchDaemons/com.skyglow.snd.plist"
-KEYS_PATH="/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Keys"
+# Detect rootless
+JB_PREFIX=""
+if [ -d /var/jb ]; then
+    JB_PREFIX="/var/jb"
+fi
 
-#Unload the daemon
-launchctl unload "${PLIST_PATH}"
+PLIST_PATH="$JB_PREFIX/Library/LaunchDaemons/com.skyglow.snd.plist"
+KEYS_PATH="$JB_PREFIX/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Keys"
 
-# Remove existing plist for update
-# rm -rf "${PLIST_PATH}"
+echo "[Skyglow] Using prefix: ${JB_PREFIX:-/}"
 
-echo "Removal Script Complete"
+# Unload daemon (modern jailbreaks)
+if [ -f "$PLIST_PATH" ]; then
+    if command -v launchctl >/dev/null 2>&1; then
+        echo "[Skyglow] Unloading daemon with launchctl"
+        launchctl unload "$PLIST_PATH" 2>/dev/null || true
+    else
+        echo "[Skyglow] Unloading daemon with launchctl"
+        launchctl unload "$PLIST_PATH" 2>/dev/null || true
+    fi
+else
+    echo "[Skyglow] Plist not found: $PLIST_PATH"
+fi
 
+# Optional: remove plist file
+# rm -f "$PLIST_PATH"
+
+# Optional: remove keys (if you want to wipe state on uninstall)
+# rm -rf "$KEYS_PATH"
+
+echo "[Skyglow] Removal complete"
 exit 0

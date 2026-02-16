@@ -459,18 +459,26 @@ int main() {
 
         NSString *profilePlistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
         NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePlistPath];
-        
 
         NotificationDaemon *daemon = [[NotificationDaemon alloc] init];
         [daemon startMonitoringNetworkReachability];
 
-        serverAddress = [profile objectForKey:@"server_address"];
+        NSString *serverAddr = profile[@"server_address"];
+
+        if (![serverAddr isKindOfClass:[NSString class]] || serverAddr.length == 0) {
+            NSLog(@"[Main] Not registered yet (missing server_address). Staying idle.");
+            updateStatus(kStatusConnectedNotAuthenticated /* or a 'NotRegistered' status */);
+            CFRunLoopRun(); // or just return 0 if you want it to quit
+            return 0;
+        }
+
+        serverAddress = serverAddr;
         if ([serverAddress length] > 16) {
             updateStatus(kStatusServerConfigBad);
             return -1;
         }
-        
-        NSDictionary *txtRecords = QueryServerLocation([@"_sgn." stringByAppendingString:[profile objectForKey:@"server_address"]]);
+
+        NSDictionary *txtRecords = QueryServerLocation([@"_sgn." stringByAppendingString:serverAddr]);
 
         if (!txtRecords) {
             NSLog(@"Failed to locate server.");
