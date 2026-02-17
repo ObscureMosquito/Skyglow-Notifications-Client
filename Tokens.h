@@ -1,3 +1,6 @@
+#ifndef SKYGLOW_TOKENS_H
+#define SKYGLOW_TOKENS_H
+
 #include "DBManager.h"
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
@@ -5,17 +8,17 @@
 #include <CommonCrypto/CommonDigest.h>
 #include "Protocol.h"
 #import "CryptoManager.h"
-#import "DBManager.h"
 #import "TweakMachMessages.h"
 
+@interface Tokens : NSObject
 
+/// Returns a cached or freshly-generated device token for the given bundle ID.
+/// On failure, returns nil and sets *outError (if outError is non-NULL).
+- (NSData *)getDeviceToken:(NSString *)bundleID error:(NSError **)outError;
 
-@interface Tokens :  NSObject {
-    dispatch_semaphore_t _tokenRegistrationSemaphore;
-    BOOL _tokenRegistrationCompleted;
-    NSString *_pendingBundleID;
-}
+/// Removes all tokens for the given bundle ID and notifies the server.
+- (BOOL)removeDeviceTokenForBundleId:(NSString *)bundleId reason:(NSString *)reason;
 
-- (NSData*)generateDeviceToken:(NSString*)bundleID error:(NSError*)err;
--(BOOL)removeDeviceTokenForBundleId:(NSString*)bundleId reason:(NSString*)reason;
 @end
+
+#endif /* SKYGLOW_TOKENS_H */

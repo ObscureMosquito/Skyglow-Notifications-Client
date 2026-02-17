@@ -19,7 +19,7 @@ extern char **environ;
 }
 
 - (void)reloadDaemon;
-- (void)showGuide;
+- (void)navigateToInfo;
 - (void)registerDevice;
 
 @end

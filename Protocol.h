@@ -1,3 +1,6 @@
+#ifndef SKYGLOW_PROTOCOL_H
+#define SKYGLOW_PROTOCOL_H
+
 #include <Foundation/Foundation.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -18,11 +21,14 @@ extern NSString *connectionStatus;
 - (void)deviceTokenRegistrationCompleted:(NSString *)bundleId;
 @end
 
-
 void startLogin(NSString *address, RSA *auth_privKey, NSString *language);
 int connectToServer(const char *serverIP, int port, NSString *serverCert);
+void disconnectFromServer(void);
+BOOL isConnected(void);
 void ackNotification(NSString *notificationUUID, int status);
-int handleMessage();
+int handleMessage(void);
 void setNotificationDelegate(id<NotificationDelegate> delegate);
-void sendFeedback(NSData *routing_token, NSNumber *type, NSString* reason);
+void sendFeedback(NSData *routing_token, NSNumber *type, NSString *reason);
 BOOL registerDeviceToken(NSData *deviceTokenChecksum, NSString *bundleId);
+
+#endif /* SKYGLOW_PROTOCOL_H */

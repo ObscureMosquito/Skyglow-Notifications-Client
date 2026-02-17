@@ -37,41 +37,21 @@
 			<string>URL</string>
 		</dict>
 		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string></string>
-        </dict>
-		<dict>
-			<key>cellClass</key>
-			<string>SNCustomTableViewCell</string>
-			<key>cell</key>
-			<string>PSStaticTextCell</string>
-			<key>label</key>
-			<string></string>
-		</dict>
-		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
 			<string></string>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSButtonCell</string>
-			<key>label</key>
-			<string>Reload Daemon</string>
-			<key>action</key>
-			<string>reloadDaemon</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSButtonCell</string>
-			<key>label</key>
-			<string>Register with Server</string>
-			<key>action</key>
-			<string>registerDevice</string>
-		</dict>
+            <key>cell</key>
+            <string>PSButtonCell</string>
+            <key>cellClass</key>
+            <string>SNLeftAlignedButtonCell</string>
+            <key>label</key>
+            <string>Reload Daemon</string>
+            <key>action</key>
+            <string>reloadDaemon</string>
+        </dict>
 		<dict>
             <key>cell</key>
             <string>PSGroupCell</string>
@@ -82,7 +62,15 @@
 			<key>cell</key>
 			<string>PSLinkCell</string>
 			<key>label</key>
-			<string>Toggle Per App</string>
+			<string>Manage Registration</string>
+			<key>detail</key>
+			<string>SNServerInfoViewController</string>
+        </dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>label</key>
+			<string>Manage Applications</string>
 			<key>detail</key>
 			<string>SNAppListController</string>
 		</dict>
@@ -93,10 +81,12 @@
             <string></string>
         </dict>
 		<dict>
+			<key>cellClass</key>
+			<string>SNCustomTableViewCell</string>
 			<key>cell</key>
-			<string>PSGroupCell</string>
+			<string>PSButtonCell</string>
 			<key>label</key>
-			<string>Credits and Thanks:</string>
+			<string></string>
 		</dict>
 		<dict>
 			<key>cell</key>

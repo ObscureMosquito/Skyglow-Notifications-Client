@@ -5,84 +5,259 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/bio.h>
+#include <openssl/x509.h>
+#include <signal.h>
+#include <errno.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/select.h>
+
+// ──────────────────────────────────────────────
+// Protocol message types (must match server)
+// ──────────────────────────────────────────────
 
 typedef enum {
-    Hello = 0,
-    LoginChallenge = 1,
-    RecieveNotification = 2,
+    Hello                    = 0,
+    LoginChallenge           = 1,
+    RecieveNotification      = 2,
     AuthenticationSuccessful = 3,
-    ServerDisconnect = 4,
-    DeviceTokenRegisterAck = 5,
+    ServerDisconnect         = 4,
+    DeviceTokenRegisterAck   = 5,
 } MessageTypesRecieved;
 
 typedef enum {
-    LoginRequest = 0,
-    LoginChallengeResponse = 1,
+    LoginRequest             = 0,
+    LoginChallengeResponse   = 1,
     PollUnackedNotifications = 2,
-    AckNotification = 3,
-    ClientDisconnect = 4,
-    RegisterDeviceToken = 5,
-    SendFeedback = 6,
+    AckNotification          = 3,
+    ClientDisconnect         = 4,
+    RegisterDeviceToken      = 5,
+    SendFeedback             = 6,
 } MessageTypesSent;
+
+// ──────────────────────────────────────────────
+// Tunables
+// ──────────────────────────────────────────────
+
+#define CONNECT_TIMEOUT_SEC     10   // TCP connect timeout
+#define TLS_HANDSHAKE_TIMEOUT   15   // SSL_connect timeout (via SO_RCVTIMEO/SO_SNDTIMEO)
+#define READ_TIMEOUT_SEC        0    // 0 = no read timeout (we want to block forever while idle)
+#define MAX_MESSAGE_SIZE        (1024 * 1024)  // 1 MB sanity cap
+
+// ──────────────────────────────────────────────
+// Connection state (file-private)
+// ──────────────────────────────────────────────
 
 NSString *connectionStatus = @"Disconnected";
 
-id<NotificationDelegate> notificationDelegate = nil;
+static id<NotificationDelegate> notificationDelegate = nil;
 
-void setNotificationDelegate(id<NotificationDelegate> delegate) { // Objc is hard
+static SSL     *ssl    = NULL;
+static SSL_CTX *sslctx = NULL;
+static int      sock   = -1;
+
+static NSString *user_address = nil;
+static RSA      *user_privKey = NULL;
+
+static NSMutableDictionary *tokenAckWaiters  = nil;
+static dispatch_once_t      tokenAckWaitersOnce;
+
+// ──────────────────────────────────────────────
+// OpenSSL error helpers
+// ──────────────────────────────────────────────
+
+static void logOpenSSLErrors(NSString *context) {
+    unsigned long err;
+    while ((err = ERR_get_error()) != 0) {
+        char buf[256];
+        ERR_error_string_n(err, buf, sizeof(buf));
+        NSLog(@"[Protocol] %@: %s", context, buf);
+    }
+}
+
+// ──────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────
+
+void setNotificationDelegate(id<NotificationDelegate> delegate) {
     notificationDelegate = delegate;
 }
 
-SSL *ssl = nil;
-SSL_CTX *sslctx = nil;
-int sock = -1;
+BOOL isConnected(void) {
+    return (ssl != NULL && sock >= 0);
+}
 
-// User info
-NSString *user_address = nil;
-RSA *user_privKey = nil;
+static int sslReadExact(void *buf, int len) {
+    if (!ssl) return -1;
+    int total = 0;
+    while (total < len) {
+        int n = SSL_read(ssl, (char *)buf + total, len - total);
+        if (n <= 0) {
+            int sslErr = SSL_get_error(ssl, n);
+            if (sslErr == SSL_ERROR_WANT_READ || sslErr == SSL_ERROR_WANT_WRITE) {
+                continue;
+            }
+            NSLog(@"[Protocol] SSL_read failed: ssl_error=%d errno=%d (%s)",
+                  sslErr, errno, strerror(errno));
+            logOpenSSLErrors(@"SSL_read");
+            return -1;
+        }
+        total += n;
+    }
+    return 0;
+}
 
-static NSMutableDictionary *tokenAckWaiters = nil;
-static dispatch_once_t tokenAckWaitersOnce;
+static int sslWriteExact(const void *buf, int len) {
+    if (!ssl) return -1;
+    int total = 0;
+    while (total < len) {
+        int n = SSL_write(ssl, (const char *)buf + total, len - total);
+        if (n <= 0) {
+            int sslErr = SSL_get_error(ssl, n);
+            if (sslErr == SSL_ERROR_WANT_WRITE || sslErr == SSL_ERROR_WANT_READ) {
+                continue;
+            }
+            NSLog(@"[Protocol] SSL_write failed: ssl_error=%d errno=%d (%s)",
+                  sslErr, errno, strerror(errno));
+            logOpenSSLErrors(@"SSL_write");
+            return -1;
+        }
+        total += n;
+    }
+    return 0;
+}
 
-void sendMessage(MessageTypesSent messageType, NSMutableDictionary *dataToSend) {
-    NSLog(@"Sending message with type %u", messageType);
+// ──────────────────────────────────────────────
+// Non-blocking connect with timeout
+// ──────────────────────────────────────────────
+
+/// Connect a socket with a timeout (in seconds).
+/// Returns 0 on success, -1 on failure/timeout.
+static int connectWithTimeout(int sockfd, struct sockaddr *addr, socklen_t addrLen, int timeoutSec) {
+    // Save original flags
+    int flags = fcntl(sockfd, F_GETFL, 0);
+    if (flags < 0) return -1;
+
+    // Set non-blocking
+    if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
+
+    int result = connect(sockfd, addr, addrLen);
+
+    if (result == 0) {
+        // Connected immediately (unlikely but possible on localhost)
+        fcntl(sockfd, F_SETFL, flags); // restore blocking
+        return 0;
+    }
+
+    if (errno != EINPROGRESS) {
+        NSLog(@"[Protocol] connect() failed immediately: %s (errno=%d)", strerror(errno), errno);
+        fcntl(sockfd, F_SETFL, flags);
+        return -1;
+    }
+
+    // Wait for the connection to complete or timeout
+    fd_set writefds;
+    FD_ZERO(&writefds);
+    FD_SET(sockfd, &writefds);
+
+    struct timeval tv;
+    tv.tv_sec  = timeoutSec;
+    tv.tv_usec = 0;
+
+    result = select(sockfd + 1, NULL, &writefds, NULL, &tv);
+
+    // Restore blocking mode BEFORE checking result
+    fcntl(sockfd, F_SETFL, flags);
+
+    if (result <= 0) {
+        if (result == 0) {
+            NSLog(@"[Protocol] connect() timed out after %d seconds", timeoutSec);
+            errno = ETIMEDOUT;
+        } else {
+            NSLog(@"[Protocol] select() error: %s (errno=%d)", strerror(errno), errno);
+        }
+        return -1;
+    }
+
+    // Check if connect actually succeeded
+    int connectError = 0;
+    socklen_t errLen = sizeof(connectError);
+    if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &connectError, &errLen) < 0) {
+        NSLog(@"[Protocol] getsockopt(SO_ERROR) failed: %s", strerror(errno));
+        return -1;
+    }
+
+    if (connectError != 0) {
+        NSLog(@"[Protocol] connect() failed: %s (errno=%d)", strerror(connectError), connectError);
+        errno = connectError;
+        return -1;
+    }
+
+    return 0; // success
+}
+
+// ──────────────────────────────────────────────
+// Send / receive helpers
+// ──────────────────────────────────────────────
+
+static BOOL sendMessage(MessageTypesSent messageType, NSMutableDictionary *dataToSend) {
+    if (!isConnected()) {
+        NSLog(@"[Protocol] sendMessage: not connected");
+        return NO;
+    }
+
     dataToSend[@"$type"] = @(messageType);
 
     NSError *error = nil;
     NSData *plistData = [NSPropertyListSerialization dataWithPropertyList:dataToSend
-                                                                   format:NSPropertyListBinaryFormat_v1_0
-                                                                  options:0
-                                                                    error:&error];
+                                                                  format:NSPropertyListBinaryFormat_v1_0
+                                                                 options:0
+                                                                   error:&error];
     if (!plistData) {
-        NSLog(@"Plist serialization error: %@", error);
-        return;
+        NSLog(@"[Protocol] Plist serialization error: %@", error);
+        return NO;
     }
 
     uint32_t length = htonl((uint32_t)[plistData length]);
-    SSL_write(ssl, &length, 4);
-    SSL_write(ssl, [plistData bytes], (int)[plistData length]);
+    if (sslWriteExact(&length, 4) != 0)  return NO;
+    if (sslWriteExact([plistData bytes], (int)[plistData length]) != 0) return NO;
+    return YES;
 }
 
-void checkOfflineNotifications() {
-    sendMessage(PollUnackedNotifications, [[NSMutableDictionary alloc] init]);
+static void checkOfflineNotifications(void) {
+    sendMessage(PollUnackedNotifications, [NSMutableDictionary dictionary]);
 }
+
+// ──────────────────────────────────────────────
+// Public: outbound messages
+// ──────────────────────────────────────────────
+
 void ackNotification(NSString *notificationUUID, int status) {
-    NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
-                                notificationUUID, @"notification", 
-                                nil];
+    if (!notificationUUID) return;
+    NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+                                 notificationUUID, @"notification",
+                                 @(status), @"status",
+                                 nil];
     sendMessage(AckNotification, dict);
 }
 
-void sendFeedback(NSData *routing_token, NSNumber *type, NSString* reason) {
-    NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
-                                routing_token, @"routing_token", 
-                                type, @"type", 
-                                reason, @"reason", 
-                                nil];
+void sendFeedback(NSData *routing_token, NSNumber *type, NSString *reason) {
+    if (!routing_token) return;
+    NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+                                 routing_token, @"routing_token",
+                                 type  ?: @0,   @"type",
+                                 reason ?: @"", @"reason",
+                                 nil];
     sendMessage(SendFeedback, dict);
 }
 
 BOOL registerDeviceToken(NSData *deviceTokenChecksum, NSString *bundleId) {
+    if (!deviceTokenChecksum || !bundleId) return NO;
+    if (!isConnected()) {
+        NSLog(@"[Protocol] registerDeviceToken: not connected");
+        return NO;
+    }
+
     dispatch_once(&tokenAckWaitersOnce, ^{
         tokenAckWaiters = [[NSMutableDictionary alloc] init];
     });
@@ -92,14 +267,19 @@ BOOL registerDeviceToken(NSData *deviceTokenChecksum, NSString *bundleId) {
         tokenAckWaiters[bundleId] = sema;
     }
 
-    NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
-                                deviceTokenChecksum, @"deviceTokenChecksum",
-                                bundleId, @"appBundleId",
-                                nil];
-    sendMessage(RegisterDeviceToken, dict);
+    NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+                                 deviceTokenChecksum, @"deviceTokenChecksum",
+                                 bundleId,            @"appBundleId",
+                                 nil];
+    if (!sendMessage(RegisterDeviceToken, dict)) {
+        @synchronized(tokenAckWaiters) {
+            [tokenAckWaiters removeObjectForKey:bundleId];
+        }
+        return NO;
+    }
 
-    // Wait for up to 5 seconds for the ack
-    long result = dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    long result = dispatch_semaphore_wait(sema,
+                      dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
 
     @synchronized(tokenAckWaiters) {
         [tokenAckWaiters removeObjectForKey:bundleId];
@@ -108,245 +288,310 @@ BOOL registerDeviceToken(NSData *deviceTokenChecksum, NSString *bundleId) {
     return (result == 0);
 }
 
+// ──────────────────────────────────────────────
+// Connection lifecycle
+// ──────────────────────────────────────────────
+
+void disconnectFromServer(void) {
+    if (ssl) {
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        ssl = NULL;
+    }
+    if (sslctx) {
+        SSL_CTX_free(sslctx);
+        sslctx = NULL;
+    }
+    if (sock >= 0) {
+        close(sock);
+        sock = -1;
+    }
+    connectionStatus = @"Disconnected";
+}
+
 int connectToServer(const char *serverIP, int port, NSString *serverCert) {
+    signal(SIGPIPE, SIG_IGN);
+    disconnectFromServer();
+    ERR_clear_error();
+
     SSL_library_init();
     SSL_load_error_strings();
     OpenSSL_add_all_algorithms();
 
-    const SSL_METHOD *method = SSLv23_client_method(); // TODO: Update this to a newer version of OpenSSL god dam!
+    const SSL_METHOD *method = SSLv23_client_method();
     sslctx = SSL_CTX_new(method);
     if (!sslctx) {
-        connectionStatus = @"InternalError";
-        NSLog(@"Failed to create SSL_CTX");
-        return 1;
+        NSLog(@"[Protocol] Failed to create SSL_CTX");
+        logOpenSSLErrors(@"SSL_CTX_new");
+        return -1;
     }
 
-    SSL_CTX_set_options(sslctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3); // turn this from awful to slightly less awful
+    SSL_CTX_set_options(sslctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
+    SSL_CTX_set_verify(sslctx, SSL_VERIFY_PEER, NULL);
 
-    // import server SSL certificate
-    BIO *bio = BIO_new_mem_buf((void*)[serverCert UTF8String], -1);
+    if (!serverCert || [serverCert length] == 0) {
+        NSLog(@"[Protocol] No server certificate provided");
+        disconnectFromServer();
+        return -2;
+    }
+
+    BIO *bio = BIO_new_mem_buf((void *)[serverCert UTF8String], -1);
     if (!bio) {
-        connectionStatus = @"ServerSSLCertLoadFailure";
-        NSLog(@"Failed to create memory BIO for certificate");
-        SSL_CTX_free(sslctx);
-        return 2;
+        NSLog(@"[Protocol] Failed to create BIO");
+        logOpenSSLErrors(@"BIO_new");
+        disconnectFromServer();
+        return -2;
     }
 
     X509 *cert = PEM_read_bio_X509(bio, NULL, 0, NULL);
+    BIO_free(bio);
     if (!cert) {
-        connectionStatus = @"ServerSSLCertLoadFailure";
-        NSLog(@"Failed to parse SSL Certificate data");
-        BIO_free(bio);
-        SSL_CTX_free(sslctx);
-        return 2;
+        NSLog(@"[Protocol] Failed to parse server certificate PEM");
+        logOpenSSLErrors(@"PEM_read_bio_X509");
+        disconnectFromServer();
+        return -2;
     }
+
+    char certSubject[256];
+    X509_NAME_oneline(X509_get_subject_name(cert), certSubject, sizeof(certSubject));
+    NSLog(@"[Protocol] Pinned cert: %s", certSubject);
 
     X509_STORE *store = SSL_CTX_get_cert_store(sslctx);
-    if (X509_STORE_add_cert(store, cert) != 1) {
-        connectionStatus = @"ServerSSLCertLoadFailure";
-        NSLog(@"Failed to add certificate to store");
-        X509_free(cert);
-        BIO_free(bio);
-        SSL_CTX_free(sslctx);
-        return 2;
+    int addResult = X509_STORE_add_cert(store, cert);
+    X509_free(cert);
+    if (addResult != 1) {
+        NSLog(@"[Protocol] Failed to add certificate to trust store");
+        logOpenSSLErrors(@"X509_STORE_add_cert");
+        disconnectFromServer();
+        return -2;
     }
 
-    X509_free(cert);
-    BIO_free(bio);
-
-    ssl = SSL_new(sslctx);
-    if (!ssl) {
-        connectionStatus = @"SSLObjectCreationFailue";
-        NSLog(@"Failed to create SSL object");
-        SSL_CTX_free(sslctx);
-        return 3;
+    // ── TCP socket ──
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        NSLog(@"[Protocol] socket() failed: %s", strerror(errno));
+        disconnectFromServer();
+        return -3;
     }
 
     struct sockaddr_in serverAddr;
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        connectionStatus = @"SocketCreationFailure";
-        perror("Error creating socket");
-        SSL_free(ssl);
-        SSL_CTX_free(sslctx);
-        sock = -1;
-        return 4;
-    }
-
-    printf("Socket created successfully.\n");
-
     memset(&serverAddr, 0, sizeof(serverAddr));
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(port);
+    serverAddr.sin_port   = htons(port);
 
-    int addr_status = inet_pton(AF_INET, serverIP, &serverAddr.sin_addr);
-    if (addr_status <= 0) {
-        if (addr_status == 0)
-            fprintf(stderr, "inet_pton failed: Not in presentation format\n");
-        else
-            perror("inet_pton failed");
-        connectionStatus = @"InvalidConnectionData";
+    if (inet_pton(AF_INET, serverIP, &serverAddr.sin_addr) <= 0) {
+        NSLog(@"[Protocol] inet_pton failed for '%s'", serverIP);
         close(sockfd);
-        sock = -1;
-        return 5;
+        disconnectFromServer();
+        return -4;
     }
 
-    printf("Trying to connect...\n");
-    if (connect(sockfd, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
-        connectionStatus = @"FailedToConnect";
-        perror("Error connecting to server");
+    NSLog(@"[Protocol] Connecting to %s:%d (timeout %ds)...", serverIP, port, CONNECT_TIMEOUT_SEC);
+
+    // ── Non-blocking connect with timeout ──
+    if (connectWithTimeout(sockfd, (struct sockaddr *)&serverAddr,
+                           sizeof(serverAddr), CONNECT_TIMEOUT_SEC) != 0) {
+        NSLog(@"[Protocol] TCP connect failed: %s (errno=%d)", strerror(errno), errno);
         close(sockfd);
-        sock = -1;
-        return 6;
+        disconnectFromServer();
+        return -5;
+    }
+
+    NSLog(@"[Protocol] TCP connected, starting TLS handshake...");
+
+    // Set TLS handshake timeouts (these apply to SSL_connect's read/write calls)
+    struct timeval tv;
+    tv.tv_sec = TLS_HANDSHAKE_TIMEOUT; tv.tv_usec = 0;
+    setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    sock = sockfd;
+
+    ssl = SSL_new(sslctx);
+    if (!ssl) {
+        NSLog(@"[Protocol] SSL_new failed");
+        logOpenSSLErrors(@"SSL_new");
+        disconnectFromServer();
+        return -6;
     }
 
     SSL_set_fd(ssl, sockfd);
-    if (SSL_connect(ssl) != 1) {
-        connectionStatus = @"SSLConnectionStartFailure";
-        ERR_print_errors_fp(stderr);
-        close(sockfd);
-        SSL_free(ssl);
-        SSL_CTX_free(sslctx);
-        sock = -1;
-        return 7;
+
+    int sslResult = SSL_connect(ssl);
+    if (sslResult != 1) {
+        int sslError = SSL_get_error(ssl, sslResult);
+        NSLog(@"[Protocol] SSL_connect FAILED: return=%d ssl_error=%d errno=%d (%s)",
+              sslResult, sslError, errno, strerror(errno));
+        logOpenSSLErrors(@"SSL_connect");
+
+        long verifyResult = SSL_get_verify_result(ssl);
+        if (verifyResult != X509_V_OK) {
+            NSLog(@"[Protocol] Cert verify error %ld: %s",
+                  verifyResult, X509_verify_cert_error_string(verifyResult));
+        }
+
+        X509 *peerCert = SSL_get_peer_certificate(ssl);
+        if (peerCert) {
+            char peerSubject[256];
+            X509_NAME_oneline(X509_get_subject_name(peerCert), peerSubject, sizeof(peerSubject));
+            NSLog(@"[Protocol] Server cert: %s", peerSubject);
+            X509_free(peerCert);
+        } else {
+            NSLog(@"[Protocol] Server presented NO certificate — "
+                  @"likely not a TLS endpoint! Check tcp_port in DNS TXT.");
+        }
+
+        disconnectFromServer();
+        return -7;
     }
 
+    // ── Success ──
+    NSLog(@"[Protocol] TLS OK: %s, cipher: %s", SSL_get_version(ssl), SSL_get_cipher(ssl));
+
+    // Clear the handshake timeouts — the message loop should block indefinitely
+    // waiting for server pushes (the daemon sleeps here when idle)
+    tv.tv_sec = 0; tv.tv_usec = 0;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
     connectionStatus = @"ConnectedNotAuthenticated";
-    printf("Connected successfully to %s on port %d\n", serverIP, port);
+    NSLog(@"[Protocol] Connected to %s:%d", serverIP, port);
     return 0;
 }
 
+// ──────────────────────────────────────────────
+// Message handling
+// ──────────────────────────────────────────────
 
-void dealloc() {
-    RSA_free(user_privKey);
-    SSL_shutdown(ssl);
-    SSL_free(ssl);
-    SSL_CTX_free(sslctx);
-    close(sock);
-    connectionStatus = @"Disconnected";
-}
-
-// 0 = normal
-// 1 = server requested disconnect
-// 2 = critical error (probably disconnect?)
-// 3 = data read error
-// 4 = auth fail
-int handleMessage() {
-    NSError *error = nil;
-    uint32_t length = 0;
-    if (SSL_read(ssl, &length, 4) != 4) {
-        NSLog(@"Failed to read reply length");
-        return 3;
-    }
-    length = ntohl(length);
-
-    NSMutableData *recievedDataRaw = [NSMutableData dataWithLength:length];
-    if (SSL_read(ssl, [recievedDataRaw mutableBytes], length) != length) {
-        NSLog(@"Failed to read payload");
+int handleMessage(void) {
+    if (!isConnected()) {
+        NSLog(@"[Protocol] handleMessage: not connected");
         return 3;
     }
 
-    NSDictionary *recievedData = [NSPropertyListSerialization propertyListWithData:recievedDataRaw
-                                                                    options:NSPropertyListImmutable
-                                                                     format:nil
-                                                                      error:&error];
-    if (!recievedData) {
-        NSLog(@"Deserialization error: %@", error);
+    uint32_t netLength = 0;
+    if (sslReadExact(&netLength, 4) != 0) {
+        NSLog(@"[Protocol] Failed to read message length");
+        return 3;
+    }
+
+    uint32_t length = ntohl(netLength);
+    if (length == 0 || length > MAX_MESSAGE_SIZE) {
+        NSLog(@"[Protocol] Invalid message length: %u", length);
         return 2;
     }
 
-    MessageTypesRecieved messageType = [recievedData[@"$type"] unsignedIntegerValue];
-    NSLog(@"Recived a message of type %u", messageType);
-    
+    NSMutableData *receivedDataRaw = [NSMutableData dataWithLength:length];
+    if (sslReadExact([receivedDataRaw mutableBytes], (int)length) != 0) {
+        NSLog(@"[Protocol] Failed to read payload (%u bytes)", length);
+        return 3;
+    }
+
+    NSError *error = nil;
+    NSDictionary *receivedData = [NSPropertyListSerialization propertyListWithData:receivedDataRaw
+                                                                           options:NSPropertyListImmutable
+                                                                            format:nil
+                                                                             error:&error];
+    if (!receivedData || ![receivedData isKindOfClass:[NSDictionary class]]) {
+        NSLog(@"[Protocol] Deserialization error: %@", error);
+        return 2;
+    }
+
+    NSNumber *typeNum = receivedData[@"$type"];
+    if (!typeNum) {
+        NSLog(@"[Protocol] Message missing $type");
+        return 2;
+    }
+    MessageTypesRecieved messageType = (MessageTypesRecieved)[typeNum unsignedIntegerValue];
+    NSLog(@"[Protocol] Received message type %u", (unsigned)messageType);
+
     switch (messageType) {
-        case Hello: {
-            // some logic to start authentication?
-            if (notificationDelegate != nil) {
-                [notificationDelegate handleWelcomeMessage];
-            } else {
-                NSLog(@"Warning: Hello message received but no delegate is set to handle it");
-                return 2;
-            }
-            return 0;
+
+    case Hello:
+        if (!notificationDelegate) {
+            NSLog(@"[Protocol] Hello but no delegate");
+            return 2;
+        }
+        [notificationDelegate handleWelcomeMessage];
+        return 0;
+
+    case LoginChallenge: {
+        NSData *challengeEncrypted = receivedData[@"challenge"];
+        if (!challengeEncrypted || ![challengeEncrypted isKindOfClass:[NSData class]]) {
+            NSLog(@"[Protocol] Missing or invalid challenge data");
+            return 2;
+        }
+        if (!user_privKey) {
+            NSLog(@"[Protocol] No private key for challenge");
+            return 4;
         }
 
-        case LoginChallenge:{
-            NSData *challengeEncrypted = recievedData[@"challenge"];
+        const size_t rsaSize = RSA_size(user_privKey);
+        unsigned char *decBuf = malloc(rsaSize);
+        if (!decBuf) return 2;
 
-            // allocate the decrypted payload buffer? I don't get this.
-            const size_t rsaSize = RSA_size(user_privKey);
-            unsigned char *decryptedBytes = malloc(rsaSize);
-            if (!decryptedBytes) {
-                NSLog(@"Failed to allocate memory for decryption");
-                dealloc();
-                return 2;
-            }
+        int decLen = RSA_private_decrypt(
+            (int)[challengeEncrypted length],
+            [challengeEncrypted bytes],
+            decBuf, user_privKey, RSA_PKCS1_OAEP_PADDING);
 
-            // decrypt payload
-            int resultLength = RSA_private_decrypt((int)[challengeEncrypted length], [challengeEncrypted bytes], decryptedBytes, user_privKey, RSA_PKCS1_OAEP_PADDING);
-            if (resultLength == -1) {
-                free(decryptedBytes);
-                char errorBuf[120];
-                ERR_load_crypto_strings();
-                ERR_error_string(ERR_get_error(), errorBuf);
-                NSLog(@"Decryption Error: %s", errorBuf);
-                return 2;
-            }
-
-            NSData *decryptedData = [NSData dataWithBytesNoCopy:decryptedBytes length:resultLength freeWhenDone:YES];
-            NSString *decryptedString = [[NSString alloc] initWithData:decryptedData encoding:NSUTF8StringEncoding];
-            NSArray *challengeData = [decryptedString componentsSeparatedByString:@","];
-            // user@example.com,Nonce,Timestamp
-
-            if (![challengeData[0] isEqualToString:user_address]) {
-                // reject
-                NSLog(@"Invalid Challenge! User address %@ (expected %@)", challengeData[0],user_address);
-                return 4;
-            }
-
-            
-            NSTimeInterval challengeTimestamp = [challengeData[2] doubleValue];
-            NSDate *now = [NSDate date];
-            NSTimeInterval nowEpoch = [now timeIntervalSince1970];
-
-            // Calculate bounds
-            NSTimeInterval lowerBound = nowEpoch - 5 * 60;  // 5 minutes ago
-            NSTimeInterval upperBound = nowEpoch + 1 * 60;  // 1 minute in the future
-            if (challengeTimestamp < lowerBound || challengeTimestamp > upperBound) {
-                // reject
-                NSLog(@"Invalid Challenge! Timestamp check failed! (got %@)", challengeData[2]);
-                return 4;
-            }
-
-            NSMutableDictionary *challengeResponce = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
-                                challengeData[1], @"nonce", 
-                                challengeData[2], @"timestamp",
-                                nil];
-            sendMessage(LoginChallengeResponse, challengeResponce);
-            return 0;
+        if (decLen <= 0) {
+            free(decBuf);
+            logOpenSSLErrors(@"RSA_private_decrypt");
+            return 4;
         }
-        case AuthenticationSuccessful: {
-            // yippee
-            connectionStatus = @"Connected"; // wooooo
-            NSLog(@"Sucessfully logged into server!");
-            
-            [notificationDelegate authenticationSuccessful];
 
-            // lets go check offline notifications
-            checkOfflineNotifications();
-            return 0;
+        NSData *decData = [NSData dataWithBytesNoCopy:decBuf length:decLen freeWhenDone:YES];
+        NSString *decStr = [[NSString alloc] initWithData:decData encoding:NSUTF8StringEncoding];
+        if (!decStr) {
+            NSLog(@"[Protocol] Challenge not valid UTF-8");
+            return 4;
         }
-        case RecieveNotification:
-            if (notificationDelegate != nil) {
-                [notificationDelegate processNotificationMessage:recievedData];
-            } else {
-                NSLog(@"Warning: Notification received but no delegate is set to handle it");
-                return 2;
-            }
-            return 0;
-        case DeviceTokenRegisterAck: {
-            NSString *ackBundleId = recievedData[@"bundleId"];
-            // Signal any waiter for this bundleId
+
+        NSArray *parts = [decStr componentsSeparatedByString:@","];
+        if ([parts count] < 3) {
+            NSLog(@"[Protocol] Malformed challenge (%lu parts)", (unsigned long)[parts count]);
+            return 4;
+        }
+
+        if (![parts[0] isEqualToString:user_address]) {
+            NSLog(@"[Protocol] Challenge address mismatch: '%@' vs '%@'", parts[0], user_address);
+            return 4;
+        }
+
+        NSTimeInterval ts = [parts[2] doubleValue];
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        if (ts < now - 300.0 || ts > now + 60.0) {
+            NSLog(@"[Protocol] Challenge timestamp out of range: %@", parts[2]);
+            return 4;
+        }
+
+        NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+                                     parts[1], @"nonce",
+                                     parts[2], @"timestamp",
+                                     nil];
+        if (!sendMessage(LoginChallengeResponse, resp)) return 3;
+        return 0;
+    }
+
+    case AuthenticationSuccessful:
+        connectionStatus = @"Connected";
+        NSLog(@"[Protocol] Authenticated");
+        if (notificationDelegate) [notificationDelegate authenticationSuccessful];
+        checkOfflineNotifications();
+        return 0;
+
+    case RecieveNotification:
+        if (!notificationDelegate) {
+            NSLog(@"[Protocol] Notification but no delegate");
+            return 2;
+        }
+        [notificationDelegate processNotificationMessage:receivedData];
+        return 0;
+
+    case DeviceTokenRegisterAck: {
+        NSString *ackBundleId = receivedData[@"bundleId"];
+        if (ackBundleId) {
             dispatch_once(&tokenAckWaitersOnce, ^{
                 tokenAckWaiters = [[NSMutableDictionary alloc] init];
             });
@@ -354,34 +599,32 @@ int handleMessage() {
             @synchronized(tokenAckWaiters) {
                 sema = tokenAckWaiters[ackBundleId];
             }
-            if (sema) {
-                dispatch_semaphore_signal(sema);
-            }
-            if (notificationDelegate != nil && 
-                [notificationDelegate respondsToSelector:@selector(deviceTokenRegistrationCompleted:)]) {
+            if (sema) dispatch_semaphore_signal(sema);
+            if (notificationDelegate &&
+                [notificationDelegate respondsToSelector:@selector(deviceTokenRegistrationCompleted:)])
                 [notificationDelegate deviceTokenRegistrationCompleted:ackBundleId];
-            }
-            return 0;
         }
-        case ServerDisconnect:
-            connectionStatus = @"Disconnected";
-            dealloc();
-            return 1;
-        default:
-        // fallback, should i disconnect instead?
-            return 0;
+        return 0;
     }
 
-}
+    case ServerDisconnect:
+        NSLog(@"[Protocol] Server disconnect");
+        connectionStatus = @"Disconnected";
+        return 1;
 
+    default:
+        NSLog(@"[Protocol] Unknown message type: %u", (unsigned)messageType);
+        return 0;
+    }
+}
 
 void startLogin(NSString *address, RSA *auth_privKey, NSString *language) {
     user_address = address;
     user_privKey = auth_privKey;
-    NSMutableDictionary *dict = [[NSMutableDictionary alloc] initWithObjectsAndKeys:
-                                address, @"address", 
-                                protocolVersion, @"version",
-                                language, @"lang",
-                                nil];
+    NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+                                 address,           @"address",
+                                 protocolVersion,   @"version",
+                                 language ?: @"en", @"lang",
+                                 nil];
     sendMessage(LoginRequest, dict);
 }

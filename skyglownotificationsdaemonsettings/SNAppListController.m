@@ -1,8 +1,5 @@
-
-
-//#import "APICompatibility.h"
 #import "SNAppListController.h"
-#import <Preferences/Preferences.h>  // Include full Preferences framework
+#import <Preferences/Preferences.h>
 #import "SNAppToggleCell.h"
 
 @implementation SNAppListController

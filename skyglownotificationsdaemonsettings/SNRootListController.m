@@ -4,12 +4,26 @@
 #import <UIKit/UIKit.h>
 #import <Preferences/PSSpecifier.h>
 #import "SNRootListController.h"
-#import "SNGuideViewController.h"
 #import "SNLogViewController.h"
 #import "SNAppToggleCell.h"
 #import "SNAppListController.h"
+#import "SNServerInfoViewController.h"
 
 @implementation SNRootListController
+
+- (NSBundle *)bundle {
+    return [NSBundle bundleForClass:[self class]];
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+
+    UIBarButtonItem *backItem = [[UIBarButtonItem alloc] initWithTitle:@"Back" 
+                                                                 style:UIBarButtonItemStyleBordered 
+                                                                target:nil 
+                                                                action:nil];
+    self.navigationItem.backBarButtonItem = backItem;
+}
 
 - (NSArray *)specifiers {
     if (!_specifiers) {
@@ -85,9 +99,9 @@
     }
 }
 
-- (void)showGuide {
-    GuideViewController *guideVC = [[GuideViewController alloc] init];
-    [self.navigationController pushViewController:guideVC animated:YES];
+- (void)navigateToInfo {
+    SNServerInfoViewController *vc = [[SNServerInfoViewController alloc] init];
+    [self.navigationController pushViewController:vc animated:YES];
 }
 
 - (void)registerDevice {

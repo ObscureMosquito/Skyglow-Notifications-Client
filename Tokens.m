@@ -1,99 +1,107 @@
 #import "Tokens.h"
 #import "Globals.h"
+#include <Security/Security.h>
 
 @implementation Tokens
 
-- (void)deviceTokenRegistrationCompleted:(NSString *)bundleId {
-    if ([bundleId isEqualToString:_pendingBundleID]) {
-        _tokenRegistrationCompleted = YES;
-        dispatch_semaphore_signal(_tokenRegistrationSemaphore);
+- (NSData *)getDeviceToken:(NSString *)bundleID error:(NSError **)outError {
+    if (!bundleID || [bundleID length] == 0) {
+        if (outError) *outError = [NSError errorWithDomain:@"SkyglowTokens"
+                                                      code:10
+                                                  userInfo:@{NSLocalizedDescriptionKey: @"Empty bundle ID"}];
+        return nil;
     }
+
+    NSArray *existing = [db dataForBundleID:bundleID];
+    if ([existing count] > 0) {
+        NSData *token = existing[0][@"token"];
+        if (token && [token length] > 0) {
+            return token;
+        }
+    }
+    return [self generateDeviceToken:bundleID error:outError];
 }
 
-- (NSData*)getDeviceToken:(NSString*)bundleID error:(NSError*)err { 
-    NSArray *previousTokens = [db dataForBundleID:bundleID];
-    if ([previousTokens count] == 0) {
-        return [self generateDeviceToken:bundleID error:err];
-    } else {
-        return previousTokens[0][@"token"];
-    }
-}
+- (BOOL)removeDeviceTokenForBundleId:(NSString *)bundleId reason:(NSString *)reason {
+    if (!bundleId) return NO;
 
--(BOOL)removeDeviceTokenForBundleId:(NSString*)bundleId reason:(NSString*)reason {
-    // get all da routing keys
-    NSArray *routing_tokens = [db dataForBundleID:bundleId];
-    for (int i = 0; i < routing_tokens.count; i++) {
-        sendFeedback(routing_tokens[i][@"routingKey"], @0, reason); // this will succeed if we aren't connected.... im too lazy to fix this right now. TODO: fix this
+    NSArray *entries = [db dataForBundleID:bundleId];
+    for (NSDictionary *entry in entries) {
+        NSData *routingKey = entry[@"routingKey"];
+        if (routingKey) {
+            sendFeedback(routingKey, @0, reason ?: @"");
+        }
     }
-    
-    // and finally remove them all.
+
     [db removeTokenWithBundleId:bundleId];
     return YES;
 }
 
-- (NSData*)generateDeviceToken:(NSString*)bundleID error:(NSError*)err {
-    NSLog(@"Generating Device Token");
-    // Securely generate 16 bytes, (K in protocol)
+- (NSData *)generateDeviceToken:(NSString *)bundleID error:(NSError **)outError {
+    NSLog(@"[Tokens] Generating device token for %@", bundleID);
+
+    // 1. Generate 16 random bytes (K)
     uint8_t K[16];
-    int status = SecRandomCopyBytes(kSecRandomDefault, (sizeof K)/(sizeof K[0]), K);
-    if (status != errSecSuccess) {
-        err = [NSError errorWithDomain:@"Failed to generate secure secret!" code:1 userInfo:nil];
+    if (SecRandomCopyBytes(kSecRandomDefault, sizeof(K), K) != errSecSuccess) {
+        if (outError) *outError = [NSError errorWithDomain:@"SkyglowTokens"
+                                                      code:1
+                                                  userInfo:@{NSLocalizedDescriptionKey: @"SecRandomCopyBytes failed"}];
         return nil;
     }
 
-    // create routing key
-    unsigned char hashedValueChar[32];
-    SHA256_CTX sha256;
-    SHA256_Init(&sha256);
-    SHA256_Update(&sha256, K, 16);
-    SHA256_Final(hashedValueChar, &sha256);
-    CC_SHA256(K, 16, hashedValueChar);    
-    NSData *routingKey = [NSData dataWithBytes:hashedValueChar length:32];
-    
-    // create e2ee key
-    NSString *hkdfSalt = [NSString stringWithFormat:@"%@%@", serverAddress, @"Hello from the Skyglow Notifications developers!"];
+    // 2. Routing key = SHA-256(K)
+    unsigned char hashBuf[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256(K, sizeof(K), hashBuf);
+    NSData *routingKey = [NSData dataWithBytes:hashBuf length:CC_SHA256_DIGEST_LENGTH];
+
+    // 3. E2EE key via HKDF
+    NSString *hkdfSalt = [NSString stringWithFormat:@"%@%@",
+                          serverAddress, @"Hello from the Skyglow Notifications developers!"];
     NSData *keyMaterial = [NSData dataWithBytes:K length:sizeof(K)];
     NSData *e2eeKey = deriveE2EEKey(keyMaterial, hkdfSalt, 32);
+    if (!e2eeKey) {
+        if (outError) *outError = [NSError errorWithDomain:@"SkyglowTokens"
+                                                      code:4
+                                                  userInfo:@{NSLocalizedDescriptionKey: @"HKDF derivation failed"}];
+        return nil;
+    }
 
-    // create final device token
+    // 4. Build the device token: [serverAddr padded to 16 bytes] || K
     NSData *serverAddrData = [serverAddress dataUsingEncoding:NSUTF8StringEncoding];
-    NSMutableData *paddedServerAddr = [NSMutableData dataWithCapacity:16];
-    
-    if (serverAddrData.length < 16) {
-        // If server address is less than 16 bytes, add padding
-        [paddedServerAddr appendData:serverAddrData];
-        NSUInteger paddingNeeded = 16 - serverAddrData.length;
-        uint8_t zeroPadding[paddingNeeded];
-        memset(zeroPadding, 0, paddingNeeded); // Using zero as padding
-        [paddedServerAddr appendBytes:zeroPadding length:paddingNeeded];
-    } else if (serverAddrData.length > 16) {
-        // smth has gone critially wrong.
-        [paddedServerAddr appendBytes:[serverAddrData bytes] length:16];
-    } else {
-        // exactly 16 bytes
-        [paddedServerAddr appendData:serverAddrData];
-    }
-    
-    // Combine padded server address with K to ensure we have a 32-byte key
-    NSMutableData *deviceKey = [NSMutableData dataWithData:paddedServerAddr];
-    [deviceKey appendBytes:K length:16];
+    NSMutableData *paddedAddr = [NSMutableData dataWithLength:16];
+    memset([paddedAddr mutableBytes], 0, 16);
+    NSUInteger copyLen = MIN([serverAddrData length], (NSUInteger)16);
+    memcpy([paddedAddr mutableBytes], [serverAddrData bytes], copyLen);
 
-     // send to server
-    BOOL didSucceed = registerDeviceToken(routingKey, bundleID);
+    NSMutableData *deviceKey = [NSMutableData dataWithCapacity:32];
+    [deviceKey appendData:paddedAddr];
+    [deviceKey appendBytes:K length:sizeof(K)];
 
-    if (didSucceed == NO) {
-        NSLog(@"Timeout waiting for token registration acknowledgment");
-        err = [NSError errorWithDomain:@"Token registration acknowledgment timeout" code:3 userInfo:nil];
+    // 5. Register routing key with the server (blocks up to 5 s)
+    if (!isConnected()) {
+        if (outError) *outError = [NSError errorWithDomain:@"SkyglowTokens"
+                                                      code:5
+                                                  userInfo:@{NSLocalizedDescriptionKey: @"Not connected to server"}];
         return nil;
     }
 
-    // store our key
-    BOOL result = [db storeTokenData:routingKey e2eeKey:e2eeKey bundleID:bundleID token:deviceKey];
-    if (!result) {
-        err = [NSError errorWithDomain:@"Failed to store created token!" code:2 userInfo:nil];
+    if (!registerDeviceToken(routingKey, bundleID)) {
+        NSLog(@"[Tokens] Server did not acknowledge token registration");
+        if (outError) *outError = [NSError errorWithDomain:@"SkyglowTokens"
+                                                      code:3
+                                                  userInfo:@{NSLocalizedDescriptionKey: @"Token registration ack timeout"}];
         return nil;
     }
-    
+
+    // 6. Persist locally
+    if (![db storeTokenData:routingKey e2eeKey:e2eeKey bundleID:bundleID token:deviceKey]) {
+        if (outError) *outError = [NSError errorWithDomain:@"SkyglowTokens"
+                                                      code:2
+                                                  userInfo:@{NSLocalizedDescriptionKey: @"Database store failed"}];
+        return nil;
+    }
+
+    NSLog(@"[Tokens] Successfully generated token for %@", bundleID);
     return deviceKey;
 }
 

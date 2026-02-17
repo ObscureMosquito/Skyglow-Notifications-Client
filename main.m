@@ -12,29 +12,43 @@
 #import "TweakMachMessages.h"
 #include <bootstrap.h>
 #import "Globals.h"
+#include <signal.h>
 
+// How long to trust cached DNS (1 hour)
+#define DNS_CACHE_MAX_AGE_SECONDS  3600.0
+
+// ──────────────────────────────────────────────
+// Globals
+// ──────────────────────────────────────────────
+
+NSString *serverAddress = nil;
+DBManager *db           = nil;
+char *serverIP          = NULL;
+char *serverPortStr     = NULL;
+
+// ──────────────────────────────────────────────
+// SendPush — forward a notification via Mach IPC
+// ──────────────────────────────────────────────
 
 static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
-    if (topic == nil || topic.length == 0) {
+    if (!topic || [topic length] == 0) {
         NSLog(@"[SendPush] Missing topic");
         return KERN_INVALID_ARGUMENT;
     }
 
-    // Convert topic to UTF8 once (fail if cannot be represented)
     NSData *topicData = [topic dataUsingEncoding:NSUTF8StringEncoding allowLossyConversion:NO];
     if (!topicData || topicData.length == 0) {
         NSLog(@"[SendPush] Topic UTF8 conversion failed");
         return KERN_INVALID_ARGUMENT;
     }
 
-    // Serialize payload (treat nil as empty dictionary)
     NSData *plistData = nil;
     if (userInfo) {
         NSError *err = nil;
         plistData = [NSPropertyListSerialization dataWithPropertyList:userInfo
-                                                               format:NSPropertyListBinaryFormat_v1_0
-                                                              options:0
-                                                                error:&err];
+                                                              format:NSPropertyListBinaryFormat_v1_0
+                                                             options:0
+                                                               error:&err];
         if (!plistData) {
             NSLog(@"[SendPush] Payload serialization failed: %@", err);
             return KERN_INVALID_ARGUMENT;
@@ -60,12 +74,11 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Winvalid-offsetof"
-    const size_t maxInline = sizeof(((MachPushRequestMessage*)0)->userInfoData);
+    const size_t maxInline = sizeof(((MachPushRequestMessage *)0)->userInfoData);
 #pragma clang diagnostic pop
 
-    // Refuse oversize payload instead of silent truncation
-    if (plistData.length > maxInline) {
-        NSLog(@"[SendPush] Payload too large (%lu > %lu) – refusing",
+    if ((size_t)plistData.length > maxInline) {
+        NSLog(@"[SendPush] Payload too large (%lu > %lu)",
               (unsigned long)plistData.length, (unsigned long)maxInline);
         return KERN_RESOURCE_SHORTAGE;
     }
@@ -79,247 +92,286 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
     msg.body.msgh_descriptor_count = 0;
     msg.type = SKYGLOW_REQUEST_PUSH;
 
-    // topic
     size_t maxTopic = sizeof(msg.topic) - 1;
-    size_t copyLen = MIN((size_t)topicData.length, maxTopic);
+    size_t copyLen  = MIN((size_t)topicData.length, maxTopic);
     memcpy(msg.topic, topicData.bytes, copyLen);
     msg.topic[copyLen] = '\0';
-    if (copyLen < topicData.length) {
-        NSLog(@"[SendPush] Topic truncated (%zu > %zu): %@",
-              (size_t)topicData.length, maxTopic, topic);
-    }
 
     msg.userInfoLength = (uint32_t)plistData.length;
-    if (plistData.length) {
+    if (plistData.length > 0) {
         memcpy(msg.userInfoData, plistData.bytes, plistData.length);
     }
 
     size_t usedSize = offsetof(MachPushRequestMessage, userInfoData) + plistData.length;
-    // 4-byte align
     usedSize = (usedSize + 3) & ~(size_t)3;
-
-    if (usedSize > sizeof(msg) || usedSize > UINT32_MAX) {
-        NSLog(@"[SendPush] Internal size computation invalid (%zu)", usedSize);
+    if (usedSize > sizeof(msg)) {
+        NSLog(@"[SendPush] Size overflow (%zu)", usedSize);
         return KERN_INVALID_ARGUMENT;
     }
     msg.header.msgh_size = (mach_msg_size_t)usedSize;
 
-    NSLog(@"[SendPush] topic='%@' payload=%u bytes totalMsgSize=%u",
-          topic, msg.userInfoLength, msg.header.msgh_size);
-
-    kr = mach_msg(&msg.header,
-                  MACH_SEND_MSG,
-                  msg.header.msgh_size,
-                  0,
-                  MACH_PORT_NULL,
-                  MACH_MSG_TIMEOUT_NONE,
-                  MACH_PORT_NULL);
+    kr = mach_msg(&msg.header, MACH_SEND_MSG, msg.header.msgh_size, 0,
+                  MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
     if (kr != KERN_SUCCESS) {
-        NSLog(@"[SendPush] mach_msg send failed: %s (%d)",
-              mach_error_string(kr), kr);
+        NSLog(@"[SendPush] mach_msg failed: %s (%d)", mach_error_string(kr), kr);
     }
     return kr;
 }
 
+// ──────────────────────────────────────────────
+// DNS resolution with caching
+// ──────────────────────────────────────────────
+
+/// Resolve server IP and port, using cache first, then live DNS.
+/// Returns a dictionary with @"tcp_addr" and @"tcp_port", or nil on failure.
+static NSDictionary *resolveServerLocation(NSString *serverAddr) {
+    NSString *dnsName = [@"_sgn." stringByAppendingString:serverAddr];
+
+    // 1. Try cache first
+    NSDictionary *cached = [db cachedDNSForDomain:dnsName maxAgeSeconds:DNS_CACHE_MAX_AGE_SECONDS];
+    if (cached) {
+        NSLog(@"[Main] Using cached DNS for %@ (age: %.0f s)", dnsName, [cached[@"age"] doubleValue]);
+        return cached;
+    }
+
+    // 2. Live DNS lookup
+    NSLog(@"[Main] Cache miss — performing live DNS lookup for %@", dnsName);
+    NSDictionary *txtRecords = QueryServerLocation(dnsName);
+    if (!txtRecords) return nil;
+
+    NSString *ip   = txtRecords[@"tcp_addr"];
+    NSString *port = txtRecords[@"tcp_port"];
+
+    // 3. Cache the result
+    if (ip && port) {
+        [db storeDNSCache:dnsName ip:ip port:port];
+        NSLog(@"[Main] Cached DNS: %@ -> %@:%@", dnsName, ip, port);
+    }
+
+    return txtRecords;
+}
+
+/// Refresh DNS cache in the background (non-blocking).
+/// Called after each successful connection to keep cache fresh.
+static void refreshDNSCacheAsync(NSString *serverAddr) {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        NSString *dnsName = [@"_sgn." stringByAppendingString:serverAddr];
+        NSDictionary *txtRecords = QueryServerLocation(dnsName);
+        if (txtRecords) {
+            NSString *ip   = txtRecords[@"tcp_addr"];
+            NSString *port = txtRecords[@"tcp_port"];
+            if (ip && port) {
+                [db storeDNSCache:dnsName ip:ip port:port];
+                NSLog(@"[Main] DNS cache refreshed: %@:%@", ip, port);
+            }
+        }
+    });
+}
+
+// ──────────────────────────────────────────────
+// NotificationDaemon
+// ──────────────────────────────────────────────
+
 @implementation NotificationDaemon
+
+- (id)init {
+    if ((self = [super init])) {
+        _disconnectionTimes = [[NSMutableArray alloc] init];
+        _isRunning = NO;
+    }
+    return self;
+}
 
 - (void)disableDaemon {
     NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
     NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
-    
-    if (!prefs) {
-        prefs = [NSMutableDictionary dictionary];
-    }
-    
+    if (!prefs) prefs = [NSMutableDictionary dictionary];
     [prefs setObject:@NO forKey:@"enabled"];
-    
-    BOOL success = [prefs writeToFile:plistPath atomically:YES];
-    if (success) {
-        NSLog(@"Successfully disabled daemon");
-    } else {
-        NSLog(@"Failed to update preferences file to disable daemon");
-    }
-    
+    [prefs writeToFile:plistPath atomically:YES];
     updateStatus(kStatusDisabled);
 }
 
 - (void)processNotificationMessage:(NSDictionary *)messageDict {
-    NSLog(@"Sending a notification");
-    // NSLog(@"Complete messageDict contents: %@", messageDict);
-
-    // get routing data
     NSData *routingKey = messageDict[@"routing_key"];
-    NSDictionary *routingData = [db dataForRoutingKey:routingKey];
-    
-    NSString *bundleID = routingData[@"bundleID"];
-
-    NSString *messageID = messageDict[@"message_id"];
-
-    if (!messageID) {
+    if (!routingKey) {
+        NSLog(@"[Daemon] Notification missing routing_key");
         return;
     }
-    
+
+    NSDictionary *routingData = [db dataForRoutingKey:routingKey];
+    if (!routingData) {
+        NSLog(@"[Daemon] No routing data for key");
+        return;
+    }
+
+    NSString *bundleID  = routingData[@"bundleID"];
+    NSString *messageID = messageDict[@"message_id"];
+    if (!messageID) {
+        NSLog(@"[Daemon] Notification missing message_id");
+        return;
+    }
 
     NSDictionary *userInfo = nil;
 
     if ([messageDict[@"is_encrypted"] boolValue]) {
-        // our message uses E2EE
+        NSString *outputType = messageDict[@"data_type"];
+        NSData *ciphertext   = messageDict[@"ciphertext"];
+        NSData *iv           = messageDict[@"iv"];
 
-        // json or plist
-        NSString *outputType =  messageDict[@"data_type"];
-
-        NSData *ciphertext =  messageDict[@"ciphertext"];
-        NSData *iv =  messageDict[@"iv"];
-        // NSData *tag =  messageDict[@"tag"];
-        NSData *decrypted = decryptAESGCM(ciphertext, routingData[@"e2eeKey"], iv, nil);
-
-        if (!decrypted) {
-            NSLog(@"Decryption error!");
-            ackNotification(messageID, 1); // could not encrypt
+        if (!ciphertext || !iv) {
+            NSLog(@"[Daemon] Encrypted notification missing ciphertext/iv");
+            ackNotification(messageID, 1);
             return;
         }
 
+        NSData *decrypted = decryptAESGCM(ciphertext, routingData[@"e2eeKey"], iv, nil);
+        if (!decrypted) {
+            NSLog(@"[Daemon] Decryption failed");
+            ackNotification(messageID, 1);
+            return;
+        }
+
+        NSError *error = nil;
         if ([outputType isEqualToString:@"json"]) {
-            NSLog(@"%@", decrypted);
-            NSError *error = nil;
-            NSDictionary *data = [NSJSONSerialization JSONObjectWithData:decrypted options:0 error:nil];
-            if (!data) {
-                NSLog(@"Deserialization error of encrypted data: %@", error);
-                ackNotification(messageID, 2); // could not deserialize notification
-                return;
-            }
-            userInfo = data;
-
+            userInfo = [NSJSONSerialization JSONObjectWithData:decrypted options:0 error:&error];
         } else if ([outputType isEqualToString:@"plist"]) {
-            NSError *error = nil;
-            NSDictionary *data = [NSPropertyListSerialization propertyListWithData:decrypted
-                                                                            options:NSPropertyListImmutable
-                                                                            format:nil
-                                                                            error:&error];
-            if (!data) {
-                NSLog(@"Deserialization error of encrypted data: %@", error);
-                ackNotification(messageID, 2); // could not deserialize notification
-                return;
-            }
-
-            
-            userInfo = data;
+            userInfo = [NSPropertyListSerialization propertyListWithData:decrypted
+                                                                options:NSPropertyListImmutable
+                                                                 format:nil
+                                                                  error:&error];
         } else {
+            NSLog(@"[Daemon] Unknown data_type: %@", outputType);
+            ackNotification(messageID, 2);
+            return;
+        }
+
+        if (!userInfo) {
+            NSLog(@"[Daemon] Deserialization failed: %@", error);
+            ackNotification(messageID, 2);
             return;
         }
     } else {
         userInfo = messageDict[@"data"];
     }
 
-    NSLog(@"SendPush");
     SendPush(bundleID, userInfo);
-    
-    ackNotification(messageID, 0); // success
+    ackNotification(messageID, 0);
 }
 
 - (void)handleWelcomeMessage {
-    // login time
     NSString *clientAddress = [self getClientAddress];
     RSA *privKey = getClientPrivKey();
     NSString *language = [[NSLocale preferredLanguages] firstObject];
+
+    if (!clientAddress || !privKey) {
+        NSLog(@"[Daemon] Missing credentials for login");
+        return;
+    }
     startLogin(clientAddress, privKey, language);
 }
 
 - (void)authenticationSuccessful {
     updateStatus(kStatusConnected);
+
+    // Opportunistically refresh DNS cache in the background
+    if (serverAddress) {
+        refreshDNSCacheAsync(serverAddress);
+    }
 }
 
 - (void)checkForRapidDisconnections {
-    // Remove disconnection times older than 10 seconds
-    NSDate *cutoffTime = [NSDate dateWithTimeIntervalSinceNow:-10.0];
-    NSMutableArray *recentDisconnects = [NSMutableArray array];
-    
-    for (NSDate *disconnectTime in _disconnectionTimes) {
-        if ([disconnectTime compare:cutoffTime] == NSOrderedDescending) {
-            [recentDisconnects addObject:disconnectTime];
+    NSDate *cutoff = [NSDate dateWithTimeIntervalSinceNow:-10.0];
+    NSMutableArray *recent = [NSMutableArray array];
+
+    for (NSDate *t in _disconnectionTimes) {
+        if ([t compare:cutoff] == NSOrderedDescending) {
+            [recent addObject:t];
         }
     }
-    
-    // Update our list to only include recent disconnects
-    [_disconnectionTimes removeAllObjects];
-    [_disconnectionTimes addObjectsFromArray:recentDisconnects];
-    
-    // Check if we've had 3 or more disconnects in the last 10 seconds
+
+    [_disconnectionTimes setArray:recent];
+
     if ([_disconnectionTimes count] >= 3) {
-        NSLog(@"[WARNING] Detected %lu disconnections within 10 seconds. Disabling daemon.", 
+        NSLog(@"[Daemon] %lu disconnections in 10 s — disabling",
               (unsigned long)[_disconnectionTimes count]);
-        
-        // Disable the daemon
         [self disableDaemon];
-        
-        // Exit the daemon process
         exit(-3);
     }
 }
 
 - (void)exponentialBackoffConnect {
-    NSLog(@"[ExponentialBackoffConnect] Started connection attempts");
-    int serverPort;
-    int connectionResult;
+    @synchronized(self) {
+        if (_isRunning) {
+            NSLog(@"[Daemon] Connection loop already running");
+            return;
+        }
+        _isRunning = YES;
+    }
+
+    NSLog(@"[Daemon] Starting connection loop");
     int backoff = 1;
     NSString *serverPubKey = [self getServerPubKey];
+    int serverPort = atoi(serverPortStr);
+
+    if (serverPort <= 0) {
+        NSLog(@"[Daemon] Invalid server port");
+        updateStatus(kStatusServerConfigBad);
+        @synchronized(self) { _isRunning = NO; }
+        return;
+    }
+
+    if (!serverPubKey || [serverPubKey length] == 0) {
+        NSLog(@"[Daemon] Missing server public key");
+        updateStatus(kStatusServerConfigBad);
+        @synchronized(self) { _isRunning = NO; }
+        return;
+    }
 
     updateStatus(kStatusEnabledNotConnected);
 
     while (1) {
         [self checkForRapidDisconnections];
 
-        serverPort = atoi(serverPortStr);
-        NSLog(@"[ExponentialBackoffConnect] Converted server port string to integer: %d", serverPort);
-
-        if (serverPort <= 0) {
-            NSLog(@"[ExponentialBackoffConnect] Invalid server port: %d", serverPort);
-            updateStatus(kStatusServerConfigBad);
-            return;
-        }
-
         setNotificationDelegate(self);
 
-        // TODO: thiss section should probably be totally rewritten.
-        connectionResult = connectToServer(serverIP, serverPort, serverPubKey);
-        if (connectionResult != 0) {
-            NSLog(@"[ExponentialBackoffConnect] Connection failed with sockfd value: %d. Retrying in %d seconds...", connectionResult, backoff);
+        int cr = connectToServer(serverIP, serverPort, serverPubKey);
+        if (cr != 0) {
+            NSLog(@"[Daemon] Connection failed (%d), retrying in %d s", cr, backoff);
+            updateStatus(kStatusEnabledNotConnected);
             sleep(backoff);
-            backoff *= 2;
-            if (backoff > MAX_BACKOFF) { // Cap the backoff time to MAX_BACKOFF seconds
-                backoff = MAX_BACKOFF;
-                NSLog(@"[ExponentialBackoffConnect] Backoff reached maximum limit: %d seconds", MAX_BACKOFF);
-            }
-            continue; // Retry connection
+            backoff = MIN(backoff * 2, MAX_BACKOFF);
+            continue;
         }
 
         updateStatus(kStatusConnectedNotAuthenticated);
+        NSLog(@"[Daemon] Connected to %s:%d", serverIP, serverPort);
 
-        NSLog(@"[ExponentialBackoffConnect] Connected to server at %s:%d", serverIP, serverPort);
-
-
+        // Message loop
         while (1) {
-            // handle
             int result = handleMessage();
-            switch (result) {
-                case 0:
-                break;
-
-                case 1:
-                case 2:
-                case 3:
-                case 4:
-                goto disconnect;
+            if (result == 0) {
+                backoff = 1;
+                continue;
             }
+            if (result == 4) {
+                NSLog(@"[Daemon] Auth failure (code %d)", result);
+                updateStatus(kStatusErrorInAuth);
+            } else {
+                NSLog(@"[Daemon] Disconnected (code %d)", result);
+            }
+            break;
         }
 
-        disconnect:
+        disconnectFromServer();
         [_disconnectionTimes addObject:[NSDate date]];
-        close(connectionResult); // Close the socket before reconnecting
-        NSLog(@"[ExponentialBackoffConnect] Socket closed, preparing for next connection attempt.");
         updateStatus(kStatusEnabledNotConnected);
-        backoff = 1; // Reset backoff for the next connection attempt
+
+        NSLog(@"[Daemon] Reconnecting in %d s", backoff);
+        sleep(backoff);
+        backoff = MIN(backoff * 2, MAX_BACKOFF);
     }
+
+    @synchronized(self) { _isRunning = NO; }
 }
 
 - (void)dealloc {
@@ -328,221 +380,227 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
         SCNetworkReachabilitySetDispatchQueue(_reachabilityRef, NULL);
         CFRelease(_reachabilityRef);
         _reachabilityRef = NULL;
-        [super dealloc];
     }
+    [_disconnectionTimes release];
+    [super dealloc];
 }
 
 - (void)startMonitoringNetworkReachability {
     struct sockaddr_in zeroAddress;
     memset(&zeroAddress, 0, sizeof(zeroAddress));
-    zeroAddress.sin_len = sizeof(zeroAddress);
+    zeroAddress.sin_len    = sizeof(zeroAddress);
     zeroAddress.sin_family = AF_INET;
 
     _reachabilityRef = SCNetworkReachabilityCreateWithAddress(NULL, (const struct sockaddr *)&zeroAddress);
-    if (_reachabilityRef) {
-        SCNetworkReachabilityContext context = {0, (__bridge void *)(self), NULL, NULL, NULL};
-        if (SCNetworkReachabilitySetCallback(_reachabilityRef, ReachabilityCallback, &context)) {
-            // Use a background queue to avoid blocking the main thread
-            dispatch_queue_t backgroundQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-            if (SCNetworkReachabilitySetDispatchQueue(_reachabilityRef, backgroundQueue)) {
-                NSLog(@"Reachability dispatch queue set successfully.");
-            } else {
-                NSLog(@"Could not set reachability dispatch queue");
-            }
-        } else {
-            NSLog(@"Could not set reachability callback");
-        }
+    if (!_reachabilityRef) {
+        NSLog(@"[Daemon] Failed to create reachability ref");
+        return;
+    }
+
+    SCNetworkReachabilityContext context = {0, (__bridge void *)(self), NULL, NULL, NULL};
+    if (!SCNetworkReachabilitySetCallback(_reachabilityRef, ReachabilityCallback, &context)) {
+        NSLog(@"[Daemon] Could not set reachability callback");
+        return;
+    }
+
+    dispatch_queue_t bgQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+    if (!SCNetworkReachabilitySetDispatchQueue(_reachabilityRef, bgQueue)) {
+        NSLog(@"[Daemon] Could not set reachability queue");
     } else {
-        NSLog(@"Failed to create reachability reference");
+        NSLog(@"[Daemon] Reachability monitoring started");
     }
 }
 
 - (SCNetworkReachabilityFlags)getReachabilityFlags {
     SCNetworkReachabilityFlags flags = 0;
-    if (_reachabilityRef && SCNetworkReachabilityGetFlags(_reachabilityRef, &flags)) {
-        return flags;
-    }
-    return 0;
+    if (_reachabilityRef) SCNetworkReachabilityGetFlags(_reachabilityRef, &flags);
+    return flags;
 }
 
 - (NSString *)getClientAddress {
     NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
-    
-    if (!prefs) {
-        return nil;
-    }
-    
-    NSString *address = prefs[@"device_address"];
-    
-    return address;
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    return prefs[@"device_address"];
 }
 
 - (NSString *)getServerPubKey {
     NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
-    
-    if (!prefs) {
-        return nil;
-    }
-    
-    NSString *serverPubKeyString = prefs[@"server_pub_key"];
-    return serverPubKeyString;
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    return prefs[@"server_pub_key"];
 }
 
-
-
-
 - (void)deviceTokenRegistrationCompleted:(NSString *)bundleId {
+    // Ack handled by semaphore in Protocol.m
 }
 
 @end
 
-static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) {
-    BOOL isReachable = flags & kSCNetworkFlagsReachable;
-    BOOL needsConnection = flags & kSCNetworkFlagsConnectionRequired;
-    BOOL isReachableWithoutRequiredConnection = isReachable && !needsConnection;
-    
+// ──────────────────────────────────────────────
+// Reachability callback
+// ──────────────────────────────────────────────
+
+static void ReachabilityCallback(SCNetworkReachabilityRef target,
+                                 SCNetworkReachabilityFlags flags,
+                                 void *info) {
+    BOOL reachable    = (flags & kSCNetworkFlagsReachable) != 0;
+    BOOL needsConn    = (flags & kSCNetworkFlagsConnectionRequired) != 0;
+    BOOL reachableNow = reachable && !needsConn;
+
     NotificationDaemon *daemon = (__bridge NotificationDaemon *)info;
-    
-    if (isReachableWithoutRequiredConnection) {
-        NSLog(@"Network became reachable, trying to connect.");
-        [daemon exponentialBackoffConnect];
+
+    if (reachableNow) {
+        NSLog(@"[Reachability] Network reachable");
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            [daemon exponentialBackoffConnect];
+        });
     } else {
-        NSLog(@"Network became unreachable.");
+        NSLog(@"[Reachability] Network unreachable");
         updateStatus(kStatusEnabledNotConnected);
     }
 }
 
+// ──────────────────────────────────────────────
+// Status publishing
+// ──────────────────────────────────────────────
+
 void updateStatus(NSString *status) {
-    NSDictionary *statusDict = @{
-        @"lastUpdated": [NSDate date],
+    NSDictionary *dict = @{
+        @"lastUpdated":   [NSDate date],
         @"currentStatus": status
     };
-    [statusDict writeToFile:@"/var/mobile/Library/Preferences/com.skyglow.sndp.status.plist" atomically:YES];
-    CFNotificationCenterPostNotificationWithOptions(CFNotificationCenterGetDarwinNotifyCenter(),
-                                                    CFSTR(kDaemonStatusNewStatus),
-                                                    NULL,
-                                                    NULL,
-                                                    kCFNotificationDeliverImmediately);
+    [dict writeToFile:@"/var/mobile/Library/Preferences/com.skyglow.sndp.status.plist" atomically:YES];
+    CFNotificationCenterPostNotificationWithOptions(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFSTR(kDaemonStatusNewStatus),
+        NULL, NULL,
+        kCFNotificationDeliverImmediately);
 }
 
-BOOL isValidIPAddress(NSString *ipAddress) {
+// ──────────────────────────────────────────────
+// Validation
+// ──────────────────────────────────────────────
+
+static BOOL isValidIPAddress(NSString *ip) {
+    if (!ip) return NO;
     struct sockaddr_in sa;
-    int result = inet_pton(AF_INET, [ipAddress UTF8String], &(sa.sin_addr));
-    return result == 1;
+    return inet_pton(AF_INET, [ip UTF8String], &sa.sin_addr) == 1;
 }
 
-BOOL isValidPort(NSString *port) {
-    if (port.length == 0) return NO;
+static BOOL isValidPort(NSString *port) {
+    if (!port || [port length] == 0) return NO;
     NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
-    return [port rangeOfCharacterFromSet:nonDigits].location == NSNotFound;
+    if ([port rangeOfCharacterFromSet:nonDigits].location != NSNotFound) return NO;
+    int p = [port intValue];
+    return (p > 0 && p <= 65535);
 }
 
-int main() {
+// ──────────────────────────────────────────────
+// main
+// ──────────────────────────────────────────────
+
+int main(void) {
     @autoreleasepool {
+        signal(SIGPIPE, SIG_IGN);
+
         NSLog(@"Speedy Execution Is The Mother Of Good Fortune");
+
+        // ── Read preferences ──
         NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
         NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
         if (!prefs) {
-            NSLog(@"Failed to read preferences.");
+            NSLog(@"[Main] Failed to read preferences");
             updateStatus(kStatusError);
             return -1;
         }
 
-        BOOL isEnabled = [[prefs objectForKey:@"enabled"] boolValue];
-        if (!isEnabled) {
-            NSLog(@"[Main] Daemon is disabled, aborting");
+        if (![[prefs objectForKey:@"enabled"] boolValue]) {
+            NSLog(@"[Main] Daemon disabled");
             updateStatus(kStatusDisabled);
             return 0;
         }
 
-        NSString *profilePlistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
-        NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePlistPath];
-
-        NotificationDaemon *daemon = [[NotificationDaemon alloc] init];
-        [daemon startMonitoringNetworkReachability];
+        // ── Read profile ──
+        NSString *profilePath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
+        NSDictionary *profile = [NSDictionary dictionaryWithContentsOfFile:profilePath];
 
         NSString *serverAddr = profile[@"server_address"];
-
-        if (![serverAddr isKindOfClass:[NSString class]] || serverAddr.length == 0) {
-            NSLog(@"[Main] Not registered yet (missing server_address). Staying idle.");
-            updateStatus(kStatusConnectedNotAuthenticated /* or a 'NotRegistered' status */);
-            CFRunLoopRun(); // or just return 0 if you want it to quit
+        if (![serverAddr isKindOfClass:[NSString class]] || [serverAddr length] == 0) {
+            NSLog(@"[Main] Not registered. Idling.");
+            updateStatus(kStatusEnabledNotConnected);
+            CFRunLoopRun();
             return 0;
         }
 
-        serverAddress = serverAddr;
-        if ([serverAddress length] > 16) {
+        if ([serverAddr length] > 16) {
+            NSLog(@"[Main] server_address exceeds 16 chars");
+            updateStatus(kStatusServerConfigBad);
+            return -1;
+        }
+        serverAddress = [serverAddr retain];
+
+        // ── Initialize database (needed before DNS cache) ──
+        db = [[DBManager alloc] init];
+        if (!db) {
+            NSLog(@"[Main] Failed to init database");
+            updateStatus(kStatusError);
+            return -1;
+        }
+
+        // ── Resolve server location (cache → DNS fallback) ──
+        NSDictionary *txtRecords = resolveServerLocation(serverAddr);
+        if (!txtRecords) {
+            NSLog(@"[Main] Failed to resolve server location");
+            updateStatus(kStatusError);
+            return -1;
+        }
+
+        NSString *ip   = txtRecords[@"tcp_addr"];
+        NSString *port = txtRecords[@"tcp_port"];
+
+        if (!isValidIPAddress(ip)) {
+            NSLog(@"[Main] Invalid IP: %@", ip);
+            updateStatus(kStatusServerConfigBad);
+            return -1;
+        }
+        if (!isValidPort(port)) {
+            NSLog(@"[Main] Invalid port: %@", port);
             updateStatus(kStatusServerConfigBad);
             return -1;
         }
 
-        NSDictionary *txtRecords = QueryServerLocation([@"_sgn." stringByAppendingString:serverAddr]);
-
-        if (!txtRecords) {
-            NSLog(@"Failed to locate server.");
-            updateStatus(kStatusError);
-            return -1;
-        }
-
-        NSString *ip = txtRecords[@"tcp_addr"];
-        NSString *port = txtRecords[@"tcp_port"];
-        
-        db = [[DBManager alloc] init];
-        if (db == nil) {
-            NSLog(@"Failed to init the DB!");
-            updateStatus(kStatusError);
-            return -1;
-        }
+        serverIP      = strdup([ip UTF8String]);
+        serverPortStr = strdup([port UTF8String]);
+        NSLog(@"[Main] Server: %s:%s%@", serverIP, serverPortStr,
+              [txtRecords[@"cached"] boolValue] ? @" (from cache)" : @"");
 
         updateStatus(kStatusEnabledNotConnected);
 
-
-
-        if (ip == nil || !isValidIPAddress(ip)) {
-            NSLog(@"[Main] Invalid or missing IP address in preferences.");
-            updateStatus(kStatusServerConfigBad);
-            return -1;
-        }
-
-        if (port == nil || !isValidPort(port)) {
-            NSLog(@"[Main] Invalid or missing port in preferences.");
-            updateStatus(kStatusServerConfigBad);
-            return -1;
-        }
-
-        if (serverIP) free(serverIP); // Free previously allocated memory if any
-        if (serverPortStr) free(serverPortStr); // Free previously allocated memory if any
-
-        serverIP = strdup([ip UTF8String]);
-        serverPortStr = strdup([port UTF8String]);
-
-        NSLog(@"[Main] Address and port extracted from preference file: %s,%s", serverIP, serverPortStr);
-
-        // start mach server for tokens
+        // ── Start Mach server ──
         MachMsgs *machMsgs = [[MachMsgs alloc] init];
         [machMsgs startMachServer];
 
+        // ── Start network monitoring ──
+        NotificationDaemon *daemon = [[NotificationDaemon alloc] init];
+        [daemon startMonitoringNetworkReachability];
+
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 2, false);
 
-        // Check initial reachability status
         SCNetworkReachabilityFlags flags = [daemon getReachabilityFlags];
-        BOOL isReachable = flags & kSCNetworkFlagsReachable;
-        BOOL needsConnection = flags & kSCNetworkFlagsConnectionRequired;
-        BOOL isReachableWithoutRequiredConnection = isReachable && !needsConnection;
+        BOOL reachable    = (flags & kSCNetworkFlagsReachable) != 0;
+        BOOL needsConn    = (flags & kSCNetworkFlagsConnectionRequired) != 0;
+        BOOL reachableNow = reachable && !needsConn;
 
-        if (!isReachableWithoutRequiredConnection) {
-            NSLog(@"[Main] Initial network check: Network is not reachable, staying dormant.");
-            updateStatus(kStatusEnabledNotConnected);
-        } else {
+        if (reachableNow) {
             [daemon exponentialBackoffConnect];
+        } else {
+            NSLog(@"[Main] Network not reachable — waiting for callback");
+            updateStatus(kStatusEnabledNotConnected);
+            CFRunLoopRun();
         }
 
-        // Cleanup global variables
-        if (serverIP) free(serverIP);
-        if (serverPortStr) free(serverPortStr);
+        if (serverIP)      { free(serverIP);      serverIP = NULL; }
+        if (serverPortStr) { free(serverPortStr);  serverPortStr = NULL; }
     }
-    NSLog(@"Skyglow Notifications Daemon exited successfully");
+    NSLog(@"Skyglow Notifications Daemon exited");
     return 0;
 }

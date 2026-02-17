@@ -1,3 +1,6 @@
+#ifndef SKYGLOW_MAIN_H
+#define SKYGLOW_MAIN_H
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,39 +20,32 @@
 #import "Protocol.h"
 #import "AppMachMsgs.h"
 
-#define MAX_BACKOFF 256 // Maximum backoff time in seconds
+#define MAX_BACKOFF 256
 
 // Darwin Notifications for settings statuses
 #define kDaemonStatusNewStatus "com.skyglow.snd.request_update"
 
-#define kStatusDisabled @"Disabled"
-#define kStatusError @"Error"
-#define kStatusErrorInAuth @"ErrorInAuth"
-#define kStatusEnabledNotConnected @"EnabledNotConnected"
-#define kStatusConnectedNotAuthenticated @"ConnectedNotAuthenticated"
-#define kStatusConnected @"Connected"
-#define kStatusConnectionClosed @"ConnectionClosed"
-#define kStatusServerConfigBad @"ServerConfigBad"
+#define kStatusDisabled                    @"Disabled"
+#define kStatusError                       @"Error"
+#define kStatusErrorInAuth                 @"ErrorInAuth"
+#define kStatusEnabledNotConnected         @"EnabledNotConnected"
+#define kStatusConnectedNotAuthenticated   @"ConnectedNotAuthenticated"
+#define kStatusConnected                   @"Connected"
+#define kStatusConnectionClosed            @"ConnectionClosed"
+#define kStatusServerConfigBad             @"ServerConfigBad"
 
-
-// Global variables
-BOOL *isReachableWithoutRequiredConnection = NULL;
-MachMsgs *machMsgs;
-
-NSString *serverAddress = nil;
-DBManager *db = nil;
-char *serverIP = NULL;
-char *serverPortStr = NULL;
-
-// Functions
-static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) __attribute__((used));
 void updateStatus(NSString *status);
+static void ReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info);
 
-@interface NotificationDaemon :  NSObject <NotificationDelegate>  {
+@interface NotificationDaemon : NSObject <NotificationDelegate> {
     SCNetworkReachabilityRef _reachabilityRef;
     NSMutableArray *_disconnectionTimes;
+    BOOL _isRunning;
 }
 
 - (void)startMonitoringNetworkReachability;
 - (void)exponentialBackoffConnect;
+
 @end
+
+#endif /* SKYGLOW_MAIN_H */

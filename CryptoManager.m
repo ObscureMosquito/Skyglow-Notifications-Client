@@ -1,43 +1,34 @@
 #import "CryptoManager.h"
 
-RSA* getClientPrivKey() {
+RSA *getClientPrivKey(void) {
     NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
-    
-    if (!prefs) {
-        return nil;
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    if (!prefs) return NULL;
+
+    NSString *keyString = prefs[@"privateKey"];
+    if (!keyString || [keyString length] == 0) {
+        NSLog(@"[Crypto] No client private key in preferences");
+        return NULL;
     }
-    
-    NSString *clientPrivateKeyString = prefs[@"privateKey"];
-    if (!clientPrivateKeyString) {
-        NSLog(@"No client private key found in preferences");
-        return nil;
-    }
-    
-    const char *pemData = [clientPrivateKeyString UTF8String];
-    
-    // Create a memory BIO
-    BIO *bio = BIO_new_mem_buf((void *)pemData, -1); // -1 means calculate the length
+
+    BIO *bio = BIO_new_mem_buf((void *)[keyString UTF8String], -1);
     if (!bio) {
-        NSLog(@"Failed to create memory BIO");
-        return nil;
+        NSLog(@"[Crypto] Failed to create BIO");
+        return NULL;
     }
-    
-    // Read the RSA key from the BIO
-    RSA *clientPrivKey = PEM_read_bio_RSAPrivateKey(bio, NULL, NULL, NULL);
-    
-    // Free the BIO
+
+    RSA *key = PEM_read_bio_RSAPrivateKey(bio, NULL, NULL, NULL);
     BIO_free(bio);
-    
-    if (!clientPrivKey) {
-        NSLog(@"Failed to parse RSA public key from string");
-        return nil;
+
+    if (!key) {
+        NSLog(@"[Crypto] Failed to parse RSA private key");
     }
-    
-    return clientPrivKey;
+    return key;
 }
 
 NSData *deriveE2EEKey(NSData *keyMaterial, NSString *saltString, NSUInteger outputLength) {
+    if (!keyMaterial || !saltString || outputLength == 0) return nil;
+
     const EVP_MD *digest = EVP_sha256();
     unsigned char *outKey = malloc(outputLength);
     if (!outKey) return nil;
@@ -49,39 +40,41 @@ NSData *deriveE2EEKey(NSData *keyMaterial, NSString *saltString, NSUInteger outp
     }
 
     NSData *saltData = [saltString dataUsingEncoding:NSUTF8StringEncoding];
+    size_t outLen = outputLength;
 
     if (EVP_PKEY_derive_init(pctx) <= 0 ||
         EVP_PKEY_CTX_set_hkdf_md(pctx, digest) <= 0 ||
         EVP_PKEY_CTX_set1_hkdf_salt(pctx, saltData.bytes, (int)saltData.length) <= 0 ||
         EVP_PKEY_CTX_set1_hkdf_key(pctx, keyMaterial.bytes, (int)keyMaterial.length) <= 0 ||
-        EVP_PKEY_derive(pctx, outKey, &(size_t){outputLength}) <= 0) {
+        EVP_PKEY_derive(pctx, outKey, &outLen) <= 0) {
         EVP_PKEY_CTX_free(pctx);
         free(outKey);
         return nil;
     }
 
-    NSData *result = [NSData dataWithBytes:outKey length:outputLength];
+    NSData *result = [NSData dataWithBytes:outKey length:outLen];
     EVP_PKEY_CTX_free(pctx);
     free(outKey);
     return result;
 }
 
 NSData *decryptAESGCM(NSData *ciphertextWithTag, NSData *key, NSData *iv, NSData *aad) {
-    // AES-GCM tag is always 16 bytes
+    if (!ciphertextWithTag || !key || !iv) return nil;
+
     const NSUInteger tagLength = 16;
     if (ciphertextWithTag.length < tagLength) {
-        NSLog(@"Decrypt: ciphertext too short");
+        NSLog(@"[Crypto] Ciphertext too short for GCM tag");
         return nil;
     }
 
-    // Split ciphertext and tag
-    NSData *ciphertext = [ciphertextWithTag subdataWithRange:NSMakeRange(0, ciphertextWithTag.length - tagLength)];
-    NSData *authTag   = [ciphertextWithTag subdataWithRange:NSMakeRange(ciphertextWithTag.length - tagLength, tagLength)];
+    NSUInteger ctLen = ciphertextWithTag.length - tagLength;
+    NSData *ciphertext = [ciphertextWithTag subdataWithRange:NSMakeRange(0, ctLen)];
+    NSData *authTag    = [ciphertextWithTag subdataWithRange:NSMakeRange(ctLen, tagLength)];
 
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return nil;
 
-    int len;
+    int len = 0;
     int plaintextLen = 0;
     NSMutableData *plaintext = [NSMutableData dataWithLength:ciphertext.length];
 

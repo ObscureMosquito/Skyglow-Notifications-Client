@@ -1,6 +1,7 @@
 #import "AppMachMsgs.h"
 #include "Tokens.h"
 #include "DBManager.h"
+#include <string.h>
 
 @implementation MachMsgs
 
@@ -10,153 +11,131 @@
 
     self->tokens = [[Tokens alloc] init];
 
-    // Create a mach port for our service
     kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &serverPort);
     if (kr != KERN_SUCCESS) {
-        NSLog(@"Failed to allocate mach port: %s", mach_error_string(kr));
+        NSLog(@"[MachMsgs] Failed to allocate port: %s", mach_error_string(kr));
         return;
     }
 
-    // Insert a send right
     kr = mach_port_insert_right(mach_task_self(), serverPort, serverPort, MACH_MSG_TYPE_MAKE_SEND);
     if (kr != KERN_SUCCESS) {
-        NSLog(@"Failed to insert send right: %s", mach_error_string(kr));
+        NSLog(@"[MachMsgs] Failed to insert send right: %s", mach_error_string(kr));
         mach_port_deallocate(mach_task_self(), serverPort);
         return;
     }
 
-    // Register the service
     kr = bootstrap_register(bootstrap_port, SKYGLOW_MACH_SERVICE_NAME_TOKEN, serverPort);
     if (kr != KERN_SUCCESS) {
-        NSLog(@"Failed to register mach service: %s", mach_error_string(kr));
+        NSLog(@"[MachMsgs] Failed to register service: %s", mach_error_string(kr));
         mach_port_deallocate(mach_task_self(), serverPort);
         return;
     }
 
-    NSLog(@"Successfully registered mach service: %s", SKYGLOW_MACH_SERVICE_NAME_TOKEN);
+    NSLog(@"[MachMsgs] Registered mach service: %s", SKYGLOW_MACH_SERVICE_NAME_TOKEN);
 
-    // Start a thread to listen for messages
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [self handleMachMessages:serverPort];
     });
 }
 
-// chatgpt :sob:
 - (void)handleMachMessages:(mach_port_t)serverPort {
+    // Buffer large enough for the biggest incoming message type
+    const size_t bufSize = sizeof(MachFeedbackResponce) + 512;
+
     while (1) {
-        // Use a buffer large enough for the MachRequestMessage structure plus extra space
-        char receiveBuffer[sizeof(MachFeedbackResponce) + 512];
-        MachTokenRequestMessage *request = (MachTokenRequestMessage *)receiveBuffer;
-        MachTokenResponseMessage response;
-        kern_return_t kr;
-        
-        // Zero out the buffers
-        memset(receiveBuffer, 0, sizeof(receiveBuffer));
-        memset(&response, 0, sizeof(response));
-        
-        // Initialize header with the local port
-        request->header.msgh_local_port = serverPort;
-        
-        // Receive the message directly
-        kr = mach_msg(&request->header, MACH_RCV_MSG, 0, sizeof(receiveBuffer), 
-                     serverPort, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-        
-        if (kr != KERN_SUCCESS) {
-            NSLog(@"Error receiving mach message: %s (error code: %d)", 
-                 mach_error_string(kr), kr);
-                 
-            // If message is too large, try to receive and discard it to avoid getting stuck
-            if (kr == MACH_RCV_TOO_LARGE) {
-                NSLog(@"Message size exceeded buffer capacity.");
-                mach_msg_header_t header;
-                mach_msg(&header, MACH_RCV_MSG | MACH_RCV_LARGE, 0, 0, 
-                       serverPort, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-            }
-            continue;
-        }
-        
-        // Check if we got a valid bundle ID
-        if (request->bundleID[0] == '\0') {
-            NSLog(@"Received message with empty bundle ID, ignoring");
-            continue;
-        }
-        
-        NSLog(@"Received token request for bundle ID: %s (message size: %d)", 
-              request->bundleID, request->header.msgh_size);
+        @autoreleasepool {
+            char receiveBuffer[bufSize];
+            memset(receiveBuffer, 0, bufSize);
 
-        // Print debug info about the request
-        NSLog(@"Request from port: %d to port: %d with ID: %d",
-              request->header.msgh_remote_port,
-              request->header.msgh_local_port,
-              request->header.msgh_id);
+            MachTokenRequestMessage *request = (MachTokenRequestMessage *)receiveBuffer;
+            request->header.msgh_local_port = serverPort;
 
-        
+            kern_return_t kr = mach_msg(&request->header,
+                                        MACH_RCV_MSG, 0, (mach_msg_size_t)bufSize,
+                                        serverPort, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
 
-        NSLog(@"Processing request of type %d", request->type);
-
-        if (request->type == SKYGLOW_REQUEST_TOKEN) {
-            // Only check remote port for requests that expect a response
-            if (request->header.msgh_remote_port == MACH_PORT_NULL) {
-                NSLog(@"Request has an invalid remote port, cannot send response");
+            if (kr != KERN_SUCCESS) {
+                NSLog(@"[MachMsgs] Receive error: %s (%d)", mach_error_string(kr), kr);
+                if (kr == MACH_RCV_TOO_LARGE) {
+                    // Drain the oversized message so we don't get stuck
+                    mach_msg_header_t drain;
+                    mach_msg(&drain, MACH_RCV_MSG | MACH_RCV_LARGE, 0, 0,
+                             serverPort, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+                }
                 continue;
             }
 
-            // Set up response with proper complex message bits
-            response.header.msgh_bits = MACH_MSGH_BITS(
-                MACH_MSG_TYPE_COPY_SEND,     // remote port right
-                0                           // no local port
-            ) | MACH_MSGH_BITS_COMPLEX;      // indicate complex message
-
-            response.header.msgh_size = sizeof(MachTokenResponseMessage);
-            response.header.msgh_remote_port = request->header.msgh_remote_port;
-            response.header.msgh_local_port = MACH_PORT_NULL;
-            response.header.msgh_id = request->header.msgh_id + 100;
-
-            // Initialize body descriptor
-            response.body.msgh_descriptor_count = 0;
-
-            NSString *bundleID = [NSString stringWithUTF8String:request->bundleID];
-            NSError *error = nil;
-            NSData *tokenData = [self->tokens getDeviceToken:bundleID error:error];
-            
-            if (tokenData && tokenData.length > 0) {
-                NSLog(@"Generated token for %@, length: %lu", bundleID, (unsigned long)tokenData.length);
-                response.type = SKYGLOW_RESPONSE_TOKEN;
-                response.tokenLength = (uint32_t)MIN(tokenData.length, SKYGLOW_MAX_TOKEN_SIZE);
-                memcpy(response.tokenData, [tokenData bytes], response.tokenLength);
-                strcpy(response.error, "");
+            if (request->type == SKYGLOW_REQUEST_TOKEN) {
+                [self handleTokenRequest:request];
+            } else if (request->type == SKYGLOW_FEEDBACK_DATA) {
+                [self handleFeedback:(MachFeedbackResponce *)receiveBuffer];
             } else {
-                NSLog(@"Failed to generate token for %@", bundleID);
-                response.type = SKYGLOW_ERROR;
-                response.tokenLength = 0;
-                if (error) {
-                    strcpy(response.error, [[error localizedDescription] UTF8String]);
-                } else {
-                    strcpy(response.error, "Unknown error generating device token");
-                }
+                NSLog(@"[MachMsgs] Unknown request type: %d", request->type);
             }
-
-            NSLog(@"Sending response of size %lu to port %d", sizeof(response), response.header.msgh_remote_port);
-        
-            kr = mach_msg(&response.header, MACH_SEND_MSG, sizeof(response), 0, 
-                     MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-            if (kr != KERN_SUCCESS) {
-                NSLog(@"Error sending mach response: %s (error code: %d)", mach_error_string(kr), kr);
-            } else {
-                NSLog(@"Successfully sent response for bundle ID: %s", request->bundleID);
-            }
-        } else if (request->type == SKYGLOW_FEEDBACK_DATA) {
-            MachFeedbackResponce *feedback = (MachFeedbackResponce *)request;
-            NSLog(@"Received feedback for topic: %s, reason: %s", feedback->topic, feedback->reason);
-            [self->tokens removeDeviceTokenForBundleId:[NSString stringWithUTF8String:feedback->topic] 
-                                              reason:[NSString stringWithUTF8String:feedback->reason]];
-        } else {
-            NSLog(@"Unknown request type: %d", request->type);
-            response.type = SKYGLOW_ERROR;
-            response.tokenLength = 0;
-            strcpy(response.error, "Unknown request type");
         }
-        
+    }
+}
+
+- (void)handleTokenRequest:(MachTokenRequestMessage *)request {
+    // Validate bundle ID
+    if (request->bundleID[0] == '\0') {
+        NSLog(@"[MachMsgs] Token request with empty bundle ID");
+        return;
+    }
+
+    // Must have a valid reply port
+    if (request->header.msgh_remote_port == MACH_PORT_NULL) {
+        NSLog(@"[MachMsgs] Token request missing reply port");
+        return;
+    }
+
+    NSString *bundleID = [NSString stringWithUTF8String:request->bundleID];
+    NSLog(@"[MachMsgs] Token request for: %@", bundleID);
+
+    // Prepare response
+    MachTokenResponseMessage response;
+    memset(&response, 0, sizeof(response));
+
+    response.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0)
+                                | MACH_MSGH_BITS_COMPLEX;
+    response.header.msgh_size        = sizeof(MachTokenResponseMessage);
+    response.header.msgh_remote_port = request->header.msgh_remote_port;
+    response.header.msgh_local_port  = MACH_PORT_NULL;
+    response.header.msgh_id          = request->header.msgh_id + 100;
+    response.body.msgh_descriptor_count = 0;
+
+    NSError *error = nil;
+    NSData *tokenData = [self->tokens getDeviceToken:bundleID error:&error];
+
+    if (tokenData && [tokenData length] > 0) {
+        response.type        = SKYGLOW_RESPONSE_TOKEN;
+        response.tokenLength = (uint32_t)MIN([tokenData length], (NSUInteger)SKYGLOW_MAX_TOKEN_SIZE);
+        memcpy(response.tokenData, [tokenData bytes], response.tokenLength);
+        response.error[0] = '\0';
+        NSLog(@"[MachMsgs] Generated token (%u bytes) for %@", response.tokenLength, bundleID);
+    } else {
+        response.type        = SKYGLOW_ERROR;
+        response.tokenLength = 0;
+        const char *errMsg = error ? [[error localizedDescription] UTF8String]
+                                   : "Unknown error generating device token";
+        strlcpy(response.error, errMsg, sizeof(response.error));
+        NSLog(@"[MachMsgs] Token generation failed for %@: %s", bundleID, response.error);
+    }
+
+    kern_return_t kr = mach_msg(&response.header, MACH_SEND_MSG, sizeof(response), 0,
+                                MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+    if (kr != KERN_SUCCESS) {
+        NSLog(@"[MachMsgs] Send response error: %s (%d)", mach_error_string(kr), kr);
+    }
+}
+
+- (void)handleFeedback:(MachFeedbackResponce *)feedback {
+    NSString *topic  = [NSString stringWithUTF8String:feedback->topic];
+    NSString *reason = [NSString stringWithUTF8String:feedback->reason];
+    NSLog(@"[MachMsgs] Feedback for topic=%@, reason=%@", topic, reason);
+
+    if (topic && [topic length] > 0) {
+        [self->tokens removeDeviceTokenForBundleId:topic reason:reason];
     }
 }
 

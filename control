@@ -7,4 +7,4 @@ Maintainer: Requis, Preloading
 Author: Requis, Preloading
 Section: Tweaks
 Depiction: https://cydia.skyglow.es/depictions/com.skyglow.snd/depictions/index.html
-Depends: preferenceloader, applist, firmware (>= 6.0), mobilesubstrate | substitute | ellekit
+Depends: firmware (>= 6.0), mobilesubstrate | substitute | ellekit

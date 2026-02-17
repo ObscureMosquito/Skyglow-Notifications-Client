@@ -1,57 +1,46 @@
 #import "SNLogViewController.h"
 #include <Foundation/Foundation.h>
+#include <QuartzCore/QuartzCore.h> // Needed for cornerRadius
 
 @interface SNLogViewController ()
-
-@property (nonatomic, strong) UITextView *logTextView;
-
+@property (nonatomic, strong) UILabel *logLabel;
+@property (nonatomic, strong) UIImageView *overlayView;
 @end
 
 @implementation SNLogViewController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    
-    // 1. Setup Frame and Initialization
-    CGFloat offset = -39.0;
-    CGRect frame = CGRectMake(0, offset, self.view.bounds.size.width, self.view.bounds.size.height);
 
-    self.logTextView = [[UITextView alloc] initWithFrame:frame];
-    self.logTextView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    self.logTextView.editable = NO;
-    self.logTextView.textAlignment = NSTextAlignmentCenter;
-    self.logTextView.center = CGPointMake(self.view.center.x, self.view.center.y + offset / 2);
-    self.logTextView.layer.cornerRadius = 7;
-    self.logTextView.clipsToBounds = YES;
-    self.logTextView.backgroundColor = [UIColor blackColor];
-    self.logTextView.textColor = [UIColor blackColor];
-    self.logTextView.font = [UIFont boldSystemFontOfSize:12.0];
+    self.view.backgroundColor = [UIColor clearColor];
 
-    CGFloat topPadding = 3.2; 
-    UIEdgeInsets insets = UIEdgeInsetsMake(topPadding, 0, 0, 0);
-    [self.logTextView setContentInset:insets];
-    [self.logTextView setContentOffset:CGPointMake(0, -topPadding) animated:NO];
+    CGRect labelFrame = CGRectInset(self.view.bounds, 0.0, 0.0);
 
-    [self.view addSubview:self.logTextView];
-    
-    // 4. Add the Glossy Overlay
+    self.logLabel = [[UILabel alloc] initWithFrame:labelFrame];
+    self.logLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.logLabel.textAlignment = NSTextAlignmentCenter; // Horizontal Center
+    self.logLabel.layer.cornerRadius = 7.0;
+    self.logLabel.clipsToBounds = YES;
+    self.logLabel.backgroundColor = [UIColor blackColor];
+    self.logLabel.textColor = [UIColor blackColor];
+    self.logLabel.font = [UIFont boldSystemFontOfSize:13.0];
+
+    [self.view addSubview:self.logLabel];
+
     NSString *imagePath = @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Overlay-Gloss.png";
     UIImage *glossImage = [UIImage imageWithContentsOfFile:imagePath];
-    
     if (glossImage) {
-        UIImageView *overlayView = [[UIImageView alloc] initWithImage:glossImage];
+        self.overlayView = [[UIImageView alloc] initWithImage:glossImage];
         
-        [overlayView setAlpha:0.6];
+        self.overlayView.frame = self.logLabel.bounds;
+        self.overlayView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         
-        overlayView.frame = self.logTextView.bounds;
-        overlayView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        overlayView.contentMode = UIViewContentModeScaleToFill;
-        overlayView.userInteractionEnabled = NO;
+        self.overlayView.alpha = 0.6;
+        self.overlayView.contentMode = UIViewContentModeScaleToFill;
         
-        [self.logTextView addSubview:overlayView];
+        [self.logLabel addSubview:self.overlayView];
     }
-    
-    // Register for Notifications
+
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     (__bridge const void *)(self),
                                     &daemonStatusStatusUpdate,
@@ -59,7 +48,6 @@
                                     NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
 
-    NSLog(@"SNLogViewController: Registered for notifications.");
     [self updateLogWithStatus];
 }
 
@@ -96,7 +84,7 @@ void daemonStatusStatusUpdate(CFNotificationCenterRef center,
 
     NSString *userFriendlyMessage;
     UIColor *backgroundColor;
-    CGFloat alpha = 0.5; // Adjust this value to set the desired opacity (0.0 to 1.0)
+    CGFloat alpha = 0.5;
 
     if ([currentStatus isEqualToString:@"Disabled"]) {
         backgroundColor = [UIColor grayColor];
@@ -124,8 +112,8 @@ void daemonStatusStatusUpdate(CFNotificationCenterRef center,
         userFriendlyMessage = @"The connection was closed.";
     }
 
-    self.logTextView.backgroundColor = [backgroundColor colorWithAlphaComponent:alpha];
-    self.logTextView.text = userFriendlyMessage;
+    self.logLabel.backgroundColor = [backgroundColor colorWithAlphaComponent:alpha];
+    self.logLabel.text = userFriendlyMessage;
 }
 
 @end
