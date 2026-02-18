@@ -1,96 +1,96 @@
 #import "SNAppListController.h"
+#import "SNDataManager.h"
 #import <Preferences/PSSpecifier.h>
 #import <Preferences/PSTableCell.h>
 #import "SNAppToggleCell.h"
 
 @implementation SNAppListController
 
-
 - (NSArray *)specifiers {
-    NSLog(@"Getting app list specifiers");
     if (!_specifiers) {
         NSMutableArray *specs = [NSMutableArray array];
         
-        // Add header
-        PSSpecifier *groupSpecifier = [PSSpecifier preferenceSpecifierNamed:@"Toggle Notifications per app"
-                                                                     target:self
-                                                                        set:NULL
-                                                                        get:NULL
-                                                                     detail:Nil
-                                                                       cell:PSGroupCell
-                                                                       edit:Nil];
-        [groupSpecifier setProperty:@"If enabled, Skyglow notifications will be used for sending notifications. If it's off, apple's built in notification service will be used for that app." forKey:@"footerText"];
-        [specs addObject:groupSpecifier];
+        // Header
+        PSSpecifier *groupSpec = [PSSpecifier preferenceSpecifierNamed:@"Toggle Notifications per app"
+                                                                target:self
+                                                                   set:NULL
+                                                                   get:NULL
+                                                                detail:Nil
+                                                                  cell:PSGroupCell
+                                                                  edit:Nil];
         
-        NSDictionary *appStatus = [self getAppStatusFromPreferences];
+        [specs addObject:groupSpec];
         
-        if (!appStatus || appStatus.count == 0) {
-            // If no apps configured yet, show placeholder
-            PSSpecifier *placeholderSpec = [PSSpecifier preferenceSpecifierNamed:@"No regisered applications."
-                                                                         target:self
-                                                                            set:NULL
-                                                                            get:NULL
-                                                                         detail:Nil
-                                                                           cell:PSStaticTextCell
-                                                                           edit:Nil];
-            [specs addObject:placeholderSpec];
+        // ── Merge bundle IDs from both sources ──
+        //  1) plist appStatus (set by tweak hook)
+        //  2) SQLite notifications table (set by daemon token generation)
+        SNDataManager *dm = [SNDataManager shared];
+        NSDictionary *appStatus    = [dm appStatus];
+        NSSet        *dbBundleIDs  = [dm registeredBundleIDs];
+        
+        NSMutableSet *allBundleIDs = [NSMutableSet setWithArray:[appStatus allKeys]];
+        [allBundleIDs unionSet:dbBundleIDs];
+        
+        if ([allBundleIDs count] == 0) {
+            PSSpecifier *placeholder = [PSSpecifier preferenceSpecifierNamed:@"No registered applications."
+                                                                      target:self
+                                                                         set:NULL
+                                                                         get:NULL
+                                                                      detail:Nil
+                                                                        cell:PSStaticTextCell
+                                                                        edit:Nil];
+            [specs addObject:placeholder];
+            [groupSpec setProperty:@"If enabled, Skyglow notifications will be used for sending notifications. If it's off, Apple's built in notification service will be used for that app."
+                            forKey:@"footerText"];
         } else {
-            for (NSString *bundleId in appStatus) {
+            NSArray *sorted = [[allBundleIDs allObjects] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)];
+            
+            for (NSString *bundleId in sorted) {
                 PSSpecifier *spec = [PSSpecifier preferenceSpecifierNamed:bundleId
-                                                                 target:self
-                                                                    set:@selector(setPreferenceValue:specifier:)
-                                                                    get:@selector(readPreferenceValue:)
-                                                                 detail:Nil
-                                                                   cell:PSSwitchCell
-                                                                   edit:Nil];
-                
+                                                                   target:self
+                                                                      set:@selector(setPreferenceValue:specifier:)
+                                                                      get:@selector(readPreferenceValue:)
+                                                                   detail:Nil
+                                                                     cell:PSSwitchCell
+                                                                     edit:Nil];
                 [spec setProperty:bundleId forKey:@"bundleId"];
                 [spec setProperty:[SNAppToggleCell class] forKey:@"cellClass"];
                 [spec setProperty:@"com.skyglow.sndp" forKey:@"defaults"];
                 [spec setProperty:@"appStatus" forKey:@"key"];
                 [specs addObject:spec];
-                
-        
             }
-            [groupSpecifier setProperty:@"Not seeing the app you want to toggle? Try opening it or signing into your app to get it to appear on this list." forKey:@"footerText"];
+            
+            [groupSpec setProperty:@"Not seeing the app you want? Try opening it or signing in to get it to appear."
+                            forKey:@"footerText"];
         }
-        _specifiers = [specs copy];
         
+        _specifiers = [specs copy];
     }
-    
     return _specifiers;
 }
 
-- (id)readPreferenceValue:(PSSpecifier*)specifier {
+- (id)readPreferenceValue:(PSSpecifier *)specifier {
     NSString *bundleId = [specifier propertyForKey:@"bundleId"];
-    NSLog(@"[SNAppListController] Reading preference for %@", bundleId);
+    NSDictionary *appStatus = [[SNDataManager shared] appStatus];
+    id val = [appStatus objectForKey:bundleId];
     
-    NSDictionary *appStatus = [self getAppStatusFromPreferences];
-    return [appStatus objectForKey:bundleId] ?: @NO;
+    // If the app has a token but no explicit toggle yet, default to YES
+    // (it registered via Mach IPC, so the user presumably wants it on)
+    if (val == nil) {
+        NSSet *dbIDs = [[SNDataManager shared] registeredBundleIDs];
+        if ([dbIDs containsObject:bundleId]) {
+            return @YES;
+        }
+    }
+    return val ?: @NO;
 }
 
-- (void)setPreferenceValue:(id)value specifier:(PSSpecifier*)specifier {
+- (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
     NSString *bundleId = [specifier propertyForKey:@"bundleId"];
-    NSLog(@"[SNAppListController] Setting %@ to %@", bundleId, value);
+    if (!bundleId) return;
     
-    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath] ?: [NSMutableDictionary dictionary];
-    NSMutableDictionary *appStatus = [NSMutableDictionary dictionaryWithDictionary:[prefs objectForKey:@"appStatus"] ?: @{}];
-    
-    [appStatus setObject:value forKey:bundleId];
-    [prefs setObject:appStatus forKey:@"appStatus"];
-    
-    BOOL success = [prefs writeToFile:plistPath atomically:YES];
-    NSLog(@"[SNAppListController] Write success: %d", success);
-    
-                                      
+    [[SNDataManager shared] setAppStatusValue:[value boolValue] forBundleId:bundleId];
     [self reloadSpecifier:specifier animated:YES];
-}
-
-- (NSDictionary *)getAppStatusFromPreferences {
-    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
-    return [prefs objectForKey:@"appStatus"];
 }
 
 @end

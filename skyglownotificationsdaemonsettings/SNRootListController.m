@@ -4,6 +4,8 @@
 #import <Preferences/PSSpecifier.h>
 #import "SNRootListController.h"
 #import "SNServerInfoViewController.h"
+#import "SNDebugViewController.h"
+#import "SNDataManager.h"
 
 @implementation SNRootListController
 
@@ -13,7 +15,6 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    // iOS 6 Style Back Button
     UIBarButtonItem *backItem = [[UIBarButtonItem alloc] initWithTitle:@"Back"
                                                                  style:UIBarButtonItemStyleBordered
                                                                 target:nil
@@ -28,26 +29,22 @@
     return _specifiers;
 }
 
-// Pref reading/writing logic remains same as it uses standard NSDictionary/CFPreferences
 - (id)readPreferenceValue:(PSSpecifier *)specifier {
-    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
     NSString *key = [specifier propertyForKey:@"key"];
-    id val = key ? prefs[key] : nil;
+    if (!key) return [specifier propertyForKey:@"default"];
+    
+    NSDictionary *prefs = [[SNDataManager shared] mainPrefs];
+    id val = [prefs objectForKey:key];
     return val ?: [specifier propertyForKey:@"default"];
 }
 
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
-    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
     NSString *key = [specifier propertyForKey:@"key"];
     if (!key) return;
     
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath] ?: [NSMutableDictionary dictionary];
-    if (value) prefs[key] = value;
-    else [prefs removeObjectForKey:key];
+    [[SNDataManager shared] setMainPrefValue:value forKey:key];
     
-    [prefs writeToFile:plistPath atomically:YES];
-    
+    // Also sync via CFPreferences for backward compat
     CFStringRef appID = CFSTR("com.skyglow.sndp");
     CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, appID);
     CFPreferencesAppSynchronize(appID);
@@ -69,8 +66,8 @@
     }
 }
 
-- (void)navigateToInfo {
-    SNServerInfoViewController *vc = [[SNServerInfoViewController alloc] init];
+- (void)pushDebugView {
+    SNDebugViewController *vc = [[SNDebugViewController alloc] init];
     [self.navigationController pushViewController:vc animated:YES];
 }
 
@@ -86,22 +83,21 @@
         [self reloadDaemon];
         
         // Clean up DB
-        NSFileManager *fileManager = [NSFileManager defaultManager];
-        [fileManager removeItemAtPath:@"/var/mobile/Library/SkyglowNotifications/sqlite.db" error:nil];
+        [[NSFileManager defaultManager]
+         removeItemAtPath:@"/var/mobile/Library/SkyglowNotifications/sqlite.db" error:nil];
         
-        NSString *serverAddress = [self getServerAddressFromPreferences];
+        NSString *serverAddress = [[SNDataManager shared] serverAddressInput];
         NSString *result = RegisterAccount(serverAddress);
         
         dispatch_async(dispatch_get_main_queue(), ^{
             if (loadingAlert) [loadingAlert dismissWithClickedButtonIndex:0 animated:YES];
             
             if (result) {
-                UIAlertView *errorAlert = [[UIAlertView alloc] initWithTitle:@"Failed to Register"
-                                                                     message:[NSString stringWithFormat:@"Error: %@", result]
-                                                                    delegate:nil
-                                                           cancelButtonTitle:@"Okay"
-                                                           otherButtonTitles:nil];
-                [errorAlert show];
+                [[[UIAlertView alloc] initWithTitle:@"Failed to Register"
+                                            message:[NSString stringWithFormat:@"Error: %@", result]
+                                           delegate:nil
+                                  cancelButtonTitle:@"Okay"
+                                  otherButtonTitles:nil] show];
             } else {
                 [self reloadDaemon];
             }
@@ -115,30 +111,22 @@
                                                    delegate:nil
                                           cancelButtonTitle:nil
                                           otherButtonTitles:nil];
-    
-    UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
+    UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
+                                        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
     [alert show];
     
-    // Classic iOS 6 subview injection
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        CGRect b = alert.bounds;
-        spinner.center = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b) + 25);
-        [alert addSubview:spinner];
-        [spinner startAnimating];
-    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+                       spinner.center = CGPointMake(CGRectGetMidX(alert.bounds), CGRectGetMidY(alert.bounds) + 25);
+                       [alert addSubview:spinner];
+                       [spinner startAnimating];
+                   });
     
     if (completion) completion(alert);
 }
 
-- (void)dismissRegisteringUI:(id)uiToken {
-    if ([uiToken isKindOfClass:[UIAlertView class]]) {
-        [(UIAlertView *)uiToken dismissWithClickedButtonIndex:0 animated:YES];
-    }
-}
-
 - (NSString *)getServerAddressFromPreferences {
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.skyglow.sndp.plist"];
-    return [prefs objectForKey:@"notificationServerAddress"] ?: @"";
+    return [[SNDataManager shared] serverAddressInput];
 }
 
 @end

@@ -45,8 +45,6 @@
 		<dict>
             <key>cell</key>
             <string>PSButtonCell</string>
-            <key>cellClass</key>
-            <string>SNLeftAlignedButtonCell</string>
             <key>label</key>
             <string>Reload Daemon</string>
             <key>action</key>
@@ -87,6 +85,8 @@
 			<string>PSButtonCell</string>
 			<key>label</key>
 			<string></string>
+			<key>action</key>
+			<string>pushDebugView</string>
 		</dict>
 		<dict>
 			<key>cell</key>
