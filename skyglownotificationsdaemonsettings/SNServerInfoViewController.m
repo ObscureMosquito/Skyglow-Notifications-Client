@@ -1,7 +1,10 @@
 #import "SNServerInfoViewController.h"
 #import "SNDataManager.h"
+#include <spawn.h>
+#include <sys/wait.h>
 
 extern NSString *RegisterAccount(NSString *serverAddress);
+extern char **environ;
 
 typedef enum {
     SectionStatus = 0,
@@ -78,9 +81,9 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
     });
 }
 
-// ──────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Data loading  (all via SNDataManager)
-// ──────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 - (void)loadData {
     SNDataManager *dm = [SNDataManager shared];
@@ -98,7 +101,7 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
         [fmt setTimeStyle:NSDateFormatterMediumStyle];
         _lastUpdated = [fmt stringFromDate:updated];
     } else {
-        _lastUpdated = @"—";
+        _lastUpdated = @"â€”";
     }
     
     NSDictionary *certInfo = [dm parseCertificatePEM:[dm serverPubKeyPEM]];
@@ -111,9 +114,9 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
     _resolvedPort = [dns objectForKey:@"port"];
 }
 
-// ──────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // TableView DataSource
-// ──────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     return _isRegistered ? SectionCount : 2;
@@ -161,7 +164,7 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
     
     SNDataManager *dm = [SNDataManager shared];
     
-    // ── Not registered ──
+    // â”€â”€ Not registered â”€â”€
     if (!_isRegistered) {
         if (indexPath.section == 0) {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:valueCellID];
@@ -184,7 +187,7 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
         return cell;
     }
     
-    // ── Actions ──
+    // â”€â”€ Actions â”€â”€
     ServerInfoSection section = (ServerInfoSection)indexPath.section;
     
     if (section == SectionActions) {
@@ -198,7 +201,7 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
         return cell;
     }
     
-    // ── Value rows ──
+    // â”€â”€ Value rows â”€â”€
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:valueCellID];
     if (!cell)
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
@@ -229,7 +232,7 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
             switch (indexPath.row) {
                 case 0:
                     cell.textLabel.text = @"Address";
-                    cell.detailTextLabel.text = _serverAddress ?: @"—";
+                    cell.detailTextLabel.text = _serverAddress ?: @"â€”";
                     break;
                 case 1:
                     cell.textLabel.text = @"Endpoint";
@@ -241,14 +244,14 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
             break;
         case SectionCertificate:
             switch (indexPath.row) {
-                case 0: cell.textLabel.text = @"Common Name"; cell.detailTextLabel.text = _certSubject ?: @"—"; break;
-                case 1: cell.textLabel.text = @"Issuer";      cell.detailTextLabel.text = _certIssuer  ?: @"—"; break;
-                case 2: cell.textLabel.text = @"Expires";     cell.detailTextLabel.text = _certExpiry  ?: @"—"; break;
+                case 0: cell.textLabel.text = @"Common Name"; cell.detailTextLabel.text = _certSubject ?: @"â€”"; break;
+                case 1: cell.textLabel.text = @"Issuer";      cell.detailTextLabel.text = _certIssuer  ?: @"â€”"; break;
+                case 2: cell.textLabel.text = @"Expires";     cell.detailTextLabel.text = _certExpiry  ?: @"â€”"; break;
             }
             break;
         case SectionDevice:
             cell.textLabel.text = @"Device Address";
-            cell.detailTextLabel.text = _deviceAddress ?: @"—";
+            cell.detailTextLabel.text = _deviceAddress ?: @"â€”";
             cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             break;
         default: break;
@@ -256,9 +259,9 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
     return cell;
 }
 
-// ──────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // TableView Delegate
-// ──────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
@@ -282,9 +285,26 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
     }
 }
 
-// ──────────────────────────────────────────────
+// Daemon restart helper
+
+- (void)reloadDaemon {
+    NSString *path = [[NSBundle bundleForClass:[self class]]
+                      pathForResource:@"sndrestart" ofType:nil];
+    if (!path) {
+        NSLog(@"[ServerInfo] sndrestart not found in bundle");
+        return;
+    }
+    pid_t pid = 0;
+    const char *cpath = [path fileSystemRepresentation];
+    char *const args[] = { (char *)cpath, NULL };
+    if (posix_spawn(&pid, cpath, NULL, NULL, args, environ) == 0) {
+        waitpid(pid, NULL, 0);
+    }
+}
+
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Registration
-// ──────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 - (void)performRegistration {
     NSString *inputAddress = [[SNDataManager shared] serverAddressInput];
@@ -314,7 +334,19 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
                    });
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Clean stale data before re-registering (new identity = old tokens useless)
+        [[SNDataManager shared] clearAllTokens];
+        [[SNDataManager shared] clearDNSCache];
+        
         NSString *result = RegisterAccount(inputAddress);
+        
+        if (!result) {
+            // Registration succeeded â restart the daemon so it picks up the
+            // new profile. Posting reload_config alone isn't enough because
+            // the daemon may have exited (return 0) when it had no profile.
+            [self reloadDaemon];
+        }
+        
         dispatch_async(dispatch_get_main_queue(), ^{
             [alert dismissWithClickedButtonIndex:0 animated:YES];
             if (result) {
@@ -326,18 +358,19 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
             } else {
                 [self loadData];
                 [self.tableView reloadData];
+                // Post UI refresh so other views update
                 CFNotificationCenterPostNotificationWithOptions(
-                                                                CFNotificationCenterGetDarwinNotifyCenter(),
-                                                                CFSTR("com.skyglow.snd.request_update"),
-                                                                NULL, NULL, kCFNotificationDeliverImmediately);
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    CFSTR("com.skyglow.snd.request_update"),
+                    NULL, NULL, kCFNotificationDeliverImmediately);
             }
         });
     });
 }
 
-// ──────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Unregistration
-// ──────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 - (void)confirmUnregister {
     [[[UIAlertView alloc]

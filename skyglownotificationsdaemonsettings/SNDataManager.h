@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 
 /// Centralized data access for the Skyglow Notifications settings bundle.
 /// All plist reading, plist writing, and SQLite queries go through this singleton.
@@ -24,7 +25,15 @@
 - (NSString *)serverAddressInput;            // "notificationServerAddress" field
 - (NSDictionary *)appStatus;                 // appStatus dict {bundleId: @YES/@NO}
 - (void)setAppStatusValue:(BOOL)value forBundleId:(NSString *)bundleId;
+- (void)removeAppStatusForBundleId:(NSString *)bundleId;
 - (void)setMainPrefValue:(id)value forKey:(NSString *)key;
+
+// Database
+- (void)removeAppFromDatabase:(NSString *)bundleId;
+
+/// Removes all tokens from the database (for unregistration cleanup).
+/// App preferences (appStatus) are preserved so they survive re-registration.
+- (void)clearAllTokens;
 
 // ──────────────────────────────────────────────
 // Profile  (com.skyglow.sndp-profile1.plist)

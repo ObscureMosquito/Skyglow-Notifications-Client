@@ -92,24 +92,30 @@ void daemonStatusStatusUpdate(CFNotificationCenterRef center,
     } else if ([currentStatus isEqualToString:@"Error"]) {
         backgroundColor = [UIColor redColor];
         userFriendlyMessage = @"An error has occurred. Please check the daemon.";
+    } else if ([currentStatus isEqualToString:@"ErrorInAuth"]) {
+        backgroundColor = [UIColor redColor];
+        userFriendlyMessage = @"Authentication failed. Try re-registering.";
     } else if ([currentStatus isEqualToString:@"EnabledNotConnected"]) {
         backgroundColor = [UIColor yellowColor];
         userFriendlyMessage = @"The daemon is enabled but not connected.";
+    } else if ([currentStatus isEqualToString:@"EnabledNotRegistered"]) {
+        backgroundColor = [UIColor orangeColor];
+        userFriendlyMessage = @"Not registered. Enter a server address to begin.";
     } else if ([currentStatus isEqualToString:@"ConnectedNotAuthenticated"]) {
         backgroundColor = [UIColor orangeColor];
-        userFriendlyMessage = @"The daemon is connected but not authenticated.";
-    }else if ([currentStatus isEqualToString:@"Connected"]) {
+        userFriendlyMessage = @"Connected. Authenticatingâ¦";
+    } else if ([currentStatus isEqualToString:@"Connected"]) {
         backgroundColor = [UIColor greenColor];
-        userFriendlyMessage = @"The daemon is connected successfully.";
+        userFriendlyMessage = @"Connected and receiving notifications.";
     } else if ([currentStatus isEqualToString:@"ServerConfigBad"]) {
         backgroundColor = [UIColor purpleColor];
         userFriendlyMessage = @"The server configuration is incorrect.";
-    } else if ([currentStatus isEqualToString:@"FatalConnectionError"]) {
-        backgroundColor = [UIColor redColor];
-        userFriendlyMessage = @"A fatal error occured during the connection, cannot continue.";
-    } else if ([currentStatus isEqualToString:@"DaemonStatusConnectionClosed"]) {
-        backgroundColor = [UIColor brownColor];
-        userFriendlyMessage = @"The connection was closed.";
+    } else if ([currentStatus isEqualToString:@"ConnectionClosed"]) {
+        backgroundColor = [UIColor orangeColor];
+        userFriendlyMessage = @"Connection closed. Reconnectingâ¦";
+    } else {
+        backgroundColor = [UIColor darkGrayColor];
+        userFriendlyMessage = currentStatus ?: @"Unknown status";
     }
 
     self.logLabel.backgroundColor = [backgroundColor colorWithAlphaComponent:alpha];

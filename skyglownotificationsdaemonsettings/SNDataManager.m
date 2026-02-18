@@ -77,6 +77,17 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
     [prefs writeToFile:kMainPrefsPath atomically:YES];
 }
 
+- (void)removeAppStatusForBundleId:(NSString *)bundleId {
+    if (!bundleId) return;
+    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:kMainPrefsPath]
+    ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *appSt = [NSMutableDictionary dictionaryWithDictionary:
+                                  [prefs objectForKey:@"appStatus"] ?: @{}];
+    [appSt removeObjectForKey:bundleId];
+    [prefs setObject:appSt forKey:@"appStatus"];
+    [prefs writeToFile:kMainPrefsPath atomically:YES];
+}
+
 // ══════════════════════════════════════════════
 #pragma mark - Profile
 // ══════════════════════════════════════════════
@@ -252,6 +263,30 @@ static sqlite3 *openDBReadOnly(void) {
     if (db) sqlite3_close(db);
 }
 
+- (void)removeAppFromDatabase:(NSString *)bundleId {
+    if (!bundleId) return;
+    sqlite3 *db = NULL;
+    if (sqlite3_open([kDBPath UTF8String], &db) == SQLITE_OK) {
+        const char *sql = "DELETE FROM notifications WHERE bundle_id = ?";
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, [bundleId UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_step(stmt);
+        }
+        if (stmt) sqlite3_finalize(stmt);
+    }
+    if (db) sqlite3_close(db);
+}
+
+- (void)clearAllTokens {
+    sqlite3 *db = NULL;
+    if (sqlite3_open([kDBPath UTF8String], &db) == SQLITE_OK) {
+        sqlite3_exec(db, "DELETE FROM notifications;", NULL, NULL, NULL);
+        NSLog(@"[SNDataManager] Cleared all tokens from database");
+    }
+    if (db) sqlite3_close(db);
+}
+
 // ══════════════════════════════════════════════
 #pragma mark - Certificate Parsing
 // ══════════════════════════════════════════════
@@ -338,19 +373,33 @@ static sqlite3 *openDBReadOnly(void) {
 - (void)unregister {
     NSFileManager *fm = [NSFileManager defaultManager];
     
-    // Remove profile
+    // 1. Remove profile (keys, server address, device address)
     [fm removeItemAtPath:kProfilePath error:nil];
     
-    // Disable
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:kMainPrefsPath]
-    ?: [NSMutableDictionary dictionary];
-    [prefs setObject:@NO forKey:@"enabled"];
-    [prefs writeToFile:kMainPrefsPath atomically:YES];
+    // 2. Clear all tokens — they're tied to the old device identity
+    //    and won't work after re-registration with a new keypair.
+    //    NOTE: appStatus in main plist is preserved so app toggle
+    //    preferences survive re-registration.
+    [self clearAllTokens];
     
-    // Write status
-    [self writeStatus:@"Disabled"];
+    // 3. Clear DNS cache — server may change on re-register
+    [self clearDNSCache];
     
-    // Notify daemon
+    // NOTE: We do NOT set enabled=NO here. The daemon stays enabled
+    // but idle (no server to connect to). The user can re-register
+    // without having to manually re-enable.
+    
+    // 4. Write status — enabled but not registered
+    [self writeStatus:@"EnabledNotRegistered"];
+    
+    // 5. Tell daemon to re-read config and disconnect gracefully
+    //    (daemon will send ClientDisconnect to server before closing socket)
+    CFNotificationCenterPostNotificationWithOptions(
+                                                    CFNotificationCenterGetDarwinNotifyCenter(),
+                                                    CFSTR("com.skyglow.snd.reload_config"),
+                                                    NULL, NULL,
+                                                    kCFNotificationDeliverImmediately);
+    // Also post the UI refresh notification
     CFNotificationCenterPostNotificationWithOptions(
                                                     CFNotificationCenterGetDarwinNotifyCenter(),
                                                     CFSTR("com.skyglow.snd.request_update"),
@@ -377,13 +426,12 @@ static sqlite3 *openDBReadOnly(void) {
     if ([status isEqualToString:@"Connected"])                  return @"Connected";
     if ([status isEqualToString:@"ConnectedNotAuthenticated"])  return @"Authenticating…";
     if ([status isEqualToString:@"EnabledNotConnected"])        return @"Connecting…";
+    if ([status isEqualToString:@"EnabledNotRegistered"])       return @"Not Registered";
     if ([status isEqualToString:@"Disabled"])                   return @"Disabled";
     if ([status isEqualToString:@"Error"])                      return @"Error";
     if ([status isEqualToString:@"ErrorInAuth"])                return @"Auth Error";
     if ([status isEqualToString:@"ServerConfigBad"])            return @"Bad Config";
     if ([status isEqualToString:@"ConnectionClosed"])           return @"Disconnected";
-    if ([status isEqualToString:@"FatalConnectionError"])       return @"Fatal Error";
-    if ([status isEqualToString:@"DaemonStatusConnectionClosed"]) return @"Connection Closed";
     return status;
 }
 
@@ -391,15 +439,15 @@ static sqlite3 *openDBReadOnly(void) {
     if (!status) return [UIColor grayColor];
     if ([status isEqualToString:@"Connected"])
         return [UIColor colorWithRed:0.2 green:0.7 blue:0.2 alpha:1.0];
-    if ([status isEqualToString:@"Disabled"])
+    if ([status isEqualToString:@"Disabled"] ||
+        [status isEqualToString:@"EnabledNotRegistered"])
         return [UIColor grayColor];
     if ([status isEqualToString:@"EnabledNotConnected"] ||
         [status isEqualToString:@"ConnectedNotAuthenticated"])
         return [UIColor orangeColor];
     if ([status isEqualToString:@"Error"] ||
         [status isEqualToString:@"ErrorInAuth"] ||
-        [status isEqualToString:@"ServerConfigBad"] ||
-        [status isEqualToString:@"FatalConnectionError"])
+        [status isEqualToString:@"ServerConfigBad"])
         return [UIColor redColor];
     return [UIColor darkGrayColor];
 }

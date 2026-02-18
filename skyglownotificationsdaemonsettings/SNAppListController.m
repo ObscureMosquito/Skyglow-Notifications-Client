@@ -15,9 +15,10 @@
                                                                 target:self
                                                                    set:NULL
                                                                    get:NULL
-                                                                detail:Nil
-                                                                  cell:PSGroupCell
-                                                                  edit:Nil];
+                                                                  detail:Nil
+                                                                    cell:PSGroupCell
+                                                                    edit:Nil];
+        [groupSpec setProperty:@YES forKey:@"isDeletionGroup"]; // Hint for commitEditingStyle
         
         [specs addObject:groupSpec];
         
@@ -91,6 +92,50 @@
     
     [[SNDataManager shared] setAppStatusValue:[value boolValue] forBundleId:bundleId];
     [self reloadSpecifier:specifier animated:YES];
+}
+
+// ──────────────────────────────────────────────
+// Deletion Support
+// ──────────────────────────────────────────────
+
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    // Check if the section is the one with the apps
+    if (indexPath.section < _specifiers.count) {
+        // Find the group specifier for this section
+        PSSpecifier *spec = [self specifierAtIndex:[self indexForIndexPath:indexPath]];
+        if ([spec propertyForKey:@"bundleId"]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (editingStyle == UITableViewCellEditingStyleDelete) {
+        PSSpecifier *spec = [self specifierAtIndex:[self indexForIndexPath:indexPath]];
+        NSString *bundleId = [spec propertyForKey:@"bundleId"];
+        
+        if (bundleId) {
+            // 1. Write to persistent domain for SpringBoard
+            NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.skyglow.sndp"] ?: @{};
+            NSMutableDictionary *mutablePrefs = [prefs mutableCopy];
+            [mutablePrefs setObject:bundleId forKey:@"lastUnregisteredApp"];
+            [[NSUserDefaults standardUserDefaults] setPersistentDomain:mutablePrefs forName:@"com.skyglow.sndp"];
+            [[NSUserDefaults standardUserDefaults] synchronize];
+
+            // 2. Notify SpringBoard to unregister
+            CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                                 CFSTR("com.skyglow.sgn.unregisterInputApp"),
+                                                 NULL, NULL, TRUE);
+            
+            // 3. Update local appStatus (remove key entirely) & DB
+            [[SNDataManager shared] removeAppStatusForBundleId:bundleId];
+            [[SNDataManager shared] removeAppFromDatabase:bundleId];
+            
+            // 4. Remove specifier
+            [self removeSpecifier:spec animated:YES];
+        }
+    }
 }
 
 @end

@@ -26,6 +26,51 @@ DBManager *db           = nil;
 char *serverIP          = NULL;
 char *serverPortStr     = NULL;
 
+/// The single daemon instance. Set after init in main().
+static NotificationDaemon *gDaemon = nil;
+
+/// OpenSSL initialized flag — call SSL_library_init() exactly once.
+static BOOL gSSLInitialized = NO;
+
+// ──────────────────────────────────────────────
+// OpenSSL one-time init
+// ──────────────────────────────────────────────
+
+static void ensureSSLInitialized(void) {
+    if (!gSSLInitialized) {
+        SSL_library_init();
+        SSL_load_error_strings();
+        OpenSSL_add_all_algorithms();
+        gSSLInitialized = YES;
+    }
+}
+
+// ──────────────────────────────────────────────
+// Backoff helpers
+// ──────────────────────────────────────────────
+
+/// Compute the next backoff interval with jitter.
+/// Progression: INITIAL, INITIAL*2, INITIAL*4, ..., capped at MAX_BACKOFF_SEC.
+/// Adds uniform random jitter of [0, MAX_JITTER_SEC] to prevent thundering herd.
+static int computeBackoff(int currentBackoff) {
+    int next = MIN(currentBackoff * 2, MAX_BACKOFF_SEC);
+    // Add jitter (arc4random_uniform is available on iOS 6+)
+    int jitter = (int)arc4random_uniform(MAX_JITTER_SEC + 1);
+    return next + jitter;
+}
+
+/// Sleep in 1-second increments, checking _shouldDisconnect each second.
+/// Returns YES if sleep completed, NO if interrupted by disconnect.
+static BOOL interruptibleSleep(NotificationDaemon *daemon, int seconds) {
+    for (int i = 0; i < seconds; i++) {
+        sleep(1);
+        @synchronized(daemon) {
+            if (daemon->_shouldDisconnect) return NO;
+        }
+    }
+    return YES;
+}
+
 // ──────────────────────────────────────────────
 // SendPush — forward a notification via Mach IPC
 // ──────────────────────────────────────────────
@@ -80,6 +125,7 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
     if ((size_t)plistData.length > maxInline) {
         NSLog(@"[SendPush] Payload too large (%lu > %lu)",
               (unsigned long)plistData.length, (unsigned long)maxInline);
+        mach_port_deallocate(mach_task_self(), servicePort);
         return KERN_RESOURCE_SHORTAGE;
     }
 
@@ -106,6 +152,7 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
     usedSize = (usedSize + 3) & ~(size_t)3;
     if (usedSize > sizeof(msg)) {
         NSLog(@"[SendPush] Size overflow (%zu)", usedSize);
+        mach_port_deallocate(mach_task_self(), servicePort);
         return KERN_INVALID_ARGUMENT;
     }
     msg.header.msgh_size = (mach_msg_size_t)usedSize;
@@ -115,6 +162,8 @@ static kern_return_t SendPush(NSString *topic, NSDictionary *userInfo) {
     if (kr != KERN_SUCCESS) {
         NSLog(@"[SendPush] mach_msg failed: %s (%d)", mach_error_string(kr), kr);
     }
+
+    mach_port_deallocate(mach_task_self(), servicePort);
     return kr;
 }
 
@@ -169,6 +218,61 @@ static void refreshDNSCacheAsync(NSString *serverAddr) {
 }
 
 // ──────────────────────────────────────────────
+// Config reading helpers
+// ──────────────────────────────────────────────
+
+/// Re-read the main prefs and return whether daemon is enabled.
+static BOOL readEnabledState(void) {
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:
+                           @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist"];
+    return [[prefs objectForKey:@"enabled"] boolValue];
+}
+
+/// Re-read the profile plist. Returns nil if not registered.
+static NSDictionary *readProfile(void) {
+    NSDictionary *profile = [NSDictionary dictionaryWithContentsOfFile:
+                             @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist"];
+    NSString *addr = profile[@"server_address"];
+    if (!addr || ![addr isKindOfClass:[NSString class]] || [addr length] == 0) return nil;
+    return profile;
+}
+
+// ──────────────────────────────────────────────
+// Validation
+// ──────────────────────────────────────────────
+
+static BOOL isValidIPAddress(NSString *ip) {
+    if (!ip) return NO;
+    struct sockaddr_in sa;
+    return inet_pton(AF_INET, [ip UTF8String], &sa.sin_addr) == 1;
+}
+
+static BOOL isValidPort(NSString *port) {
+    if (!port || [port length] == 0) return NO;
+    NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
+    if ([port rangeOfCharacterFromSet:nonDigits].location != NSNotFound) return NO;
+    int p = [port intValue];
+    return (p > 0 && p <= 65535);
+}
+
+// ──────────────────────────────────────────────
+// Status publishing
+// ──────────────────────────────────────────────
+
+void updateStatus(NSString *status) {
+    NSDictionary *dict = @{
+        @"lastUpdated":   [NSDate date],
+        @"currentStatus": status
+    };
+    [dict writeToFile:@"/var/mobile/Library/Preferences/com.skyglow.sndp.status.plist" atomically:YES];
+    CFNotificationCenterPostNotificationWithOptions(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFSTR(kDaemonStatusNewStatus),
+        NULL, NULL,
+        kCFNotificationDeliverImmediately);
+}
+
+// ──────────────────────────────────────────────
 // NotificationDaemon
 // ──────────────────────────────────────────────
 
@@ -176,19 +280,145 @@ static void refreshDNSCacheAsync(NSString *serverAddr) {
 
 - (id)init {
     if ((self = [super init])) {
-        _disconnectionTimes = [[NSMutableArray alloc] init];
         _isRunning = NO;
+        _shouldDisconnect = NO;
+        _authFailed = NO;
+        _networkWasLost = NO;
+        _consecutiveFailures = 0;
     }
     return self;
 }
 
-- (void)disableDaemon {
-    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:plistPath];
-    if (!prefs) prefs = [NSMutableDictionary dictionary];
-    [prefs setObject:@NO forKey:@"enabled"];
-    [prefs writeToFile:plistPath atomically:YES];
-    updateStatus(kStatusDisabled);
+- (void)requestDisconnect {
+    @synchronized(self) {
+        _shouldDisconnect = YES;
+    }
+    // Force the SSL read to unblock by shutting down the socket.
+    // disconnectFromServer() is thread-safe and handles the cleanup.
+    disconnectFromServer();
+}
+
+- (void)networkBecameReachable {
+    NSLog(@"[Daemon] Network became reachable — resetting failure counters");
+
+    @synchronized(self) {
+        _consecutiveFailures = 0;
+        _networkWasLost = NO;
+
+        // Don't retry if auth explicitly failed — needs config reload
+        if (_authFailed) {
+            NSLog(@"[Daemon] Auth previously failed — waiting for config reload, not reconnecting");
+            return;
+        }
+
+        // If already running, the loop will handle itself
+        if (_isRunning) {
+            NSLog(@"[Daemon] Connection loop already running");
+            return;
+        }
+    }
+
+    // Only attempt connection if we have a server configured
+    if (serverAddress && serverIP && serverPortStr) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            [self exponentialBackoffConnect];
+        });
+    } else {
+        NSLog(@"[Daemon] Network reachable but no server configured");
+    }
+}
+
+/// Re-reads config and adjusts daemon state.
+/// Called on background thread when kDaemonReloadConfig fires.
+- (void)handleConfigReload {
+    NSLog(@"[Daemon] Config reload requested");
+
+    // 1. Check if daemon is enabled
+    if (!readEnabledState()) {
+        NSLog(@"[Daemon] Config reload: daemon disabled, disconnecting");
+        [self requestDisconnect];
+        updateStatus(kStatusDisabled);
+        return;
+    }
+
+    // 2. Check if still registered
+    NSDictionary *profile = readProfile();
+    if (!profile) {
+        NSLog(@"[Daemon] Config reload: not registered, disconnecting");
+        [self requestDisconnect];
+        updateStatus(kStatusEnabledNotRegistered);
+        return;
+    }
+
+    // 3. Clear auth failure flag — user may have re-registered with new credentials
+    @synchronized(self) {
+        _authFailed = NO;
+        _consecutiveFailures = 0;
+    }
+
+    // 4. We're enabled and registered. If not already running, resolve and connect.
+    NSString *newServerAddr = profile[@"server_address"];
+    NSLog(@"[Daemon] Config reload: enabled and registered (server=%@)", newServerAddr);
+
+    // Update globals if server address changed or wasn't set
+    if (!serverAddress || ![serverAddress isEqualToString:newServerAddr]) {
+        NSLog(@"[Daemon] Config reload: server address changed/set, updating");
+
+        // Disconnect current connection if any
+        [self requestDisconnect];
+
+        // Update server address
+        [serverAddress release];
+        serverAddress = [newServerAddr retain];
+
+        // Initialize DB if not already done (for fresh registrations)
+        if (!db) {
+            db = [[DBManager alloc] init];
+            if (!db) {
+                NSLog(@"[Daemon] Failed to init database");
+                updateStatus(kStatusError);
+                return;
+            }
+        }
+
+        // Resolve DNS
+        NSDictionary *txtRecords = resolveServerLocation(newServerAddr);
+        if (!txtRecords) {
+            NSLog(@"[Daemon] Config reload: DNS resolution failed");
+            updateStatus(kStatusEnabledNotConnected);
+            return;
+        }
+
+        NSString *ip   = txtRecords[@"tcp_addr"];
+        NSString *port = txtRecords[@"tcp_port"];
+
+        if (!isValidIPAddress(ip) || !isValidPort(port)) {
+            NSLog(@"[Daemon] Config reload: invalid server config (ip=%@ port=%@)", ip, port);
+            updateStatus(kStatusServerConfigBad);
+            return;
+        }
+
+        // Update global IP/port
+        if (serverIP)      { free(serverIP);      serverIP = NULL; }
+        if (serverPortStr) { free(serverPortStr);  serverPortStr = NULL; }
+        serverIP      = strdup([ip UTF8String]);
+        serverPortStr = strdup([port UTF8String]);
+
+        NSLog(@"[Daemon] Config reload: resolved to %s:%s", serverIP, serverPortStr);
+    }
+
+    // 5. Start connecting if not already running
+    @synchronized(self) {
+        if (_isRunning) {
+            NSLog(@"[Daemon] Config reload: connection loop already running");
+            return;
+        }
+    }
+
+    updateStatus(kStatusEnabledNotConnected);
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        [self exponentialBackoffConnect];
+    });
 }
 
 - (void)processNotificationMessage:(NSDictionary *)messageDict {
@@ -279,25 +509,28 @@ static void refreshDNSCacheAsync(NSString *serverAddr) {
     }
 }
 
-- (void)checkForRapidDisconnections {
-    NSDate *cutoff = [NSDate dateWithTimeIntervalSinceNow:-10.0];
-    NSMutableArray *recent = [NSMutableArray array];
-
-    for (NSDate *t in _disconnectionTimes) {
-        if ([t compare:cutoff] == NSOrderedDescending) {
-            [recent addObject:t];
-        }
-    }
-
-    [_disconnectionTimes setArray:recent];
-
-    if ([_disconnectionTimes count] >= 3) {
-        NSLog(@"[Daemon] %lu disconnections in 10 s — disabling",
-              (unsigned long)[_disconnectionTimes count]);
-        [self disableDaemon];
-        exit(-3);
-    }
-}
+// ──────────────────────────────────────────────
+// Connection loop
+//
+// Reconnection strategy (modeled after APNS behavior):
+//
+//   1. On connection failure: exponential backoff with jitter.
+//      Progression: 2s → 4s → 8s → 16s → 32s → 60s → 120s → 300s → 600s (cap).
+//
+//   2. After MAX_CONSECUTIVE_FAILURES (12) failures, the loop
+//      exits and the daemon goes idle. It will only reconnect
+//      when the network state changes (reachability callback)
+//      or when the user triggers a config reload from settings.
+//
+//   3. Authentication failure immediately stops the loop and
+//      sets _authFailed. The daemon won't retry until the user
+//      re-registers or changes config (which posts kDaemonReloadConfig).
+//
+//   4. Successful message receipt resets the backoff to initial.
+//
+//   5. Network loss (detected by reachability callback) exits
+//      the loop. Network regain resets all counters and restarts.
+// ──────────────────────────────────────────────
 
 - (void)exponentialBackoffConnect {
     @synchronized(self) {
@@ -306,10 +539,11 @@ static void refreshDNSCacheAsync(NSString *serverAddr) {
             return;
         }
         _isRunning = YES;
+        _shouldDisconnect = NO;
     }
 
     NSLog(@"[Daemon] Starting connection loop");
-    int backoff = 1;
+    int backoff = INITIAL_BACKOFF_SEC;
     NSString *serverPubKey = [self getServerPubKey];
     int serverPort = atoi(serverPortStr);
 
@@ -330,32 +564,69 @@ static void refreshDNSCacheAsync(NSString *serverAddr) {
     updateStatus(kStatusEnabledNotConnected);
 
     while (1) {
-        [self checkForRapidDisconnections];
+        // ── Check if we've been asked to stop ──
+        @synchronized(self) {
+            if (_shouldDisconnect) {
+                NSLog(@"[Daemon] Disconnect requested, exiting connection loop");
+                break;
+            }
+        }
+
+        // ── Check if we've exhausted retries ──
+        @synchronized(self) {
+            if (_consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                NSLog(@"[Daemon] %d consecutive failures — going idle. "
+                      @"Will retry on network change or config reload.",
+                      _consecutiveFailures);
+                break;
+            }
+        }
 
         setNotificationDelegate(self);
 
         int cr = connectToServer(serverIP, serverPort, serverPubKey);
         if (cr != 0) {
-            NSLog(@"[Daemon] Connection failed (%d), retrying in %d s", cr, backoff);
+            // Check before sleeping — disconnect may have been requested
+            @synchronized(self) {
+                if (_shouldDisconnect) {
+                    NSLog(@"[Daemon] Disconnect requested after failed connect");
+                    break;
+                }
+                _consecutiveFailures++;
+            }
+
+            int failures;
+            @synchronized(self) { failures = _consecutiveFailures; }
+
+            NSLog(@"[Daemon] Connection failed (%d), attempt %d/%d, retrying in %d s",
+                  cr, failures, MAX_CONSECUTIVE_FAILURES, backoff);
             updateStatus(kStatusEnabledNotConnected);
-            sleep(backoff);
-            backoff = MIN(backoff * 2, MAX_BACKOFF);
+
+            if (!interruptibleSleep(self, backoff)) break;
+            backoff = computeBackoff(backoff);
             continue;
         }
+
+        // ── Connected — reset failure counter ──
+        @synchronized(self) {
+            _consecutiveFailures = 0;
+        }
+        backoff = INITIAL_BACKOFF_SEC;
 
         updateStatus(kStatusConnectedNotAuthenticated);
         NSLog(@"[Daemon] Connected to %s:%d", serverIP, serverPort);
 
-        // Message loop
+        // ── Message loop ──
+        BOOL authFailure = NO;
         while (1) {
             int result = handleMessage();
             if (result == 0) {
-                backoff = 1;
                 continue;
             }
             if (result == 4) {
-                NSLog(@"[Daemon] Auth failure (code %d)", result);
+                NSLog(@"[Daemon] Auth failure (code %d) — will not retry automatically", result);
                 updateStatus(kStatusErrorInAuth);
+                authFailure = YES;
             } else {
                 NSLog(@"[Daemon] Disconnected (code %d)", result);
             }
@@ -363,15 +634,53 @@ static void refreshDNSCacheAsync(NSString *serverAddr) {
         }
 
         disconnectFromServer();
-        [_disconnectionTimes addObject:[NSDate date]];
+
+        // ── Auth failure: stop retrying until config reload ──
+        if (authFailure) {
+            @synchronized(self) {
+                _authFailed = YES;
+            }
+            NSLog(@"[Daemon] Auth failed — going idle until config reload");
+            break;
+        }
+
+        // If disconnect was requested externally, don't reconnect
+        @synchronized(self) {
+            if (_shouldDisconnect) {
+                NSLog(@"[Daemon] Disconnect requested, exiting connection loop");
+                break;
+            }
+        }
+
         updateStatus(kStatusEnabledNotConnected);
 
         NSLog(@"[Daemon] Reconnecting in %d s", backoff);
-        sleep(backoff);
-        backoff = MIN(backoff * 2, MAX_BACKOFF);
+        if (!interruptibleSleep(self, backoff)) break;
+        backoff = computeBackoff(backoff);
     }
 
     @synchronized(self) { _isRunning = NO; }
+    NSLog(@"[Daemon] Connection loop exited");
+
+    // If we exhausted retries (not auth fail, not user disconnect),
+    // schedule a slow-poll retry in 30 minutes. This handles the case
+    // where the server was temporarily down but network stayed up, so
+    // no reachability change fires to restart us.
+    BOOL shouldSlowPoll = NO;
+    @synchronized(self) {
+        shouldSlowPoll = !_authFailed && !_shouldDisconnect
+                         && _consecutiveFailures >= MAX_CONSECUTIVE_FAILURES;
+    }
+    if (shouldSlowPoll) {
+        NSLog(@"[Daemon] Scheduling slow-poll retry in 30 minutes");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1800 * NSEC_PER_SEC)),
+                       dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            @synchronized(self) {
+                _consecutiveFailures = 0;
+            }
+            [self exponentialBackoffConnect];
+        });
+    }
 }
 
 - (void)dealloc {
@@ -381,7 +690,6 @@ static void refreshDNSCacheAsync(NSString *serverAddr) {
         CFRelease(_reachabilityRef);
         _reachabilityRef = NULL;
     }
-    [_disconnectionTimes release];
     [super dealloc];
 }
 
@@ -398,6 +706,7 @@ static void refreshDNSCacheAsync(NSString *serverAddr) {
     }
 
     SCNetworkReachabilityContext context = {0, (__bridge void *)(self), NULL, NULL, NULL};
+
     if (!SCNetworkReachabilitySetCallback(_reachabilityRef, ReachabilityCallback, &context)) {
         NSLog(@"[Daemon] Could not set reachability callback");
         return;
@@ -429,9 +738,8 @@ static void refreshDNSCacheAsync(NSString *serverAddr) {
     return prefs[@"server_pub_key"];
 }
 
-- (void)deviceTokenRegistrationCompleted:(NSString *)bundleId {
-    // Ack handled by semaphore in Protocol.m
-}
+// NOTE: deviceTokenRegistrationCompleted: removed — tokens are now generated locally
+// with no server round-trip. See Tokens.m for the new flow.
 
 @end
 
@@ -450,48 +758,33 @@ static void ReachabilityCallback(SCNetworkReachabilityRef target,
 
     if (reachableNow) {
         NSLog(@"[Reachability] Network reachable");
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            [daemon exponentialBackoffConnect];
-        });
+        [daemon networkBecameReachable];
     } else {
         NSLog(@"[Reachability] Network unreachable");
-        updateStatus(kStatusEnabledNotConnected);
+        @synchronized(daemon) {
+            daemon->_networkWasLost = YES;
+        }
+        // If we have a server configured, update status
+        if (serverAddress) {
+            updateStatus(kStatusEnabledNotConnected);
+        }
     }
 }
 
 // ──────────────────────────────────────────────
-// Status publishing
+// Darwin notification callback (kDaemonReloadConfig)
 // ──────────────────────────────────────────────
 
-void updateStatus(NSString *status) {
-    NSDictionary *dict = @{
-        @"lastUpdated":   [NSDate date],
-        @"currentStatus": status
-    };
-    [dict writeToFile:@"/var/mobile/Library/Preferences/com.skyglow.sndp.status.plist" atomically:YES];
-    CFNotificationCenterPostNotificationWithOptions(
-        CFNotificationCenterGetDarwinNotifyCenter(),
-        CFSTR(kDaemonStatusNewStatus),
-        NULL, NULL,
-        kCFNotificationDeliverImmediately);
-}
-
-// ──────────────────────────────────────────────
-// Validation
-// ──────────────────────────────────────────────
-
-static BOOL isValidIPAddress(NSString *ip) {
-    if (!ip) return NO;
-    struct sockaddr_in sa;
-    return inet_pton(AF_INET, [ip UTF8String], &sa.sin_addr) == 1;
-}
-
-static BOOL isValidPort(NSString *port) {
-    if (!port || [port length] == 0) return NO;
-    NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
-    if ([port rangeOfCharacterFromSet:nonDigits].location != NSNotFound) return NO;
-    int p = [port intValue];
-    return (p > 0 && p <= 65535);
+static void ConfigReloadCallback(CFNotificationCenterRef center,
+                                 void *observer,
+                                 CFStringRef name,
+                                 const void *object,
+                                 CFDictionaryRef userInfo) {
+    NotificationDaemon *daemon = (__bridge NotificationDaemon *)observer;
+    // Dispatch to background to avoid blocking the notification center
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        [daemon handleConfigReload];
+    });
 }
 
 // ──────────────────────────────────────────────
@@ -504,13 +797,18 @@ int main(void) {
 
         NSLog(@"Speedy Execution Is The Mother Of Good Fortune");
 
+        // ── Initialize OpenSSL once ──
+        ensureSSLInitialized();
+
         // ── Read preferences ──
         NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
         NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
         if (!prefs) {
-            NSLog(@"[Main] Failed to read preferences");
-            updateStatus(kStatusError);
-            return -1;
+            // First launch — create default prefs with enabled=YES
+            NSLog(@"[Main] No preferences found, creating defaults");
+            NSDictionary *defaults = @{@"enabled": @YES};
+            [defaults writeToFile:plistPath atomically:YES];
+            prefs = defaults;
         }
 
         if (![[prefs objectForKey:@"enabled"] boolValue]) {
@@ -519,14 +817,40 @@ int main(void) {
             return 0;
         }
 
+        // ── Initialize database (needed for DNS cache and tokens) ──
+        db = [[DBManager alloc] init];
+        if (!db) {
+            NSLog(@"[Main] Failed to init database");
+            updateStatus(kStatusError);
+            return -1;
+        }
+
+        // ── Start Mach server (always — even if not registered, so tweak can request tokens later) ──
+        MachMsgs *machMsgs = [[MachMsgs alloc] init];
+        [machMsgs startMachServer];
+
+        // ── Start network monitoring ──
+        NotificationDaemon *daemon = [[NotificationDaemon alloc] init];
+        gDaemon = daemon;
+        [daemon startMonitoringNetworkReachability];
+
+        // ── Listen for config reload notifications from settings ──
+        CFNotificationCenterAddObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            (__bridge const void *)daemon,
+            ConfigReloadCallback,
+            CFSTR(kDaemonReloadConfig),
+            NULL,
+            CFNotificationSuspensionBehaviorDeliverImmediately);
+
         // ── Read profile ──
         NSString *profilePath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
         NSDictionary *profile = [NSDictionary dictionaryWithContentsOfFile:profilePath];
 
         NSString *serverAddr = profile[@"server_address"];
         if (![serverAddr isKindOfClass:[NSString class]] || [serverAddr length] == 0) {
-            NSLog(@"[Main] Not registered. Idling.");
-            updateStatus(kStatusEnabledNotConnected);
+            NSLog(@"[Main] Not registered. Idling — waiting for registration via config reload.");
+            updateStatus(kStatusEnabledNotRegistered);
             CFRunLoopRun();
             return 0;
         }
@@ -538,20 +862,14 @@ int main(void) {
         }
         serverAddress = [serverAddr retain];
 
-        // ── Initialize database (needed before DNS cache) ──
-        db = [[DBManager alloc] init];
-        if (!db) {
-            NSLog(@"[Main] Failed to init database");
-            updateStatus(kStatusError);
-            return -1;
-        }
-
         // ── Resolve server location (cache → DNS fallback) ──
         NSDictionary *txtRecords = resolveServerLocation(serverAddr);
         if (!txtRecords) {
             NSLog(@"[Main] Failed to resolve server location");
-            updateStatus(kStatusError);
-            return -1;
+            updateStatus(kStatusEnabledNotConnected);
+            // Don't exit — stay alive so config reload or reachability can retry later
+            CFRunLoopRun();
+            return 0;
         }
 
         NSString *ip   = txtRecords[@"tcp_addr"];
@@ -575,28 +893,26 @@ int main(void) {
 
         updateStatus(kStatusEnabledNotConnected);
 
-        // ── Start Mach server ──
-        MachMsgs *machMsgs = [[MachMsgs alloc] init];
-        [machMsgs startMachServer];
-
-        // ── Start network monitoring ──
-        NotificationDaemon *daemon = [[NotificationDaemon alloc] init];
-        [daemon startMonitoringNetworkReachability];
-
-        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 2, false);
-
+        // ── Kick off initial connection on a background thread ──
+        // The main thread enters CFRunLoopRun() immediately so it can
+        // always service reachability and config-reload callbacks.
         SCNetworkReachabilityFlags flags = [daemon getReachabilityFlags];
         BOOL reachable    = (flags & kSCNetworkFlagsReachable) != 0;
         BOOL needsConn    = (flags & kSCNetworkFlagsConnectionRequired) != 0;
         BOOL reachableNow = reachable && !needsConn;
 
         if (reachableNow) {
-            [daemon exponentialBackoffConnect];
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                [daemon exponentialBackoffConnect];
+            });
         } else {
             NSLog(@"[Main] Network not reachable — waiting for callback");
             updateStatus(kStatusEnabledNotConnected);
-            CFRunLoopRun();
         }
+
+        // Keep the process alive. Reachability and config reload callbacks
+        // will restart the connection loop on background threads as needed.
+        CFRunLoopRun();
 
         if (serverIP)      { free(serverIP);      serverIP = NULL; }
         if (serverPortStr) { free(serverPortStr);  serverPortStr = NULL; }

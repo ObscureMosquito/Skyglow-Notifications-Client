@@ -126,7 +126,7 @@ static NSDictionary *ResolveServerLocation(NSString *domain) {
     NSDictionary *res;
     
     // Check specific subdomain first
-    res = QueryTXT([NSString stringWithFormat:@"_sgn.sgn.%@", domain]);
+    res = QueryTXT([NSString stringWithFormat:@"_sgn.%@", domain]);
     if (res && [res objectForKey:@"tcp_addr"]) return res;
     
     // Check standard tcp subdomain

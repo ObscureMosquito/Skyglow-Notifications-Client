@@ -1,13 +1,20 @@
 #import "SNDebugViewController.h"
 #import "SNDataManager.h"
 #include <spawn.h>
+#include <sys/wait.h>
+#import <mach/mach.h>
+#import <mach/message.h>
+#include <bootstrap.h>
+#import "../TweakMachMessages.h"
+
+extern char **environ;
 
 typedef enum {
-    SectionSimulation = 0,
+    SectionManualReg,
     SectionSavedTokens,
-    SectionDaemon,
     SectionStats,
-    SectionNetworking,
+    SectionDaemon,
+    SectionMaintenance,
     SectionCount
 } DebugSection;
 
@@ -15,6 +22,7 @@ typedef enum {
     NSString       *_appCount;
     NSString       *_dbSize;
     NSMutableArray *_savedApps;   // @[ @{@"bundleID", @"token", @"routingKey"} ]
+    UITextField    *_manualBundleIDParams;
 }
 @end
 
@@ -57,6 +65,25 @@ typedef enum {
 }
 
 // ──────────────────────────────────────────────
+// Daemon restart helper
+// ──────────────────────────────────────────────
+
+- (void)reloadDaemon {
+    NSString *path = [[NSBundle bundleForClass:[self class]]
+                      pathForResource:@"sndrestart" ofType:nil];
+    if (!path) {
+        [self showAlert:@"Error" message:@"sndrestart binary not found in bundle."];
+        return;
+    }
+    pid_t pid = 0;
+    const char *cpath = [path fileSystemRepresentation];
+    char *const args[] = { (char *)cpath, NULL };
+    if (posix_spawn(&pid, cpath, NULL, NULL, args, environ) == 0) {
+        waitpid(pid, NULL, 0);
+    }
+}
+
+// ──────────────────────────────────────────────
 // TableView DataSource
 // ──────────────────────────────────────────────
 
@@ -66,30 +93,71 @@ typedef enum {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch ((DebugSection)section) {
-        case SectionSimulation:  return 1;
+        case SectionManualReg:   return 2; // TextField + Button
         case SectionSavedTokens: return _savedApps.count > 0 ? _savedApps.count : 1;
-        case SectionDaemon:      return 1;
         case SectionStats:       return 2;
-        case SectionNetworking:  return 1;
+        case SectionDaemon:      return 1;
+        case SectionMaintenance: return 2; // Clear DNS + Clear All Tokens
         default: return 0;
     }
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     switch ((DebugSection)section) {
-        case SectionSimulation:  return @"Simulation";
+        case SectionManualReg:   return @"Manual Registration";
         case SectionSavedTokens: return @"Saved Tokens";
-        case SectionDaemon:      return @"Daemon Health";
         case SectionStats:       return @"Database Statistics";
-        case SectionNetworking:  return @"Networking";
+        case SectionDaemon:      return @"Daemon";
+        case SectionMaintenance: return @"Maintenance";
         default: return nil;
     }
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    if (section == SectionSavedTokens && _savedApps.count > 0)
+        return @"Tap to copy token. Swipe to delete.";
+    if (section == SectionDaemon)
+        return @"Stops and restarts the background daemon process.";
+    return nil;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     static NSString *buttonCellID = @"ButtonCell";
     static NSString *valueCellID  = @"ValueCell";
     static NSString *tokenCellID  = @"TokenCell";
+    static NSString *inputCellID  = @"InputCell";
+
+    if (indexPath.section == SectionManualReg) {
+        if (indexPath.row == 0) {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:inputCellID];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                              reuseIdentifier:inputCellID];
+                UITextField *tf = [[UITextField alloc] initWithFrame:CGRectInset(cell.contentView.bounds, 15, 0)];
+                tf.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                tf.placeholder = @"com.example.app";
+                tf.textAlignment = NSTextAlignmentCenter;
+                tf.autocorrectionType = UITextAutocorrectionTypeNo;
+                tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
+                tf.returnKeyType = UIReturnKeyDone;
+                [cell.contentView addSubview:tf];
+                _manualBundleIDParams = tf;
+            }
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            return cell;
+        } else {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:buttonCellID];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                              reuseIdentifier:buttonCellID];
+                cell.textLabel.textAlignment = NSTextAlignmentCenter;
+            }
+            cell.textLabel.text = @"Register Bundle ID";
+            cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
+            cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            return cell;
+        }
+    }
     
     if (indexPath.section == SectionSavedTokens) {
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:tokenCellID];
@@ -107,8 +175,9 @@ typedef enum {
             NSDictionary *app = _savedApps[indexPath.row];
             cell.textLabel.text = app[@"bundleID"];
             NSString *hex = [[SNDataManager shared] hexStringFromData:app[@"token"]];
-            cell.detailTextLabel.text = [NSString stringWithFormat:@"Token: %@…",
-                                         [hex length] > 16 ? [hex substringToIndex:16] : hex];
+            NSUInteger truncLen = MIN((NSUInteger)16, [hex length]);
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"Token: %@...",
+                                         [hex substringToIndex:truncLen]];
             cell.detailTextLabel.textColor = [UIColor grayColor];
             cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             cell.accessoryType  = UITableViewCellAccessoryDisclosureIndicator;
@@ -123,6 +192,7 @@ typedef enum {
                                           reuseIdentifier:valueCellID];
         }
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.detailTextLabel.textColor = [UIColor darkGrayColor];
         if (indexPath.row == 0) {
             cell.textLabel.text = @"Registered Apps";
             cell.detailTextLabel.text = _appCount;
@@ -133,6 +203,7 @@ typedef enum {
         return cell;
     }
     
+    // Daemon + Maintenance sections use button-style cells
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:buttonCellID];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
@@ -143,15 +214,17 @@ typedef enum {
     cell.selectionStyle = UITableViewCellSelectionStyleBlue;
     cell.accessoryType  = UITableViewCellAccessoryNone;
     
-    if (indexPath.section == SectionSimulation) {
-        cell.textLabel.text = @"Register Dummy App";
+    if (indexPath.section == SectionDaemon) {
+        cell.textLabel.text = @"Restart Daemon";
         cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
-    } else if (indexPath.section == SectionDaemon) {
-        cell.textLabel.text = @"Test Daemon Connection";
-        cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
-    } else if (indexPath.section == SectionNetworking) {
-        cell.textLabel.text = @"Clear DNS Cache";
-        cell.textLabel.textColor = [UIColor redColor];
+    } else if (indexPath.section == SectionMaintenance) {
+        if (indexPath.row == 0) {
+            cell.textLabel.text = @"Clear DNS Cache";
+            cell.textLabel.textColor = [UIColor redColor];
+        } else {
+            cell.textLabel.text = @"Clear All Tokens";
+            cell.textLabel.textColor = [UIColor redColor];
+        }
     }
     return cell;
 }
@@ -162,68 +235,95 @@ typedef enum {
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    
-    if (indexPath.section == SectionSavedTokens && _savedApps.count > 0) {
+
+    if (indexPath.section == SectionManualReg && indexPath.row == 1) {
+        [_manualBundleIDParams resignFirstResponder];
+
+        NSString *bundleID = _manualBundleIDParams.text;
+        if (bundleID.length == 0) {
+            [self showAlert:@"Error" message:@"Please enter a valid Bundle ID."];
+            return;
+        }
+
+        [[SNDataManager shared] setAppStatusValue:YES forBundleId:bundleID];
+        
+        NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.skyglow.sndp"] ?: @{};
+        NSMutableDictionary *mutablePrefs = [prefs mutableCopy];
+        [mutablePrefs setObject:bundleID forKey:@"lastRegisteredApp"];
+        [[NSUserDefaults standardUserDefaults] setPersistentDomain:mutablePrefs forName:@"com.skyglow.sndp"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                             CFSTR("com.skyglow.sgn.registerInputApp"),
+                                             NULL, NULL, TRUE);
+
+        [self showAlert:@"Request Sent"
+                message:[NSString stringWithFormat:@"Registration request for '%@' sent to SpringBoard.", bundleID]];
+        _manualBundleIDParams.text = @"";
+        
+    } else if (indexPath.section == SectionSavedTokens && _savedApps.count > 0) {
         NSDictionary *app = _savedApps[indexPath.row];
         NSString *hex = [[SNDataManager shared] hexStringFromData:app[@"token"]];
         [UIPasteboard generalPasteboard].string = hex;
         [self showAlert:@"Token Copied"
                 message:[NSString stringWithFormat:@"Bundle: %@\n\nHex:\n%@",
                          app[@"bundleID"], hex]];
-    } else if (indexPath.section == SectionSimulation) {
-        [self registerDummyApp];
+                         
     } else if (indexPath.section == SectionDaemon) {
-        [self testDaemonConnection];
-    } else if (indexPath.section == SectionNetworking) {
-        [[SNDataManager shared] clearDNSCache];
-        [self showAlert:@"Success" message:@"DNS cache cleared."];
+        [self reloadDaemon];
+        [self showAlert:@"Done" message:@"Daemon restarted."];
+        
+    } else if (indexPath.section == SectionMaintenance) {
+        if (indexPath.row == 0) {
+            [[SNDataManager shared] clearDNSCache];
+            [self showAlert:@"Done" message:@"DNS cache cleared."];
+        } else {
+            [[SNDataManager shared] clearAllTokens];
+            [self loadStats];
+            [self.tableView reloadData];
+            [self showAlert:@"Done" message:@"All tokens cleared."];
+        }
     }
 }
 
 // ──────────────────────────────────────────────
-// Actions
+// Swipe-to-delete tokens
 // ──────────────────────────────────────────────
 
-- (void)registerDummyApp {
-    NSString *output = [self runHelperCommand:@"/usr/libexec/snddebug" arg:@"com.apple.Preferences"];
-    if (output.length > 0 && ![output hasPrefix:@"Error"]) {
-        [self loadStats];
-        [self.tableView reloadData];
-        [self showAlert:@"Success" message:@"Token generated and copied."];
-    } else {
-        [self showAlert:@"Error" message:output ?: @"Unknown error"];
-    }
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    return (indexPath.section == SectionSavedTokens && _savedApps.count > 0);
 }
 
-- (void)testDaemonConnection {
-    NSString *output = [self runHelperCommand:@"/usr/libexec/snddebug" arg:@"com.apple.Preferences"];
-    if ([output rangeOfString:@"Daemon unreachable"].location != NSNotFound) {
-        [self showAlert:@"Dead" message:@"Daemon unreachable."];
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
+                                            forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (editingStyle != UITableViewCellEditingStyleDelete) return;
+    if (indexPath.section != SectionSavedTokens) return;
+    if (indexPath.row >= (NSInteger)_savedApps.count) return;
+    
+    NSDictionary *app = _savedApps[indexPath.row];
+    NSString *bundleId = app[@"bundleID"];
+    
+    [[SNDataManager shared] removeAppFromDatabase:bundleId];
+    [_savedApps removeObjectAtIndex:indexPath.row];
+    
+    if (_savedApps.count == 0) {
+        // Reload section to show "No tokens found" placeholder
+        [tableView reloadSections:[NSIndexSet indexSetWithIndex:SectionSavedTokens]
+                 withRowAnimation:UITableViewRowAnimationAutomatic];
     } else {
-        [self showAlert:@"Alive" message:@"Daemon is listening."];
+        [tableView deleteRowsAtIndexPaths:@[indexPath]
+                         withRowAnimation:UITableViewRowAnimationAutomatic];
     }
+    
+    // Refresh stats
+    _appCount = [NSString stringWithFormat:@"%lu", (unsigned long)_savedApps.count];
+    [tableView reloadSections:[NSIndexSet indexSetWithIndex:SectionStats]
+             withRowAnimation:UITableViewRowAnimationNone];
 }
 
-- (NSString *)runHelperCommand:(NSString *)cmd arg:(NSString *)arg {
-    int out_pipe[2];
-    pipe(out_pipe);
-    posix_spawn_file_actions_t action;
-    posix_spawn_file_actions_init(&action);
-    posix_spawn_file_actions_adddup2(&action, out_pipe[1], STDOUT_FILENO);
-    posix_spawn_file_actions_addclose(&action, out_pipe[0]);
-    pid_t pid;
-    const char *argv[] = { [cmd UTF8String], [arg UTF8String], NULL };
-    extern char **environ;
-    posix_spawn(&pid, [cmd UTF8String], &action, NULL, (char *const *)argv, environ);
-    close(out_pipe[1]);
-    posix_spawn_file_actions_destroy(&action);
-    char buffer[1024];
-    memset(buffer, 0, sizeof(buffer));
-    ssize_t bytesRead = read(out_pipe[0], buffer, sizeof(buffer) - 1);
-    close(out_pipe[0]);
-    waitpid(pid, NULL, 0);
-    return bytesRead > 0 ? [NSString stringWithUTF8String:buffer] : @"";
-}
+// ──────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────
 
 - (void)showAlert:(NSString *)title message:(NSString *)msg {
     UIAlertView *av = [[UIAlertView alloc] initWithTitle:title

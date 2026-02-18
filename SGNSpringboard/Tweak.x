@@ -43,6 +43,13 @@ static mach_port_t gPushReceiverPort = MACH_PORT_NULL;
 + (instancetype)sharedInstance;
 - (void)connection:(id)conn didReceiveIncomingMessage:(id)msg;
 - (void)connection:(id)conn didReceiveMessageForTopic:(id)topic userInfo:(id)info;
+- (int)registerApplication:(id)application forEnvironment:(id)environment withTypes:(int)notificationTypes;
+- (void)unregisterApplication:(id)application forEnvironment:(id)environment;
+@end
+
+@interface SBApplicationController : NSObject
++ (instancetype)sharedInstance;
+- (id)applicationWithDisplayIdentifier:(NSString *)displayIdentifier;
 @end
 
 @interface UNUserNotificationServer : NSObject
@@ -282,21 +289,35 @@ static void DeliverNotification(NSString *topic, NSDictionary *userInfo) {
     id apsMessage = nil;
     if (APSClass) {
         apsMessage = [[APSClass alloc] initWithTopic:topic userInfo:userInfo];
+        if ([apsMessage respondsToSelector:@selector(setTimestamp:)]) {
+            [apsMessage setTimestamp:[NSDate date]];
+        }
     }
 
     double cf = kCFCoreFoundationVersionNumber;
+    id server = nil;
+    id connection = nil;
 
     if (cf < 700.0) {
         // ── Pre-iOS 6 ──
-        id server = [objc_getClass("SBRemoteNotificationServer") sharedInstance];
+        server = [objc_getClass("SBRemoteNotificationServer") sharedInstance];
         if ([server respondsToSelector:@selector(connection:didReceiveMessageForTopic:userInfo:)]) {
             [server connection:nil didReceiveMessageForTopic:topic userInfo:userInfo];
         }
     } else if (cf < 1200.0) {
         // ── iOS 6 / 7 / 8 ──
-        id server = [objc_getClass("SBRemoteNotificationServer") sharedInstance];
+        server = [objc_getClass("SBRemoteNotificationServer") sharedInstance];
+        
+        // Attempt to find a valid connection (usually 'production')
+        @try {
+            NSDictionary *envMap = [server valueForKey:@"_environmentsToConnections"];
+            connection = [envMap objectForKey:@"production"];
+        } @catch (NSException *e) {}
+
         if (server && apsMessage) {
-            [server connection:nil didReceiveIncomingMessage:apsMessage];
+            if ([server respondsToSelector:@selector(connection:didReceiveIncomingMessage:)]) {
+                [server connection:connection didReceiveIncomingMessage:apsMessage];
+            }
         }
     } else if (cf < 1300.0) {
         // ── iOS 9 ──
@@ -313,11 +334,8 @@ static void DeliverNotification(NSString *topic, NSDictionary *userInfo) {
         id userNS    = [objc_getClass("UNSUserNotificationServer") sharedInstance];
         id remoteSrv = GetIvar(userNS, "_remoteNotificationService");
 
-        if (apsMessage && [apsMessage respondsToSelector:@selector(setTimestamp:)]) {
-            [apsMessage setTimestamp:[NSDate date]];
-        }
         if (remoteSrv && apsMessage) {
-            [remoteSrv connection:nil didReceiveIncomingMessage:apsMessage];
+             [remoteSrv connection:nil didReceiveIncomingMessage:apsMessage];
         }
     }
 }
@@ -393,37 +411,6 @@ static BOOL StartPushReceiver(void) {
 
     NSLog(@"[SGN] Push receiver registered on %s", SKYGLOW_MACH_SERVICE_NAME_PUSH);
     return YES;
-}
-
-// ═══════════════════════════════════════════════
-#pragma mark - Debug: Auto-Register Test App
-// ═══════════════════════════════════════════════
-
-static void AutoRegisterTestApp(void) {
-    NSString *testBundleID = @"com.apple.Preferences";
-
-    NSLog(@"[SGN] Auto-registering %@ for testing...", testBundleID);
-
-    for (int attempt = 0; attempt < 5; attempt++) {
-        NSData *token = RequestTokenFromDaemon(testBundleID);
-        if (token) {
-            // Also ensure it's in the appStatus plist so settings UI shows it
-            EnsureAppInPlist(testBundleID);
-
-            const unsigned char *bytes = (const unsigned char *)[token bytes];
-            NSMutableString *hex = [NSMutableString stringWithCapacity:token.length * 2];
-            for (NSUInteger i = 0; i < token.length; i++) {
-                [hex appendFormat:@"%02x", bytes[i]];
-            }
-            NSLog(@"[SGN] Token for %@: %@", testBundleID, hex);
-            return;
-        }
-
-        NSLog(@"[SGN] Token request failed (attempt %d/5), retrying in 5s...", attempt + 1);
-        [NSThread sleepForTimeInterval:5.0];
-    }
-
-    NSLog(@"[SGN] Failed to get token for %@ after 5 attempts", testBundleID);
 }
 
 // ═══════════════════════════════════════════════
@@ -568,17 +555,109 @@ static void AutoRegisterTestApp(void) {
 #pragma mark - Constructor
 // ═══════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════
+#pragma mark - Manual Registration Logic (Settings -> SpringBoard)
+// ═══════════════════════════════════════════════
+
+static void checkAndRegisterApplication(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    NSLog(@"[SGN] Received settings registration request...");
+
+    // Get the bundle id from the persistent domain
+    NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.skyglow.sndp"];
+    NSString *bundleIdentifier = [prefs objectForKey:@"lastRegisteredApp"];
+
+    if (!bundleIdentifier.length) {
+        NSLog(@"[SGN] No bundle ID found in lastRegisteredApp");
+        return;
+    }
+
+    // Get the list of registered bundle IDs (Private API)
+    id server = [%c(SBRemoteNotificationServer) sharedInstance];
+    id registeredBundleIDs = [server performSelector:@selector(_allPushRegisteredThirdPartyBundleIDs)];
+
+    // Check if the bundle identifier is already registered
+    if ([registeredBundleIDs containsObject:bundleIdentifier]) {
+        NSLog(@"[SGN] %@ is already registered", bundleIdentifier);
+        // Optional: Send feedback back to settings?
+    } else {
+        NSLog(@"[SGN] Registering application: %@", bundleIdentifier);
+
+        // Obtain instance for app and register it
+        Class SBApplicationControllerClass = objc_getClass("SBApplicationController");
+        id appController = [SBApplicationControllerClass sharedInstance];
+        id app = [appController applicationWithDisplayIdentifier:bundleIdentifier];
+
+        if (!app) {
+            NSLog(@"[SGN] Error: Could not find SBApplication for %@", bundleIdentifier);
+            return;
+        }
+
+        NSString *environment = @"production";
+        // 7 = Badge(1) | Sound(2) | Alert(4)
+        unsigned notificationTypes = 7;
+
+        // Register the application for remote notifications
+        [server registerApplication:app forEnvironment:environment withTypes:notificationTypes];
+        NSLog(@"[SGN] Triggered registerApplication for %@", bundleIdentifier);
+    }
+}
+
+static void checkAndUnregisterApplication(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    NSLog(@"[SGN] Received settings unregistration request...");
+
+    // Get the bundle id from the persistent domain
+    NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.skyglow.sndp"];
+    NSString *bundleIdentifier = [prefs objectForKey:@"lastUnregisteredApp"];
+
+    if (!bundleIdentifier.length) {
+        NSLog(@"[SGN] No bundle ID found in lastUnregisteredApp");
+        return;
+    }
+
+    id server = [%c(SBRemoteNotificationServer) sharedInstance];
+    
+    // We can try to unregister it from SpringBoard
+    // NOTE: unregisterApplication:forEnvironment: might not be available across all versions,
+    // but the user requested "send bundle id to sb and unregister from there".
+    
+    Class SBApplicationControllerClass = objc_getClass("SBApplicationController");
+    id appController = [SBApplicationControllerClass sharedInstance];
+    id app = [appController applicationWithDisplayIdentifier:bundleIdentifier];
+
+    if (app) {
+         if ([server respondsToSelector:@selector(unregisterApplication:forEnvironment:)]) {
+             [server unregisterApplication:app forEnvironment:@"production"];
+             NSLog(@"[SGN] Triggered unregisterApplication for %@", bundleIdentifier);
+         }
+    }
+
+    // Also explicitly notify daemon that it's gone
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        SendFeedbackToDaemon(bundleIdentifier, @"Manual unregistration from settings");
+    });
+}
+
 %ctor {
-    // 1. Start push receiver (Mach server for daemon → SpringBoard delivery)
+    // 1. Start push receiver
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         if (StartPushReceiver()) {
             PushReceiverLoop(); // blocks forever
         }
     });
 
-    // 2. Debug: auto-register a test app after daemon has had time to start
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-        [NSThread sleepForTimeInterval:15.0];
-        AutoRegisterTestApp();
-    });
+    // 2. Listen for manual registration requests from Settings
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    NULL,
+                                    checkAndRegisterApplication,
+                                    CFSTR("com.skyglow.sgn.registerInputApp"),
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+
+    // 3. Listen for manual unregistration requests from Settings
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    NULL,
+                                    checkAndUnregisterApplication,
+                                    CFSTR("com.skyglow.sgn.unregisterInputApp"),
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
 }

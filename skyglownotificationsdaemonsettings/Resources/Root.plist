@@ -36,7 +36,7 @@
 			<key>keyboardType</key>
 			<string>URL</string>
 		</dict>
-		<dict>
+		<!--dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
@@ -49,7 +49,7 @@
             <string>Reload Daemon</string>
             <key>action</key>
             <string>reloadDaemon</string>
-        </dict>
+        </dict-->
 		<dict>
             <key>cell</key>
             <string>PSGroupCell</string>

@@ -49,6 +49,13 @@
     CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, appID);
     CFPreferencesAppSynchronize(appID);
     
+    // Tell running daemon to re-read config (handles disable while connected)
+    CFNotificationCenterPostNotificationWithOptions(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFSTR("com.skyglow.snd.reload_config"),
+        NULL, NULL, kCFNotificationDeliverImmediately);
+    
+    // Also restart daemon via launchctl (handles enable when daemon wasn't running)
     [self reloadDaemon];
 }
 
@@ -80,14 +87,18 @@
     }];
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        [self reloadDaemon];
-        
-        // Clean up DB
-        [[NSFileManager defaultManager]
-         removeItemAtPath:@"/var/mobile/Library/SkyglowNotifications/sqlite.db" error:nil];
+        // Clean stale data (new identity = old tokens useless)
+        [[SNDataManager shared] clearAllTokens];
+        [[SNDataManager shared] clearDNSCache];
         
         NSString *serverAddress = [[SNDataManager shared] serverAddressInput];
         NSString *result = RegisterAccount(serverAddress);
+        
+        if (!result) {
+            // Registration succeeded — restart daemon so it picks up the new profile
+            // (daemon may have exited when no profile existed)
+            [self reloadDaemon];
+        }
         
         dispatch_async(dispatch_get_main_queue(), ^{
             if (loadingAlert) [loadingAlert dismissWithClickedButtonIndex:0 animated:YES];
@@ -99,7 +110,11 @@
                                   cancelButtonTitle:@"Okay"
                                   otherButtonTitles:nil] show];
             } else {
-                [self reloadDaemon];
+                // Post UI refresh
+                CFNotificationCenterPostNotificationWithOptions(
+                    CFNotificationCenterGetDarwinNotifyCenter(),
+                    CFSTR("com.skyglow.snd.request_update"),
+                    NULL, NULL, kCFNotificationDeliverImmediately);
             }
         });
     });

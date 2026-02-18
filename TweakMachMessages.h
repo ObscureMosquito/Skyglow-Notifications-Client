@@ -6,7 +6,7 @@
 
 #define SKYGLOW_MACH_SERVICE_NAME_TOKEN "com.skyglow.sgn.token"
 #define SKYGLOW_MACH_SERVICE_NAME_PUSH  "com.skyglow.sgn.push"
-#define SKYGLOW_MAX_TOKEN_SIZE 32
+#define SKYGLOW_MAX_TOKEN_SIZE 48   // Was 32; now [server_addr 16B] || [device_routing_id 16B] || [K 16B]
 #define SKYGLOW_MAX_TOPIC_SIZE 128
 #define SKYGLOW_MAX_REASON_SIZE 64
 #define SKYGLOW_MAX_USERINFO_SIZE 1024

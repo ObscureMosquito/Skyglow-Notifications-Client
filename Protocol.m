@@ -22,7 +22,7 @@ typedef enum {
     RecieveNotification      = 2,
     AuthenticationSuccessful = 3,
     ServerDisconnect         = 4,
-    DeviceTokenRegisterAck   = 5,
+    // NOTE: DeviceTokenRegisterAck (5) removed — tokens are now local-only
 } MessageTypesRecieved;
 
 typedef enum {
@@ -31,7 +31,7 @@ typedef enum {
     PollUnackedNotifications = 2,
     AckNotification          = 3,
     ClientDisconnect         = 4,
-    RegisterDeviceToken      = 5,
+    // NOTE: RegisterDeviceToken (5) removed — tokens are now local-only
     SendFeedback             = 6,
 } MessageTypesSent;
 
@@ -56,11 +56,20 @@ static SSL     *ssl    = NULL;
 static SSL_CTX *sslctx = NULL;
 static int      sock   = -1;
 
+/// Guards ssl, sslctx, sock to prevent concurrent access from
+/// the message loop thread and external disconnect calls.
+static NSObject *connectionLock = nil;
+
 static NSString *user_address = nil;
 static RSA      *user_privKey = NULL;
 
-static NSMutableDictionary *tokenAckWaiters  = nil;
-static dispatch_once_t      tokenAckWaitersOnce;
+/// Ensure the connection lock is initialized exactly once.
+static void ensureConnectionLock(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        connectionLock = [[NSObject alloc] init];
+    });
+}
 
 // ──────────────────────────────────────────────
 // OpenSSL error helpers
@@ -243,6 +252,10 @@ void ackNotification(NSString *notificationUUID, int status) {
 
 void sendFeedback(NSData *routing_token, NSNumber *type, NSString *reason) {
     if (!routing_token) return;
+    if (!isConnected()) {
+        NSLog(@"[Protocol] sendFeedback: not connected, feedback will be lost");
+        return;
+    }
     NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithObjectsAndKeys:
                                  routing_token, @"routing_token",
                                  type  ?: @0,   @"type",
@@ -251,87 +264,68 @@ void sendFeedback(NSData *routing_token, NSNumber *type, NSString *reason) {
     sendMessage(SendFeedback, dict);
 }
 
-BOOL registerDeviceToken(NSData *deviceTokenChecksum, NSString *bundleId) {
-    if (!deviceTokenChecksum || !bundleId) return NO;
-    if (!isConnected()) {
-        NSLog(@"[Protocol] registerDeviceToken: not connected");
-        return NO;
-    }
-
-    dispatch_once(&tokenAckWaitersOnce, ^{
-        tokenAckWaiters = [[NSMutableDictionary alloc] init];
-    });
-
-    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-    @synchronized(tokenAckWaiters) {
-        tokenAckWaiters[bundleId] = sema;
-    }
-
-    NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithObjectsAndKeys:
-                                 deviceTokenChecksum, @"deviceTokenChecksum",
-                                 bundleId,            @"appBundleId",
-                                 nil];
-    if (!sendMessage(RegisterDeviceToken, dict)) {
-        @synchronized(tokenAckWaiters) {
-            [tokenAckWaiters removeObjectForKey:bundleId];
-        }
-        return NO;
-    }
-
-    long result = dispatch_semaphore_wait(sema,
-                      dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
-
-    @synchronized(tokenAckWaiters) {
-        [tokenAckWaiters removeObjectForKey:bundleId];
-    }
-
-    return (result == 0);
+void sendClientDisconnect(void) {
+    if (!isConnected()) return;
+    NSLog(@"[Protocol] Sending ClientDisconnect to server");
+    NSMutableDictionary *dict = [NSMutableDictionary dictionary];
+    sendMessage(ClientDisconnect, dict);
 }
 
 // ──────────────────────────────────────────────
-// Connection lifecycle
+// Connection lifecycle (thread-safe)
 // ──────────────────────────────────────────────
 
 void disconnectFromServer(void) {
-    if (ssl) {
-        SSL_shutdown(ssl);
-        SSL_free(ssl);
-        ssl = NULL;
-    }
-    if (sslctx) {
-        SSL_CTX_free(sslctx);
-        sslctx = NULL;
-    }
-    if (sock >= 0) {
-        close(sock);
+    ensureConnectionLock();
+    @synchronized(connectionLock) {
+        // Close socket first — this unblocks any SSL_read/SSL_write
+        // that may be blocked on the message loop thread.
+        int sockCopy = sock;
         sock = -1;
+        if (sockCopy >= 0) {
+            // Shut down the socket to unblock SSL_read
+            shutdown(sockCopy, SHUT_RDWR);
+            close(sockCopy);
+        }
+
+        if (ssl) {
+            // Don't call SSL_shutdown — the socket is already closed.
+            // SSL_shutdown would try to send a close_notify which would fail.
+            SSL_free(ssl);
+            ssl = NULL;
+        }
+        if (sslctx) {
+            SSL_CTX_free(sslctx);
+            sslctx = NULL;
+        }
+        connectionStatus = @"Disconnected";
     }
-    connectionStatus = @"Disconnected";
 }
 
 int connectToServer(const char *serverIP, int port, NSString *serverCert) {
+    ensureConnectionLock();
     signal(SIGPIPE, SIG_IGN);
     disconnectFromServer();
     ERR_clear_error();
 
-    SSL_library_init();
-    SSL_load_error_strings();
-    OpenSSL_add_all_algorithms();
+    // NOTE: SSL_library_init() / SSL_load_error_strings() / OpenSSL_add_all_algorithms()
+    // are called once in main(). They are idempotent but wasteful to repeat.
 
     const SSL_METHOD *method = SSLv23_client_method();
-    sslctx = SSL_CTX_new(method);
-    if (!sslctx) {
+
+    SSL_CTX *newCtx = SSL_CTX_new(method);
+    if (!newCtx) {
         NSLog(@"[Protocol] Failed to create SSL_CTX");
         logOpenSSLErrors(@"SSL_CTX_new");
         return -1;
     }
 
-    SSL_CTX_set_options(sslctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
-    SSL_CTX_set_verify(sslctx, SSL_VERIFY_PEER, NULL);
+    SSL_CTX_set_options(newCtx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
+    SSL_CTX_set_verify(newCtx, SSL_VERIFY_PEER, NULL);
 
     if (!serverCert || [serverCert length] == 0) {
         NSLog(@"[Protocol] No server certificate provided");
-        disconnectFromServer();
+        SSL_CTX_free(newCtx);
         return -2;
     }
 
@@ -339,7 +333,7 @@ int connectToServer(const char *serverIP, int port, NSString *serverCert) {
     if (!bio) {
         NSLog(@"[Protocol] Failed to create BIO");
         logOpenSSLErrors(@"BIO_new");
-        disconnectFromServer();
+        SSL_CTX_free(newCtx);
         return -2;
     }
 
@@ -348,7 +342,7 @@ int connectToServer(const char *serverIP, int port, NSString *serverCert) {
     if (!cert) {
         NSLog(@"[Protocol] Failed to parse server certificate PEM");
         logOpenSSLErrors(@"PEM_read_bio_X509");
-        disconnectFromServer();
+        SSL_CTX_free(newCtx);
         return -2;
     }
 
@@ -356,13 +350,13 @@ int connectToServer(const char *serverIP, int port, NSString *serverCert) {
     X509_NAME_oneline(X509_get_subject_name(cert), certSubject, sizeof(certSubject));
     NSLog(@"[Protocol] Pinned cert: %s", certSubject);
 
-    X509_STORE *store = SSL_CTX_get_cert_store(sslctx);
+    X509_STORE *store = SSL_CTX_get_cert_store(newCtx);
     int addResult = X509_STORE_add_cert(store, cert);
     X509_free(cert);
     if (addResult != 1) {
         NSLog(@"[Protocol] Failed to add certificate to trust store");
         logOpenSSLErrors(@"X509_STORE_add_cert");
-        disconnectFromServer();
+        SSL_CTX_free(newCtx);
         return -2;
     }
 
@@ -370,9 +364,13 @@ int connectToServer(const char *serverIP, int port, NSString *serverCert) {
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         NSLog(@"[Protocol] socket() failed: %s", strerror(errno));
-        disconnectFromServer();
+        SSL_CTX_free(newCtx);
         return -3;
     }
+
+    // Enable TCP keepalive — detects dead connections faster
+    int keepAlive = 1;
+    setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(keepAlive));
 
     struct sockaddr_in serverAddr;
     memset(&serverAddr, 0, sizeof(serverAddr));
@@ -382,7 +380,7 @@ int connectToServer(const char *serverIP, int port, NSString *serverCert) {
     if (inet_pton(AF_INET, serverIP, &serverAddr.sin_addr) <= 0) {
         NSLog(@"[Protocol] inet_pton failed for '%s'", serverIP);
         close(sockfd);
-        disconnectFromServer();
+        SSL_CTX_free(newCtx);
         return -4;
     }
 
@@ -393,7 +391,7 @@ int connectToServer(const char *serverIP, int port, NSString *serverCert) {
                            sizeof(serverAddr), CONNECT_TIMEOUT_SEC) != 0) {
         NSLog(@"[Protocol] TCP connect failed: %s (errno=%d)", strerror(errno), errno);
         close(sockfd);
-        disconnectFromServer();
+        SSL_CTX_free(newCtx);
         return -5;
     }
 
@@ -405,32 +403,31 @@ int connectToServer(const char *serverIP, int port, NSString *serverCert) {
     setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    sock = sockfd;
-
-    ssl = SSL_new(sslctx);
-    if (!ssl) {
+    SSL *newSsl = SSL_new(newCtx);
+    if (!newSsl) {
         NSLog(@"[Protocol] SSL_new failed");
         logOpenSSLErrors(@"SSL_new");
-        disconnectFromServer();
+        close(sockfd);
+        SSL_CTX_free(newCtx);
         return -6;
     }
 
-    SSL_set_fd(ssl, sockfd);
+    SSL_set_fd(newSsl, sockfd);
 
-    int sslResult = SSL_connect(ssl);
+    int sslResult = SSL_connect(newSsl);
     if (sslResult != 1) {
-        int sslError = SSL_get_error(ssl, sslResult);
+        int sslError = SSL_get_error(newSsl, sslResult);
         NSLog(@"[Protocol] SSL_connect FAILED: return=%d ssl_error=%d errno=%d (%s)",
               sslResult, sslError, errno, strerror(errno));
         logOpenSSLErrors(@"SSL_connect");
 
-        long verifyResult = SSL_get_verify_result(ssl);
+        long verifyResult = SSL_get_verify_result(newSsl);
         if (verifyResult != X509_V_OK) {
             NSLog(@"[Protocol] Cert verify error %ld: %s",
                   verifyResult, X509_verify_cert_error_string(verifyResult));
         }
 
-        X509 *peerCert = SSL_get_peer_certificate(ssl);
+        X509 *peerCert = SSL_get_peer_certificate(newSsl);
         if (peerCert) {
             char peerSubject[256];
             X509_NAME_oneline(X509_get_subject_name(peerCert), peerSubject, sizeof(peerSubject));
@@ -441,18 +438,26 @@ int connectToServer(const char *serverIP, int port, NSString *serverCert) {
                   @"likely not a TLS endpoint! Check tcp_port in DNS TXT.");
         }
 
-        disconnectFromServer();
+        SSL_free(newSsl);
+        close(sockfd);
+        SSL_CTX_free(newCtx);
         return -7;
     }
 
-    // ── Success ──
-    NSLog(@"[Protocol] TLS OK: %s, cipher: %s", SSL_get_version(ssl), SSL_get_cipher(ssl));
+    // ── Success — commit to global state under lock ──
+    NSLog(@"[Protocol] TLS OK: %s, cipher: %s", SSL_get_version(newSsl), SSL_get_cipher(newSsl));
 
     // Clear the handshake timeouts — the message loop should block indefinitely
     // waiting for server pushes (the daemon sleeps here when idle)
     tv.tv_sec = 0; tv.tv_usec = 0;
     setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    @synchronized(connectionLock) {
+        sslctx = newCtx;
+        ssl    = newSsl;
+        sock   = sockfd;
+    }
 
     connectionStatus = @"ConnectedNotAuthenticated";
     NSLog(@"[Protocol] Connected to %s:%d", serverIP, port);
@@ -588,24 +593,6 @@ int handleMessage(void) {
         }
         [notificationDelegate processNotificationMessage:receivedData];
         return 0;
-
-    case DeviceTokenRegisterAck: {
-        NSString *ackBundleId = receivedData[@"bundleId"];
-        if (ackBundleId) {
-            dispatch_once(&tokenAckWaitersOnce, ^{
-                tokenAckWaiters = [[NSMutableDictionary alloc] init];
-            });
-            dispatch_semaphore_t sema = nil;
-            @synchronized(tokenAckWaiters) {
-                sema = tokenAckWaiters[ackBundleId];
-            }
-            if (sema) dispatch_semaphore_signal(sema);
-            if (notificationDelegate &&
-                [notificationDelegate respondsToSelector:@selector(deviceTokenRegistrationCompleted:)])
-                [notificationDelegate deviceTokenRegistrationCompleted:ackBundleId];
-        }
-        return 0;
-    }
 
     case ServerDisconnect:
         NSLog(@"[Protocol] Server disconnect");

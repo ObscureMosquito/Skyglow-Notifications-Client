@@ -122,16 +122,7 @@ static NSDictionary *QueryTXT(NSString *domain) {
 
 static NSDictionary *ResolveSmart(NSString *baseDomain) {
     NSDictionary *res;
-    
-    // 1. Try _sgn.sgn.<domain> (The most standard one for this setup)
-    res = QueryTXT([NSString stringWithFormat:@"_sgn.sgn.%@", baseDomain]);
-    if (res) return res;
-    
-    // 2. Try _sgn._tcp.<domain>
-    res = QueryTXT([NSString stringWithFormat:@"_sgn._tcp.%@", baseDomain]);
-    if (res) return res;
 
-    // 3. Try _sgn.<domain> (Legacy/Fallback)
     res = QueryTXT([NSString stringWithFormat:@"_sgn.%@", baseDomain]);
     if (res) return res;
     
