@@ -1,4 +1,4 @@
-TARGET := iphone:clang:16.5:6.0
+TARGET := iphone:clang:7.0:6.0
 ARCHS = armv7
 include $(THEOS)/makefiles/common.mk
 THEOS_DEVICE_IP = iPod

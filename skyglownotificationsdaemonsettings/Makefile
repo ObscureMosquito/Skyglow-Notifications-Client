@@ -1,4 +1,4 @@
-TARGET := iphone:clang:16.5:6.0
+TARGET := iphone:clang:6.0:6.0
 ARCHS = armv7
 
 include $(THEOS)/makefiles/common.mk
@@ -7,13 +7,15 @@ include $(THEOS)/makefiles/common.mk
 BUNDLE_NAME = SkyglowNotificationsDaemonSettings
 
 SkyglowNotificationsDaemonSettings_FILES = SNRootListController.m SNLogViewController.m SNRegisterAccount.m ../ServerLocationFinder.m SNAppToggleCell.m SNAppListController.m SNServerInfoViewController.m SNCustomViewCell.m
-SkyglowNotificationsDaemonSettings_FRAMEWORKS = UIKit
-SkyglowNotificationsDaemonSettings_PRIVATE_FRAMEWORKS = Preferences CoreGraphics CFNetwork
+SkyglowNotificationsDaemonSettings_FRAMEWORKS = UIKit CoreGraphics CFNetwork
+SkyglowNotificationsDaemonSettings_PRIVATE_FRAMEWORKS = Preferences
 SkyglowNotificationsDaemonSettings_LDFLAGS = \
   $(THEOS_PROJECT_DIR)/openssl/lib/libssl.a \
-  $(THEOS_PROJECT_DIR)/openssl/lib/libcrypto.a
+  $(THEOS_PROJECT_DIR)/openssl/lib/libcrypto.a \
+  -lsqlite3
 SkyglowNotificationsDaemonSettings_INSTALL_PATH = /Library/PreferenceBundles
 SkyglowNotificationsDaemonSettings_CFLAGS = -fobjc-arc -Wno-arc-performSelector-leaks -I$(THEOS_PROJECT_DIR)/openssl/include
+ADDITIONAL_CFLAGS += -D"API_AVAILABLE(...)= " -D"API_DEPRECATED(...)= " -D"API_UNAVAILABLE(...)= " -D"instancetype=id"
 
 include $(THEOS_MAKE_PATH)/bundle.mk
 

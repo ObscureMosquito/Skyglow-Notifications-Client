@@ -1,8 +1,9 @@
 #import "SNAppToggleCell.h"
-#import <Preferences/Preferences.h> 
-
+#import <Preferences/PSSpecifier.h>
+#import <Preferences/PSTableCell.h>
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 
 @interface UIView (Center)
 @property (nonatomic) CGFloat centerY;

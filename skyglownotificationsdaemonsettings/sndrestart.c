@@ -1,10 +1,10 @@
-#include <sys/spawn.h>
+#include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <syslog.h>   // For system logging
-#include <errno.h>    // For error descriptions
+#include <syslog.h>
+#include <errno.h>
 #include <string.h>
 #include <stdarg.h>
 

@@ -1,5 +1,6 @@
 #import "SNAppListController.h"
-#import <Preferences/Preferences.h>
+#import <Preferences/PSSpecifier.h>
+#import <Preferences/PSTableCell.h>
 #import "SNAppToggleCell.h"
 
 @implementation SNAppListController
