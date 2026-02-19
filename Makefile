@@ -4,7 +4,7 @@ include $(THEOS)/makefiles/common.mk
 THEOS_DEVICE_IP = iPod
  
 TOOL_NAME = SkyglowNotificationsDaemon
-SkyglowNotificationsDaemon_FILES = main.m CommonDefinitions.m Protocol.m ServerLocationFinder.m DBManager.m CryptoManager.m AppMachMsgs.m Tokens.m
+SkyglowNotificationsDaemon_FILES = main.m CommonDefinitions.m Protocol.m ServerLocationFinder.m DBManager.m CryptoManager.m AppMachMsgs.m Tokens.m StatusServer.c
 SkyglowNotificationsDaemon_CFLAGS = -Wno-deprecated-declarations -I$(THEOS_PROJECT_DIR)/openssl/include
 SkyglowNotificationsDaemon_LDFLAGS = \
   $(THEOS_PROJECT_DIR)/openssl/lib/libssl.a \

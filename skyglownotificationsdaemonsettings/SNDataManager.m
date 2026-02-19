@@ -5,6 +5,9 @@
 #include <openssl/x509.h>
 #include <openssl/bio.h>
 #include <openssl/asn1.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 
 // ──────────────────────────────────────────────
 // File paths (constants)
@@ -12,7 +15,6 @@
 
 static NSString *const kMainPrefsPath  = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
 static NSString *const kProfilePath    = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
-static NSString *const kStatusPath     = @"/var/mobile/Library/Preferences/com.skyglow.sndp.status.plist";
 static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotifications/sqlite.db";
 
 @implementation SNDataManager
@@ -32,7 +34,6 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
 
 - (NSString *)mainPrefsPath { return kMainPrefsPath; }
 - (NSString *)profilePath   { return kProfilePath; }
-- (NSString *)statusPath    { return kStatusPath; }
 - (NSString *)dbPath        { return kDBPath; }
 
 // ══════════════════════════════════════════════
@@ -58,7 +59,7 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
 - (void)setAppStatusValue:(BOOL)value forBundleId:(NSString *)bundleId {
     if (!bundleId) return;
     NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:kMainPrefsPath]
-    ?: [NSMutableDictionary dictionary];
+        ?: [NSMutableDictionary dictionary];
     NSMutableDictionary *appSt = [NSMutableDictionary dictionaryWithDictionary:
                                   [prefs objectForKey:@"appStatus"] ?: @{}];
     [appSt setObject:@(value) forKey:bundleId];
@@ -69,7 +70,7 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
 - (void)setMainPrefValue:(id)value forKey:(NSString *)key {
     if (!key) return;
     NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:kMainPrefsPath]
-    ?: [NSMutableDictionary dictionary];
+        ?: [NSMutableDictionary dictionary];
     if (value)
         [prefs setObject:value forKey:key];
     else
@@ -80,7 +81,7 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
 - (void)removeAppStatusForBundleId:(NSString *)bundleId {
     if (!bundleId) return;
     NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:kMainPrefsPath]
-    ?: [NSMutableDictionary dictionary];
+        ?: [NSMutableDictionary dictionary];
     NSMutableDictionary *appSt = [NSMutableDictionary dictionaryWithDictionary:
                                   [prefs objectForKey:@"appStatus"] ?: @{}];
     [appSt removeObjectForKey:bundleId];
@@ -106,35 +107,76 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
 }
 
 // ══════════════════════════════════════════════
-#pragma mark - Status
+#pragma mark - Daemon Status (socket)
 // ══════════════════════════════════════════════
 
-- (NSDictionary *)status {
-    return [NSDictionary dictionaryWithContentsOfFile:kStatusPath] ?: @{};
-}
+- (SGStatusPayload)queryDaemonStatus {
+    // Return a safe zero payload on any failure so callers never see
+    // garbage. State = SGStateStarting reads as "daemon not yet heard
+    // from" which is a reasonable fallback.
+    SGStatusPayload empty;
+    memset(&empty, 0, sizeof(empty));
+    empty.magic   = SS_PAYLOAD_MAGIC;
+    empty.version = SS_PAYLOAD_VERSION;
+    empty.state   = SGStateStarting;
 
-- (NSString *)connectionStatus {
-    return [[self status] objectForKey:@"currentStatus"];
-}
+    // ── Open socket ──────────────────────────────────────────────
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return empty;
 
-- (NSDate *)lastUpdated {
-    return [[self status] objectForKey:@"lastUpdated"];
-}
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strlcpy(addr.sun_path, SS_SOCKET_PATH, sizeof(addr.sun_path));
 
-- (void)writeStatus:(NSString *)statusString {
-    NSDictionary *dict = @{
-                           @"lastUpdated":   [NSDate date],
-                           @"currentStatus": statusString ?: @"Unknown"
-                           };
-    [dict writeToFile:kStatusPath atomically:YES];
+    // Non-blocking connect with a short timeout so the UI never hangs
+    // if the daemon is restarting.
+    struct timeval tv;
+    tv.tv_sec  = 0;
+    tv.tv_usec = 300000; // 300 ms
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        return empty;
+    }
+
+    // ── Send mode byte ───────────────────────────────────────────
+    uint8_t mode = SS_MODE_QUERY;
+    if (write(fd, &mode, 1) != 1) {
+        close(fd);
+        return empty;
+    }
+
+    // ── Read payload ─────────────────────────────────────────────
+    SGStatusPayload payload;
+    memset(&payload, 0, sizeof(payload));
+
+    ssize_t total = 0;
+    ssize_t remaining = (ssize_t)sizeof(payload);
+    uint8_t *buf = (uint8_t *)&payload;
+
+    while (remaining > 0) {
+        ssize_t n = read(fd, buf + total, (size_t)remaining);
+        if (n <= 0) break; // timeout, EOF, or error
+        total     += n;
+        remaining -= n;
+    }
+
+    close(fd);
+
+    if (total != (ssize_t)sizeof(payload)) return empty;
+    if (payload.magic   != SS_PAYLOAD_MAGIC)   return empty;
+    if (payload.version != SS_PAYLOAD_VERSION) return empty;
+
+    return payload;
 }
 
 // ══════════════════════════════════════════════
 #pragma mark - SQLite: Tokens
 // ══════════════════════════════════════════════
 
-/// Opens the database read-only; caller must close.
-/// Returns NULL on failure.
 static sqlite3 *openDBReadOnly(void) {
     sqlite3 *db = NULL;
     if (![[NSFileManager defaultManager] fileExistsAtPath:kDBPath]) return NULL;
@@ -148,13 +190,11 @@ static sqlite3 *openDBReadOnly(void) {
 - (NSArray *)allRegisteredTokens {
     sqlite3 *db = openDBReadOnly();
     if (!db) return @[];
-    
+
     NSMutableArray *results = [NSMutableArray array];
     sqlite3_stmt *stmt = NULL;
-    
-    // ── The daemon's table is "notifications", NOT "registrations" ──
     const char *sql = "SELECT bundle_id, token, routing_key FROM notifications ORDER BY bundle_id ASC";
-    
+
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             const char *bID   = (const char *)sqlite3_column_text(stmt, 0);
@@ -162,16 +202,13 @@ static sqlite3 *openDBReadOnly(void) {
             int         tLen  = sqlite3_column_bytes(stmt, 1);
             const void *rData = sqlite3_column_blob(stmt, 2);
             int         rLen  = sqlite3_column_bytes(stmt, 2);
-            
+
             if (bID) {
-                NSString *bundleID  = [NSString stringWithUTF8String:bID];
-                NSData   *token     = (tData && tLen > 0) ? [NSData dataWithBytes:tData length:tLen] : [NSData data];
-                NSData   *routingKey = (rData && rLen > 0) ? [NSData dataWithBytes:rData length:rLen] : [NSData data];
                 [results addObject:@{
-                                     @"bundleID":   bundleID,
-                                     @"token":      token,
-                                     @"routingKey": routingKey
-                                     }];
+                    @"bundleID":   [NSString stringWithUTF8String:bID],
+                    @"token":      (tData && tLen > 0) ? [NSData dataWithBytes:tData length:tLen] : [NSData data],
+                    @"routingKey": (rData && rLen > 0) ? [NSData dataWithBytes:rData length:rLen] : [NSData data],
+                }];
             }
         }
     }
@@ -183,11 +220,11 @@ static sqlite3 *openDBReadOnly(void) {
 - (NSSet *)registeredBundleIDs {
     sqlite3 *db = openDBReadOnly();
     if (!db) return [NSSet set];
-    
+
     NSMutableSet *ids = [NSMutableSet set];
     sqlite3_stmt *stmt = NULL;
     const char *sql = "SELECT DISTINCT bundle_id FROM notifications";
-    
+
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             const char *bID = (const char *)sqlite3_column_text(stmt, 0);
@@ -202,15 +239,14 @@ static sqlite3 *openDBReadOnly(void) {
 - (NSInteger)registeredTokenCount {
     sqlite3 *db = openDBReadOnly();
     if (!db) return 0;
-    
+
     NSInteger count = 0;
     sqlite3_stmt *stmt = NULL;
     const char *sql = "SELECT count(*) FROM notifications";
-    
+
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (sqlite3_step(stmt) == SQLITE_ROW)
             count = sqlite3_column_int(stmt, 0);
-        }
     }
     if (stmt) sqlite3_finalize(stmt);
     sqlite3_close(db);
@@ -218,49 +254,8 @@ static sqlite3 *openDBReadOnly(void) {
 }
 
 - (unsigned long long)dbFileSize {
-    NSDictionary *attrs = [[NSFileManager defaultManager]
-                           attributesOfItemAtPath:kDBPath error:nil];
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:kDBPath error:nil];
     return [attrs fileSize];
-}
-
-// ══════════════════════════════════════════════
-#pragma mark - SQLite: DNS Cache
-// ══════════════════════════════════════════════
-
-- (NSDictionary *)cachedDNSForServerAddress:(NSString *)serverAddr {
-    if (!serverAddr) return nil;
-    sqlite3 *db = openDBReadOnly();
-    if (!db) return nil;
-    
-    NSString *dnsKey = [NSString stringWithFormat:@"_sgn.%@", serverAddr];
-    NSDictionary *result = nil;
-    sqlite3_stmt *stmt = NULL;
-    const char *sql = "SELECT ip, port FROM dns_cache WHERE domain = ?";
-    
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, [dnsKey UTF8String], -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            const char *ip   = (const char *)sqlite3_column_text(stmt, 0);
-            const char *port = (const char *)sqlite3_column_text(stmt, 1);
-            if (ip && port) {
-                result = @{
-                           @"ip":   [NSString stringWithUTF8String:ip],
-                           @"port": [NSString stringWithUTF8String:port]
-                           };
-            }
-        }
-    }
-    if (stmt) sqlite3_finalize(stmt);
-    sqlite3_close(db);
-    return result;
-}
-
-- (void)clearDNSCache {
-    sqlite3 *db = NULL;
-    if (sqlite3_open([kDBPath UTF8String], &db) == SQLITE_OK) {
-        sqlite3_exec(db, "DELETE FROM dns_cache;", NULL, NULL, NULL);
-    }
-    if (db) sqlite3_close(db);
 }
 
 - (void)removeAppFromDatabase:(NSString *)bundleId {
@@ -288,22 +283,61 @@ static sqlite3 *openDBReadOnly(void) {
 }
 
 // ══════════════════════════════════════════════
+#pragma mark - SQLite: DNS Cache
+// ══════════════════════════════════════════════
+
+- (NSDictionary *)cachedDNSForServerAddress:(NSString *)serverAddr {
+    if (!serverAddr) return nil;
+    sqlite3 *db = openDBReadOnly();
+    if (!db) return nil;
+
+    NSString *dnsKey = [NSString stringWithFormat:@"_sgn.%@", serverAddr];
+    NSDictionary *result = nil;
+    sqlite3_stmt *stmt = NULL;
+    const char *sql = "SELECT ip, port FROM dns_cache WHERE domain = ?";
+
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, [dnsKey UTF8String], -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char *ip   = (const char *)sqlite3_column_text(stmt, 0);
+            const char *port = (const char *)sqlite3_column_text(stmt, 1);
+            if (ip && port) {
+                result = @{
+                    @"ip":   [NSString stringWithUTF8String:ip],
+                    @"port": [NSString stringWithUTF8String:port],
+                };
+            }
+        }
+    }
+    if (stmt) sqlite3_finalize(stmt);
+    sqlite3_close(db);
+    return result;
+}
+
+- (void)clearDNSCache {
+    sqlite3 *db = NULL;
+    if (sqlite3_open([kDBPath UTF8String], &db) == SQLITE_OK) {
+        sqlite3_exec(db, "DELETE FROM dns_cache;", NULL, NULL, NULL);
+    }
+    if (db) sqlite3_close(db);
+}
+
+// ══════════════════════════════════════════════
 #pragma mark - Certificate Parsing
 // ══════════════════════════════════════════════
 
 - (NSDictionary *)parseCertificatePEM:(NSString *)pem {
     if (!pem || [pem length] == 0) return nil;
-    
+
     BIO *bio = BIO_new_mem_buf((void *)[pem UTF8String], -1);
     if (!bio) return nil;
-    
+
     X509 *cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
     BIO_free(bio);
     if (!cert) return nil;
-    
+
     NSMutableDictionary *info = [NSMutableDictionary dictionary];
-    
-    // ── Subject (prefer CN) ──
+
     X509_NAME *subjectName = X509_get_subject_name(cert);
     if (subjectName) {
         NSString *cn = [self extractNID:NID_commonName fromName:subjectName];
@@ -315,8 +349,7 @@ static sqlite3 *openDBReadOnly(void) {
             [info setObject:[NSString stringWithUTF8String:buf] forKey:@"subject"];
         }
     }
-    
-    // ── Issuer (prefer O) ──
+
     X509_NAME *issuerName = X509_get_issuer_name(cert);
     if (issuerName) {
         NSString *org = [self extractNID:NID_organizationName fromName:issuerName];
@@ -328,8 +361,7 @@ static sqlite3 *openDBReadOnly(void) {
             [info setObject:[NSString stringWithUTF8String:buf] forKey:@"issuer"];
         }
     }
-    
-    // ── Expiry ──
+
     ASN1_TIME *notAfter = X509_get_notAfter(cert);
     if (notAfter) {
         BIO *timeBio = BIO_new(BIO_s_mem());
@@ -344,7 +376,7 @@ static sqlite3 *openDBReadOnly(void) {
             BIO_free(timeBio);
         }
     }
-    
+
     X509_free(cert);
     return [info count] > 0 ? info : nil;
 }
@@ -352,15 +384,15 @@ static sqlite3 *openDBReadOnly(void) {
 - (NSString *)extractNID:(int)nid fromName:(X509_NAME *)name {
     int idx = X509_NAME_get_index_by_NID(name, nid, -1);
     if (idx < 0) return nil;
-    
+
     X509_NAME_ENTRY *entry = X509_NAME_get_entry(name, idx);
     ASN1_STRING *data = X509_NAME_ENTRY_get_data(entry);
     if (!data) return nil;
-    
+
     unsigned char *utf8 = NULL;
     int len = ASN1_STRING_to_UTF8(&utf8, data);
     if (len <= 0 || !utf8) return nil;
-    
+
     NSString *result = [NSString stringWithUTF8String:(char *)utf8];
     OPENSSL_free(utf8);
     return result;
@@ -372,39 +404,35 @@ static sqlite3 *openDBReadOnly(void) {
 
 - (void)unregister {
     NSFileManager *fm = [NSFileManager defaultManager];
-    
+
     // 1. Remove profile (keys, server address, device address)
     [fm removeItemAtPath:kProfilePath error:nil];
-    
+
     // 2. Clear all tokens — they're tied to the old device identity
     //    and won't work after re-registration with a new keypair.
     //    NOTE: appStatus in main plist is preserved so app toggle
     //    preferences survive re-registration.
     [self clearAllTokens];
-    
+
     // 3. Clear DNS cache — server may change on re-register
     [self clearDNSCache];
-    
+
     // NOTE: We do NOT set enabled=NO here. The daemon stays enabled
     // but idle (no server to connect to). The user can re-register
     // without having to manually re-enable.
-    
-    // 4. Write status — enabled but not registered
-    [self writeStatus:@"EnabledNotRegistered"];
-    
-    // 5. Tell daemon to re-read config and disconnect gracefully
-    //    (daemon will send ClientDisconnect to server before closing socket)
+
+    // 4. Tell daemon to re-read config and disconnect gracefully
+    //    (daemon will send ClientDisconnect before closing socket)
     CFNotificationCenterPostNotificationWithOptions(
-                                                    CFNotificationCenterGetDarwinNotifyCenter(),
-                                                    CFSTR("com.skyglow.snd.reload_config"),
-                                                    NULL, NULL,
-                                                    kCFNotificationDeliverImmediately);
-    // Also post the UI refresh notification
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFSTR("com.skyglow.snd.reload_config"),
+        NULL, NULL, kCFNotificationDeliverImmediately);
+
+    // 5. Post UI refresh notification so other view controllers update
     CFNotificationCenterPostNotificationWithOptions(
-                                                    CFNotificationCenterGetDarwinNotifyCenter(),
-                                                    CFSTR("com.skyglow.snd.request_update"),
-                                                    NULL, NULL,
-                                                    kCFNotificationDeliverImmediately);
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFSTR("com.skyglow.snd.request_update"),
+        NULL, NULL, kCFNotificationDeliverImmediately);
 }
 
 // ══════════════════════════════════════════════
@@ -421,34 +449,96 @@ static sqlite3 *openDBReadOnly(void) {
     return hex;
 }
 
+// ──────────────────────────────────────────────
+// SGState-based display helpers
+// ──────────────────────────────────────────────
+
+- (NSString *)friendlyStringForState:(SGState)state {
+    switch (state) {
+        case SGStateStarting:          return @"Starting…";
+        case SGStateDisabled:          return @"Disabled";
+        case SGStateIdleUnregistered:  return @"Not Registered";
+        case SGStateResolvingDNS:      return @"Resolving DNS…";
+        case SGStateIdleDNSFailed:     return @"DNS Failed";
+        case SGStateConnecting:        return @"Connecting…";
+        case SGStateAuthenticating:    return @"Authenticating…";
+        case SGStateConnected:         return @"Connected";
+        case SGStateBackingOff:        return @"Reconnecting…";
+        case SGStateIdleNoNetwork:     return @"No Network";
+        case SGStateIdleCircuitOpen:   return @"Paused (Too Many Errors)";
+        case SGStateErrorAuth:         return @"Auth Error";
+        case SGStateErrorBadConfig:    return @"Bad Config";
+        case SGStateError:             return @"Error";
+        case SGStateShuttingDown:      return @"Shutting Down";
+        default:                       return @"Unknown";
+    }
+}
+
+- (UIColor *)colorForState:(SGState)state {
+    switch (state) {
+        case SGStateConnected:
+            return [UIColor colorWithRed:0.2 green:0.7 blue:0.2 alpha:1.0]; // green
+
+        case SGStateConnecting:
+        case SGStateAuthenticating:
+        case SGStateResolvingDNS:
+        case SGStateBackingOff:
+            return [UIColor orangeColor]; // in-progress
+
+        case SGStateIdleNoNetwork:
+        case SGStateIdleCircuitOpen:
+        case SGStateIdleDNSFailed:
+            return [UIColor colorWithRed:0.9 green:0.6 blue:0.1 alpha:1.0]; // amber
+
+        case SGStateErrorAuth:
+        case SGStateErrorBadConfig:
+        case SGStateError:
+            return [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:1.0]; // red
+
+        case SGStateDisabled:
+        case SGStateIdleUnregistered:
+        case SGStateStarting:
+        case SGStateShuttingDown:
+        default:
+            return [UIColor grayColor];
+    }
+}
+
+// ──────────────────────────────────────────────
+// Legacy string-based wrappers (for SNLogViewController)
+//
+// SNLogViewController currently reads plist strings directly and calls
+// these. They map the old status string constants to the new SGState
+// equivalents so we don't have to rewrite SNLogViewController in this
+// pass. New callers should use friendlyStringForState:/colorForState:
+// directly.
+// ──────────────────────────────────────────────
+
 - (NSString *)friendlyStatusString:(NSString *)status {
-    if (!status) return @"Unknown";
-    if ([status isEqualToString:@"Connected"])                  return @"Connected";
-    if ([status isEqualToString:@"ConnectedNotAuthenticated"])  return @"Authenticating…";
-    if ([status isEqualToString:@"EnabledNotConnected"])        return @"Connecting…";
-    if ([status isEqualToString:@"EnabledNotRegistered"])       return @"Not Registered";
-    if ([status isEqualToString:@"Disabled"])                   return @"Disabled";
-    if ([status isEqualToString:@"Error"])                      return @"Error";
-    if ([status isEqualToString:@"ErrorInAuth"])                return @"Auth Error";
-    if ([status isEqualToString:@"ServerConfigBad"])            return @"Bad Config";
-    if ([status isEqualToString:@"ConnectionClosed"])           return @"Disconnected";
-    return status;
+    if (!status) return [self friendlyStringForState:SGStateStarting];
+    if ([status isEqualToString:@"Connected"])               return [self friendlyStringForState:SGStateConnected];
+    if ([status isEqualToString:@"ConnectedNotAuthenticated"]) return [self friendlyStringForState:SGStateAuthenticating];
+    if ([status isEqualToString:@"EnabledNotConnected"])     return [self friendlyStringForState:SGStateConnecting];
+    if ([status isEqualToString:@"EnabledNotRegistered"])    return [self friendlyStringForState:SGStateIdleUnregistered];
+    if ([status isEqualToString:@"Disabled"])                return [self friendlyStringForState:SGStateDisabled];
+    if ([status isEqualToString:@"Error"])                   return [self friendlyStringForState:SGStateError];
+    if ([status isEqualToString:@"ErrorInAuth"])             return [self friendlyStringForState:SGStateErrorAuth];
+    if ([status isEqualToString:@"ServerConfigBad"])         return [self friendlyStringForState:SGStateErrorBadConfig];
+    if ([status isEqualToString:@"ConnectionClosed"])        return [self friendlyStringForState:SGStateBackingOff];
+    return status; // unknown — pass through
 }
 
 - (UIColor *)colorForStatus:(NSString *)status {
-    if (!status) return [UIColor grayColor];
-    if ([status isEqualToString:@"Connected"])
-        return [UIColor colorWithRed:0.2 green:0.7 blue:0.2 alpha:1.0];
-    if ([status isEqualToString:@"Disabled"] ||
-        [status isEqualToString:@"EnabledNotRegistered"])
-        return [UIColor grayColor];
-    if ([status isEqualToString:@"EnabledNotConnected"] ||
-        [status isEqualToString:@"ConnectedNotAuthenticated"])
-        return [UIColor orangeColor];
-    if ([status isEqualToString:@"Error"] ||
-        [status isEqualToString:@"ErrorInAuth"] ||
-        [status isEqualToString:@"ServerConfigBad"])
-        return [UIColor redColor];
+    if (!status) return [self colorForState:SGStateStarting];
+    if ([status isEqualToString:@"Connected"])               return [self colorForState:SGStateConnected];
+    if ([status isEqualToString:@"ConnectedNotAuthenticated"]) return [self colorForState:SGStateAuthenticating];
+    if ([status isEqualToString:@"EnabledNotConnected"])     return [self colorForState:SGStateConnecting];
+    if ([status isEqualToString:@"EnabledNotRegistered"])    return [self colorForState:SGStateIdleUnregistered];
+    if ([status isEqualToString:@"Disabled"])                return [self colorForState:SGStateDisabled];
+    if ([status isEqualToString:@"Error"])                   return [self colorForState:SGStateError];
+    if ([status isEqualToString:@"ErrorInAuth"])             return [self colorForState:SGStateErrorAuth];
+    if ([status isEqualToString:@"ServerConfigBad"])         return [self colorForState:SGStateErrorBadConfig];
+    if ([status isEqualToString:@"ConnectionClosed"])        return [self colorForState:SGStateBackingOff];
     return [UIColor darkGrayColor];
 }
 

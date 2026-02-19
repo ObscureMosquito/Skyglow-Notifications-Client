@@ -1,617 +1,941 @@
+/*
+ * Protocol.m — Skyglow Notification Daemon
+ * Skyglow Protocol version 2 (SGP/2) implementation.
+ *
+ * See Protocol.h for the full wire format, authentication flow, and
+ * message catalogue. This file contains only implementation details.
+ *
+ * ── Threading model ────────────────────────────────────────────────
+ *
+ *   connectToServer / disconnectFromServer / startLogin
+ *     Called exclusively from the connection loop thread.
+ *
+ *   handleMessage
+ *     Called exclusively from the connection loop thread. Uses select()
+ *     with SGP_PING_INTERVAL_SEC timeout to drive Ping/Pong without
+ *     a separate keepalive thread.
+ *
+ *   ackNotification / sendFeedback / sendClientDisconnect
+ *     Called from the connection loop thread (notification dispatch or
+ *     shutdown path). Serialised by _sendLock.
+ *
+ *   registerDeviceToken
+ *     Called from the MachMsgs thread. Serialised by _sendLock for
+ *     the write; blocks on a semaphore for up to 5s for the server ack.
+ *
+ * All writes go through sendMsg(), which builds a single contiguous
+ * buffer (header + payload) and writes it under _sendLock. Reads are
+ * single-threaded — only the connection loop calls sslReadExact. The
+ * lock therefore serialises concurrent writers without touching reads.
+ */
+
 #import "Protocol.h"
-#include <Foundation/NSObjCRuntime.h>
 #include <Foundation/Foundation.h>
-#include <objc/NSObjCRuntime.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/bio.h>
 #include <openssl/x509.h>
+#include <openssl/rsa.h>
+#include <openssl/evp.h>
 #include <signal.h>
 #include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/select.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <time.h>
+#include <mach/mach_time.h>   // mach_absolute_time — available all iOS versions
 
-// ──────────────────────────────────────────────
-// Protocol message types (must match server)
-// ──────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────
+ * Connection timeouts
+ * ───────────────────────────────────────────────────────────────── */
 
-typedef enum {
-    Hello                    = 0,
-    LoginChallenge           = 1,
-    RecieveNotification      = 2,
-    AuthenticationSuccessful = 3,
-    ServerDisconnect         = 4,
-    // NOTE: DeviceTokenRegisterAck (5) removed — tokens are now local-only
-} MessageTypesRecieved;
+/// TCP connect() hard deadline.
+#define CONNECT_TIMEOUT_SEC     10
 
-typedef enum {
-    LoginRequest             = 0,
-    LoginChallengeResponse   = 1,
-    PollUnackedNotifications = 2,
-    AckNotification          = 3,
-    ClientDisconnect         = 4,
-    // NOTE: RegisterDeviceToken (5) removed — tokens are now local-only
-    SendFeedback             = 6,
-} MessageTypesSent;
+/// SO_SNDTIMEO / SO_RCVTIMEO applied only during SSL_connect.
+/// Cleared after a successful handshake.
+#define TLS_HANDSHAKE_TIMEOUT   15
 
-// ──────────────────────────────────────────────
-// Tunables
-// ──────────────────────────────────────────────
+/// TCP_KEEPALIVE idle threshold before the kernel starts probing.
+/// Matches APNS best-practice for persistent connections.
+#define TCP_KEEPALIVE_IDLE_SEC  60
 
-#define CONNECT_TIMEOUT_SEC     10   // TCP connect timeout
-#define TLS_HANDSHAKE_TIMEOUT   15   // SSL_connect timeout (via SO_RCVTIMEO/SO_SNDTIMEO)
-#define READ_TIMEOUT_SEC        0    // 0 = no read timeout (we want to block forever while idle)
-#define MAX_MESSAGE_SIZE        (1024 * 1024)  // 1 MB sanity cap
+/* ─────────────────────────────────────────────────────────────────
+ * File-private connection state
+ * ───────────────────────────────────────────────────────────────── */
 
-// ──────────────────────────────────────────────
-// Connection state (file-private)
-// ──────────────────────────────────────────────
+static id<NotificationDelegate>  _delegate   = nil;
 
-NSString *connectionStatus = @"Disconnected";
+static SSL     *_ssl    = NULL;
+static SSL_CTX *_sslctx = NULL;
+static int      _sock   = -1;
 
-static id<NotificationDelegate> notificationDelegate = nil;
+/// Serialises all SSL_write calls. Multiple threads may send
+/// (MachMsgs → registerDeviceToken; connection loop → Ping/Ack/Disconnect).
+/// Only one reader exists (the connection loop), so reads need no lock.
+static pthread_mutex_t  _sendLock = PTHREAD_MUTEX_INITIALIZER;
 
-static SSL     *ssl    = NULL;
-static SSL_CTX *sslctx = NULL;
-static int      sock   = -1;
+/// Device address from the profile, set by startLogin().
+static NSString *_userAddress    = nil;
 
-/// Guards ssl, sslctx, sock to prevent concurrent access from
-/// the message loop thread and external disconnect calls.
-static NSObject *connectionLock = nil;
+/// Client RSA private key. Ownership belongs to Protocol.m.
+/// Set by startLogin(); freed in disconnectFromServer() and in
+/// startLogin() before reassignment to prevent leaks on mis-use.
+static RSA      *_userPrivKey    = NULL;
 
-static NSString *user_address = nil;
-static RSA      *user_privKey = NULL;
+/// Login timestamp sent in SGP_C_LOGIN, echoed verbatim in SGP_C_LOGIN_RESP.
+static int64_t   _loginTimestamp = 0;
 
-/// Ensure the connection lock is initialized exactly once.
-static void ensureConnectionLock(void) {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        connectionLock = [[NSObject alloc] init];
-    });
-}
+/// 32-byte nonce received in SGP_S_CHALLENGE. Consumed by sendLoginResponse.
+static uint8_t   _pendingNonce[SGP_NONCE_LEN];
+static BOOL      _hasPendingNonce = NO;
 
-// ──────────────────────────────────────────────
-// OpenSSL error helpers
-// ──────────────────────────────────────────────
+/// Monotonically increasing Ping sequence counter.
+static uint64_t  _pingSeq = 0;
 
-static void logOpenSSLErrors(NSString *context) {
-    unsigned long err;
-    while ((err = ERR_get_error()) != 0) {
+/// CLOCK_MONOTONIC time (seconds) when the outstanding Ping was sent.
+/// 0 means no Ping is currently outstanding.
+static double    _pingPendingSince = 0.0;
+
+/// Token-registration semaphore table.
+/// Key: bundleId (NSString) → Value: dispatch_semaphore_t
+/// Protected by @synchronized(_tokenWaiters).
+static NSMutableDictionary *_tokenWaiters    = nil;
+static dispatch_once_t      _tokenWaitersOnce;
+
+/* ─────────────────────────────────────────────────────────────────
+ * Internal helpers
+ * ───────────────────────────────────────────────────────────────── */
+
+static void logSSLErrors(NSString *ctx) {
+    unsigned long e;
+    while ((e = ERR_get_error()) != 0) {
         char buf[256];
-        ERR_error_string_n(err, buf, sizeof(buf));
-        NSLog(@"[Protocol] %@: %s", context, buf);
+        ERR_error_string_n(e, buf, sizeof(buf));
+        NSLog(@"[Protocol] %@: %s", ctx, buf);
     }
 }
 
-// ──────────────────────────────────────────────
-// Helpers
-// ──────────────────────────────────────────────
+/// Monotonic clock in seconds. Uses mach_absolute_time() which is available
+/// on all iOS versions (clock_gettime(CLOCK_MONOTONIC) requires iOS 10+).
+/// Immune to NTP / wall-clock adjustments — safe for measuring Ping RTT.
+static double monotonicSec(void) {
+    // mach_timebase_info gives the conversion factor from mach ticks to nanoseconds.
+    // We compute it once and cache it; the result is constant per boot.
+    static mach_timebase_info_data_t tb;
+    static dispatch_once_t           onceToken;
+    dispatch_once(&onceToken, ^{ mach_timebase_info(&tb); });
+
+    uint64_t ticks = mach_absolute_time();
+    // ticks * (numer/denom) = nanoseconds
+    return (double)ticks * (double)tb.numer / ((double)tb.denom * 1.0e9);
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * Big-endian encode helpers
+ * ───────────────────────────────────────────────────────────────── */
+
+static void encodeBEInt64(int64_t v, uint8_t out[8]) {
+    uint64_t u = (uint64_t)v;
+    out[0]=(u>>56)&0xFF; out[1]=(u>>48)&0xFF;
+    out[2]=(u>>40)&0xFF; out[3]=(u>>32)&0xFF;
+    out[4]=(u>>24)&0xFF; out[5]=(u>>16)&0xFF;
+    out[6]=(u>> 8)&0xFF; out[7]=(u    )&0xFF;
+}
+
+static void encodeBEUInt16(uint16_t v, uint8_t out[2]) {
+    out[0]=(v>>8)&0xFF; out[1]=(v)&0xFF;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * SSL I/O — reads (single-threaded; no lock needed)
+ * ───────────────────────────────────────────────────────────────── */
+
+/// Read exactly len bytes into buf. Uses select() when SSL returns
+/// WANT_READ / WANT_WRITE so we block the thread without spinning.
+/// Returns 0 on success, -1 on any error or clean peer shutdown.
+static int sslReadExact(void *buf, int len) {
+    if (!_ssl || _sock < 0) return -1;
+
+    int total = 0;
+    while (total < len) {
+        int n = SSL_read(_ssl, (char *)buf + total, len - total);
+        if (n > 0) { total += n; continue; }
+
+        int sslErr = SSL_get_error(_ssl, n);
+
+        if (sslErr == SSL_ERROR_WANT_READ) {
+            fd_set rfds; FD_ZERO(&rfds); FD_SET(_sock, &rfds);
+            if (select(_sock+1, &rfds, NULL, NULL, NULL) < 0 && errno != EINTR) return -1;
+            continue;
+        }
+        if (sslErr == SSL_ERROR_WANT_WRITE) {
+            fd_set wfds; FD_ZERO(&wfds); FD_SET(_sock, &wfds);
+            if (select(_sock+1, NULL, &wfds, NULL, NULL) < 0 && errno != EINTR) return -1;
+            continue;
+        }
+        if (sslErr == SSL_ERROR_ZERO_RETURN)
+            NSLog(@"[Protocol] SSL_read: server closed cleanly");
+        else {
+            NSLog(@"[Protocol] SSL_read error: ssl=%d errno=%d (%s)",
+                  sslErr, errno, strerror(errno));
+            logSSLErrors(@"SSL_read");
+        }
+        return -1;
+    }
+    return 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * SSL I/O — writes (CALLER MUST HOLD _sendLock)
+ * ───────────────────────────────────────────────────────────────── */
+
+/// Write exactly len bytes from buf. _sendLock must be held by caller.
+static int sslWriteExactLocked(const void *buf, int len) {
+    if (!_ssl || _sock < 0) return -1;
+
+    int total = 0;
+    while (total < len) {
+        int n = SSL_write(_ssl, (const char *)buf + total, len - total);
+        if (n > 0) { total += n; continue; }
+
+        int sslErr = SSL_get_error(_ssl, n);
+
+        if (sslErr == SSL_ERROR_WANT_WRITE) {
+            fd_set wfds; FD_ZERO(&wfds); FD_SET(_sock, &wfds);
+            if (select(_sock+1, NULL, &wfds, NULL, NULL) < 0 && errno != EINTR) return -1;
+            continue;
+        }
+        if (sslErr == SSL_ERROR_WANT_READ) {
+            fd_set rfds; FD_ZERO(&rfds); FD_SET(_sock, &rfds);
+            if (select(_sock+1, &rfds, NULL, NULL, NULL) < 0 && errno != EINTR) return -1;
+            continue;
+        }
+        NSLog(@"[Protocol] SSL_write error: ssl=%d errno=%d (%s)",
+              sslErr, errno, strerror(errno));
+        logSSLErrors(@"SSL_write");
+        return -1;
+    }
+    return 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * sendMsg — builds and sends one complete SGP/2 frame
+ *
+ * Assembles the 8-byte header and payload into a single heap buffer
+ * then writes the whole thing under _sendLock in one SSL_write call.
+ * This prevents two concurrent senders from interleaving bytes, and
+ * prevents Nagle from splitting the header from the payload.
+ * ───────────────────────────────────────────────────────────────── */
+
+static int sendMsg(SGPMsgType type, const void *payload, uint32_t payloadLen) {
+    if (payloadLen > SGP_MAX_PAYLOAD_LEN) {
+        NSLog(@"[Protocol] sendMsg: payload %u exceeds max %u", payloadLen, SGP_MAX_PAYLOAD_LEN);
+        return -1;
+    }
+
+    size_t   frameLen = SGP_HEADER_SIZE + payloadLen;
+    uint8_t *frame    = malloc(frameLen);
+    if (!frame) return -1;
+
+    frame[0] = SGP_MAGIC;
+    frame[1] = SGP_VERSION;
+    frame[2] = (uint8_t)type;
+    frame[3] = 0x00;  // flags — reserved
+
+    uint32_t lenBE = htonl(payloadLen);
+    memcpy(frame + 4, &lenBE, 4);
+
+    if (payloadLen > 0 && payload)
+        memcpy(frame + SGP_HEADER_SIZE, payload, payloadLen);
+
+    pthread_mutex_lock(&_sendLock);
+    int rc = sslWriteExactLocked(frame, (int)frameLen);
+    pthread_mutex_unlock(&_sendLock);
+
+    free(frame);
+    return rc;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * Non-blocking TCP connect with wall-clock timeout
+ * ───────────────────────────────────────────────────────────────── */
+
+static int connectWithTimeout(int fd, struct sockaddr *addr,
+                               socklen_t addrLen, int timeoutSec) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) return -1;
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
+
+    int rc = connect(fd, addr, addrLen);
+    if (rc == 0) { fcntl(fd, F_SETFL, flags); return 0; }
+
+    if (errno != EINPROGRESS) {
+        NSLog(@"[Protocol] connect() failed immediately: %s (errno=%d)",
+              strerror(errno), errno);
+        fcntl(fd, F_SETFL, flags);
+        return -1;
+    }
+
+    fd_set wfds; FD_ZERO(&wfds); FD_SET(fd, &wfds);
+    struct timeval tv = { timeoutSec, 0 };
+    rc = select(fd + 1, NULL, &wfds, NULL, &tv);
+
+    // Restore blocking mode before inspecting result.
+    fcntl(fd, F_SETFL, flags);
+
+    if (rc == 0) {
+        NSLog(@"[Protocol] connect() timed out after %ds", timeoutSec);
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    if (rc < 0) {
+        NSLog(@"[Protocol] select() on connect: %s", strerror(errno));
+        return -1;
+    }
+
+    int soErr = 0; socklen_t soErrLen = sizeof(soErr);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soErr, &soErrLen) < 0) return -1;
+    if (soErr != 0) {
+        NSLog(@"[Protocol] connect() deferred error: %s (errno=%d)",
+              strerror(soErr), soErr);
+        errno = soErr;
+        return -1;
+    }
+    return 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * sendLoginResponse  (called from handleMessage on SGP_S_CHALLENGE)
+ *
+ * Computes RSA-PSS-SHA256 over:
+ *   nonce[32] || device_address_utf8 || login_timestamp_be[8]
+ * and sends SGP_C_LOGIN_RESP: timestamp[8] + sig_len[2] + sig[N].
+ *
+ * Why PSS?  Signing is the correct primitive for proving key possession.
+ * RSA-OAEP decryption (SGP/1) proved you could decrypt a server-chosen
+ * ciphertext, but didn't prevent a malicious server from using the
+ * decryption oracle for other purposes. PSS is a standard, audited
+ * signature scheme with a tighter security proof.
+ * ───────────────────────────────────────────────────────────────── */
+
+static int sendLoginResponse(void) {
+    if (!_hasPendingNonce || !_userAddress || !_userPrivKey) {
+        NSLog(@"[Protocol] sendLoginResponse: missing state");
+        return -1;
+    }
+
+    const char *addrUTF8 = [_userAddress UTF8String];
+    size_t addrLen = strlen(addrUTF8);
+
+    uint8_t tsBE[8];
+    encodeBEInt64(_loginTimestamp, tsBE);
+
+    // EVP_PKEY_set1_RSA takes a reference — _userPrivKey lifetime unaffected.
+    EVP_PKEY *pkey = EVP_PKEY_new();
+    if (!pkey) { logSSLErrors(@"EVP_PKEY_new"); return -1; }
+    if (EVP_PKEY_set1_RSA(pkey, _userPrivKey) != 1) {
+        logSSLErrors(@"EVP_PKEY_set1_RSA"); EVP_PKEY_free(pkey); return -1;
+    }
+
+    EVP_MD_CTX  *mdctx = EVP_MD_CTX_new();
+    if (!mdctx) { EVP_PKEY_free(pkey); return -1; }
+
+    EVP_PKEY_CTX *pkctx = NULL;
+    if (EVP_DigestSignInit(mdctx, &pkctx, EVP_sha256(), NULL, pkey) != 1) {
+        logSSLErrors(@"EVP_DigestSignInit");
+        EVP_MD_CTX_free(mdctx); EVP_PKEY_free(pkey); return -1;
+    }
+    // RSA-PSS with salt length = digest length (32 bytes for SHA-256).
+    if (EVP_PKEY_CTX_set_rsa_padding(pkctx, RSA_PKCS1_PSS_PADDING) != 1 ||
+        EVP_PKEY_CTX_set_rsa_pss_saltlen(pkctx, RSA_PSS_SALTLEN_DIGEST) != 1) {
+        logSSLErrors(@"PSS params");
+        EVP_MD_CTX_free(mdctx); EVP_PKEY_free(pkey); return -1;
+    }
+
+    if (EVP_DigestSignUpdate(mdctx, _pendingNonce, SGP_NONCE_LEN) != 1 ||
+        EVP_DigestSignUpdate(mdctx, addrUTF8, addrLen)            != 1 ||
+        EVP_DigestSignUpdate(mdctx, tsBE, 8)                      != 1) {
+        logSSLErrors(@"DigestSignUpdate");
+        EVP_MD_CTX_free(mdctx); EVP_PKEY_free(pkey); return -1;
+    }
+
+    // First call: get length.
+    size_t sigLen = 0;
+    if (EVP_DigestSignFinal(mdctx, NULL, &sigLen) != 1) {
+        logSSLErrors(@"DigestSignFinal(len)");
+        EVP_MD_CTX_free(mdctx); EVP_PKEY_free(pkey); return -1;
+    }
+
+    uint8_t *sig = malloc(sigLen);
+    if (!sig) { EVP_MD_CTX_free(mdctx); EVP_PKEY_free(pkey); return -1; }
+
+    // Second call: sign.
+    if (EVP_DigestSignFinal(mdctx, sig, &sigLen) != 1) {
+        logSSLErrors(@"DigestSignFinal");
+        free(sig); EVP_MD_CTX_free(mdctx); EVP_PKEY_free(pkey); return -1;
+    }
+    EVP_MD_CTX_free(mdctx);
+    EVP_PKEY_free(pkey);
+    _hasPendingNonce = NO;   // consume the nonce regardless of send result
+
+    if (sigLen > 0xFFFF) {
+        NSLog(@"[Protocol] Signature too long (%zu bytes)", sigLen);
+        free(sig); return -1;
+    }
+
+    // Payload: timestamp[8] + sig_len[2] + sig[N]
+    size_t  payloadLen = 8 + 2 + sigLen;
+    uint8_t *payload   = malloc(payloadLen);
+    if (!payload) { free(sig); return -1; }
+
+    memcpy(payload, tsBE, 8);
+    uint8_t sigLenBE[2]; encodeBEUInt16((uint16_t)sigLen, sigLenBE);
+    memcpy(payload + 8,  sigLenBE, 2);
+    memcpy(payload + 10, sig, sigLen);
+    free(sig);
+
+    int rc = sendMsg(SGP_C_LOGIN_RESP, payload, (uint32_t)payloadLen);
+    free(payload);
+    return rc;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * Ping helper
+ * ───────────────────────────────────────────────────────────────── */
+
+static int sendPing(void) {
+    _pingSeq++;
+    uint8_t seq[SGP_PING_SEQ_LEN];
+    uint64_t s = _pingSeq;
+    seq[0]=(s>>56)&0xFF; seq[1]=(s>>48)&0xFF; seq[2]=(s>>40)&0xFF; seq[3]=(s>>32)&0xFF;
+    seq[4]=(s>>24)&0xFF; seq[5]=(s>>16)&0xFF; seq[6]=(s>> 8)&0xFF; seq[7]=(s    )&0xFF;
+    _pingPendingSince = monotonicSec();
+    NSLog(@"[Protocol] → Ping seq=%llu", (unsigned long long)_pingSeq);
+    return sendMsg(SGP_C_PING, seq, SGP_PING_SEQ_LEN);
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * Public API
+ * ───────────────────────────────────────────────────────────────── */
 
 void setNotificationDelegate(id<NotificationDelegate> delegate) {
-    notificationDelegate = delegate;
+    _delegate = delegate;
 }
 
 BOOL isConnected(void) {
-    return (ssl != NULL && sock >= 0);
+    return (_ssl != NULL && _sock >= 0);
 }
 
-static int sslReadExact(void *buf, int len) {
-    if (!ssl) return -1;
-    int total = 0;
-    while (total < len) {
-        int n = SSL_read(ssl, (char *)buf + total, len - total);
-        if (n <= 0) {
-            int sslErr = SSL_get_error(ssl, n);
-            if (sslErr == SSL_ERROR_WANT_READ || sslErr == SSL_ERROR_WANT_WRITE) {
-                continue;
-            }
-            NSLog(@"[Protocol] SSL_read failed: ssl_error=%d errno=%d (%s)",
-                  sslErr, errno, strerror(errno));
-            logOpenSSLErrors(@"SSL_read");
-            return -1;
-        }
-        total += n;
-    }
-    return 0;
-}
+void disconnectFromServer(void) {
+    if (_userPrivKey) { RSA_free(_userPrivKey); _userPrivKey = NULL; }
+    if (_ssl)         { SSL_shutdown(_ssl); SSL_free(_ssl); _ssl = NULL; }
+    if (_sslctx)      { SSL_CTX_free(_sslctx); _sslctx = NULL; }
+    if (_sock >= 0)   { close(_sock); _sock = -1; }
 
-static int sslWriteExact(const void *buf, int len) {
-    if (!ssl) return -1;
-    int total = 0;
-    while (total < len) {
-        int n = SSL_write(ssl, (const char *)buf + total, len - total);
-        if (n <= 0) {
-            int sslErr = SSL_get_error(ssl, n);
-            if (sslErr == SSL_ERROR_WANT_WRITE || sslErr == SSL_ERROR_WANT_READ) {
-                continue;
-            }
-            NSLog(@"[Protocol] SSL_write failed: ssl_error=%d errno=%d (%s)",
-                  sslErr, errno, strerror(errno));
-            logOpenSSLErrors(@"SSL_write");
-            return -1;
-        }
-        total += n;
-    }
-    return 0;
-}
-
-// ──────────────────────────────────────────────
-// Non-blocking connect with timeout
-// ──────────────────────────────────────────────
-
-/// Connect a socket with a timeout (in seconds).
-/// Returns 0 on success, -1 on failure/timeout.
-static int connectWithTimeout(int sockfd, struct sockaddr *addr, socklen_t addrLen, int timeoutSec) {
-    // Save original flags
-    int flags = fcntl(sockfd, F_GETFL, 0);
-    if (flags < 0) return -1;
-
-    // Set non-blocking
-    if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
-
-    int result = connect(sockfd, addr, addrLen);
-
-    if (result == 0) {
-        // Connected immediately (unlikely but possible on localhost)
-        fcntl(sockfd, F_SETFL, flags); // restore blocking
-        return 0;
-    }
-
-    if (errno != EINPROGRESS) {
-        NSLog(@"[Protocol] connect() failed immediately: %s (errno=%d)", strerror(errno), errno);
-        fcntl(sockfd, F_SETFL, flags);
-        return -1;
-    }
-
-    // Wait for the connection to complete or timeout
-    fd_set writefds;
-    FD_ZERO(&writefds);
-    FD_SET(sockfd, &writefds);
-
-    struct timeval tv;
-    tv.tv_sec  = timeoutSec;
-    tv.tv_usec = 0;
-
-    result = select(sockfd + 1, NULL, &writefds, NULL, &tv);
-
-    // Restore blocking mode BEFORE checking result
-    fcntl(sockfd, F_SETFL, flags);
-
-    if (result <= 0) {
-        if (result == 0) {
-            NSLog(@"[Protocol] connect() timed out after %d seconds", timeoutSec);
-            errno = ETIMEDOUT;
-        } else {
-            NSLog(@"[Protocol] select() error: %s (errno=%d)", strerror(errno), errno);
-        }
-        return -1;
-    }
-
-    // Check if connect actually succeeded
-    int connectError = 0;
-    socklen_t errLen = sizeof(connectError);
-    if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR, &connectError, &errLen) < 0) {
-        NSLog(@"[Protocol] getsockopt(SO_ERROR) failed: %s", strerror(errno));
-        return -1;
-    }
-
-    if (connectError != 0) {
-        NSLog(@"[Protocol] connect() failed: %s (errno=%d)", strerror(connectError), connectError);
-        errno = connectError;
-        return -1;
-    }
-
-    return 0; // success
-}
-
-// ──────────────────────────────────────────────
-// Send / receive helpers
-// ──────────────────────────────────────────────
-
-static BOOL sendMessage(MessageTypesSent messageType, NSMutableDictionary *dataToSend) {
-    if (!isConnected()) {
-        NSLog(@"[Protocol] sendMessage: not connected");
-        return NO;
-    }
-
-    dataToSend[@"$type"] = @(messageType);
-
-    NSError *error = nil;
-    NSData *plistData = [NSPropertyListSerialization dataWithPropertyList:dataToSend
-                                                                  format:NSPropertyListBinaryFormat_v1_0
-                                                                 options:0
-                                                                   error:&error];
-    if (!plistData) {
-        NSLog(@"[Protocol] Plist serialization error: %@", error);
-        return NO;
-    }
-
-    uint32_t length = htonl((uint32_t)[plistData length]);
-    if (sslWriteExact(&length, 4) != 0)  return NO;
-    if (sslWriteExact([plistData bytes], (int)[plistData length]) != 0) return NO;
-    return YES;
-}
-
-static void checkOfflineNotifications(void) {
-    sendMessage(PollUnackedNotifications, [NSMutableDictionary dictionary]);
-}
-
-// ──────────────────────────────────────────────
-// Public: outbound messages
-// ──────────────────────────────────────────────
-
-void ackNotification(NSString *notificationUUID, int status) {
-    if (!notificationUUID) return;
-    NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithObjectsAndKeys:
-                                 notificationUUID, @"notification",
-                                 @(status), @"status",
-                                 nil];
-    sendMessage(AckNotification, dict);
-}
-
-void sendFeedback(NSData *routing_token, NSNumber *type, NSString *reason) {
-    if (!routing_token) return;
-    if (!isConnected()) {
-        NSLog(@"[Protocol] sendFeedback: not connected, feedback will be lost");
-        return;
-    }
-    NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithObjectsAndKeys:
-                                 routing_token, @"routing_token",
-                                 type  ?: @0,   @"type",
-                                 reason ?: @"", @"reason",
-                                 nil];
-    sendMessage(SendFeedback, dict);
+    _hasPendingNonce   = NO;
+    _pingPendingSince  = 0.0;
+    _pingSeq           = 0;
+    _loginTimestamp    = 0;
+    _userAddress       = nil;
 }
 
 void sendClientDisconnect(void) {
     if (!isConnected()) return;
-    NSLog(@"[Protocol] Sending ClientDisconnect to server");
-    NSMutableDictionary *dict = [NSMutableDictionary dictionary];
-    sendMessage(ClientDisconnect, dict);
-}
-
-// ──────────────────────────────────────────────
-// Connection lifecycle (thread-safe)
-// ──────────────────────────────────────────────
-
-void disconnectFromServer(void) {
-    ensureConnectionLock();
-    @synchronized(connectionLock) {
-        // Close socket first — this unblocks any SSL_read/SSL_write
-        // that may be blocked on the message loop thread.
-        int sockCopy = sock;
-        sock = -1;
-        if (sockCopy >= 0) {
-            // Shut down the socket to unblock SSL_read
-            shutdown(sockCopy, SHUT_RDWR);
-            close(sockCopy);
-        }
-
-        if (ssl) {
-            // Don't call SSL_shutdown — the socket is already closed.
-            // SSL_shutdown would try to send a close_notify which would fail.
-            SSL_free(ssl);
-            ssl = NULL;
-        }
-        if (sslctx) {
-            SSL_CTX_free(sslctx);
-            sslctx = NULL;
-        }
-        connectionStatus = @"Disconnected";
-    }
+    NSLog(@"[Protocol] → Disconnect(Normal)");
+    uint8_t reason = SGP_DISC_NORMAL;
+    sendMsg(SGP_C_DISCONNECT, &reason, 1);
 }
 
 int connectToServer(const char *serverIP, int port, NSString *serverCert) {
-    ensureConnectionLock();
     signal(SIGPIPE, SIG_IGN);
     disconnectFromServer();
     ERR_clear_error();
 
-    // NOTE: SSL_library_init() / SSL_load_error_strings() / OpenSSL_add_all_algorithms()
-    // are called once in main(). They are idempotent but wasteful to repeat.
+    // ── NOTE: SSL_library_init / SSL_load_error_strings are called
+    //    exactly once at daemon startup via initOpenSSLOnce() in main.m.
+    //    Do NOT call them here; they are not safe to call more than once.
 
-    const SSL_METHOD *method = SSLv23_client_method();
+    // ── TLS context ───────────────────────────────────────────────
+    _sslctx = SSL_CTX_new(TLS_client_method());
+    if (!_sslctx) { logSSLErrors(@"SSL_CTX_new"); return -1; }
 
-    SSL_CTX *newCtx = SSL_CTX_new(method);
-    if (!newCtx) {
-        NSLog(@"[Protocol] Failed to create SSL_CTX");
-        logOpenSSLErrors(@"SSL_CTX_new");
-        return -1;
-    }
+    // Enforce TLS 1.2 minimum. Reject anything older.
+    SSL_CTX_set_options(_sslctx,
+        SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 |
+        SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
 
-    SSL_CTX_set_options(newCtx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
-    SSL_CTX_set_verify(newCtx, SSL_VERIFY_PEER, NULL);
+    // Only trust our pinned server certificate — no system CA chain.
+    SSL_CTX_set_verify(_sslctx, SSL_VERIFY_PEER, NULL);
 
+    // ── Pin the server certificate ────────────────────────────────
     if (!serverCert || [serverCert length] == 0) {
         NSLog(@"[Protocol] No server certificate provided");
-        SSL_CTX_free(newCtx);
-        return -2;
+        disconnectFromServer(); return -2;
     }
 
     BIO *bio = BIO_new_mem_buf((void *)[serverCert UTF8String], -1);
-    if (!bio) {
-        NSLog(@"[Protocol] Failed to create BIO");
-        logOpenSSLErrors(@"BIO_new");
-        SSL_CTX_free(newCtx);
-        return -2;
-    }
+    if (!bio) { logSSLErrors(@"BIO_new"); disconnectFromServer(); return -2; }
 
     X509 *cert = PEM_read_bio_X509(bio, NULL, 0, NULL);
     BIO_free(bio);
     if (!cert) {
-        NSLog(@"[Protocol] Failed to parse server certificate PEM");
-        logOpenSSLErrors(@"PEM_read_bio_X509");
-        SSL_CTX_free(newCtx);
-        return -2;
+        NSLog(@"[Protocol] Failed to parse server cert PEM");
+        logSSLErrors(@"PEM_read_bio_X509");
+        disconnectFromServer(); return -2;
     }
 
-    char certSubject[256];
-    X509_NAME_oneline(X509_get_subject_name(cert), certSubject, sizeof(certSubject));
-    NSLog(@"[Protocol] Pinned cert: %s", certSubject);
+    {
+        char subj[256];
+        X509_NAME_oneline(X509_get_subject_name(cert), subj, sizeof(subj));
+        NSLog(@"[Protocol] Pinned cert: %s", subj);
+    }
 
-    X509_STORE *store = SSL_CTX_get_cert_store(newCtx);
-    int addResult = X509_STORE_add_cert(store, cert);
+    if (X509_STORE_add_cert(SSL_CTX_get_cert_store(_sslctx), cert) != 1) {
+        logSSLErrors(@"X509_STORE_add_cert");
+        X509_free(cert); disconnectFromServer(); return -2;
+    }
     X509_free(cert);
-    if (addResult != 1) {
-        NSLog(@"[Protocol] Failed to add certificate to trust store");
-        logOpenSSLErrors(@"X509_STORE_add_cert");
-        SSL_CTX_free(newCtx);
-        return -2;
+
+    // ── TCP socket ────────────────────────────────────────────────
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        NSLog(@"[Protocol] socket(): %s", strerror(errno));
+        disconnectFromServer(); return -3;
     }
 
-    // ── TCP socket ──
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        NSLog(@"[Protocol] socket() failed: %s", strerror(errno));
-        SSL_CTX_free(newCtx);
-        return -3;
+    // ── TCP keepalive ─────────────────────────────────────────────
+    // Works below TLS to detect truly stale connections (e.g. device
+    // resumed from sleep while server-side FIN was lost). The
+    // application-level Ping/Pong in handleMessage catches the cases
+    // TCP keepalive cannot — middleboxes that forward but don't reset.
+    int kv = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &kv, sizeof(kv)) < 0)
+        NSLog(@"[Protocol] SO_KEEPALIVE: %s (non-fatal)", strerror(errno));
+    int ki = TCP_KEEPALIVE_IDLE_SEC;
+    if (setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &ki, sizeof(ki)) < 0)
+        NSLog(@"[Protocol] TCP_KEEPALIVE: %s (non-fatal)", strerror(errno));
+
+    // ── Connect ───────────────────────────────────────────────────
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(port);
+    if (inet_pton(AF_INET, serverIP, &addr.sin_addr) <= 0) {
+        NSLog(@"[Protocol] inet_pton('%s') failed", serverIP);
+        close(fd); disconnectFromServer(); return -4;
     }
 
-    // Enable TCP keepalive — detects dead connections faster
-    int keepAlive = 1;
-    setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(keepAlive));
+    NSLog(@"[Protocol] Connecting to %s:%d (timeout %ds)…",
+          serverIP, port, CONNECT_TIMEOUT_SEC);
 
-    struct sockaddr_in serverAddr;
-    memset(&serverAddr, 0, sizeof(serverAddr));
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port   = htons(port);
-
-    if (inet_pton(AF_INET, serverIP, &serverAddr.sin_addr) <= 0) {
-        NSLog(@"[Protocol] inet_pton failed for '%s'", serverIP);
-        close(sockfd);
-        SSL_CTX_free(newCtx);
-        return -4;
+    if (connectWithTimeout(fd, (struct sockaddr *)&addr,
+                            sizeof(addr), CONNECT_TIMEOUT_SEC) != 0) {
+        NSLog(@"[Protocol] TCP connect failed: %s (errno=%d)",
+              strerror(errno), errno);
+        close(fd); disconnectFromServer(); return -5;
     }
 
-    NSLog(@"[Protocol] Connecting to %s:%d (timeout %ds)...", serverIP, port, CONNECT_TIMEOUT_SEC);
+    NSLog(@"[Protocol] TCP connected, starting TLS…");
 
-    // ── Non-blocking connect with timeout ──
-    if (connectWithTimeout(sockfd, (struct sockaddr *)&serverAddr,
-                           sizeof(serverAddr), CONNECT_TIMEOUT_SEC) != 0) {
-        NSLog(@"[Protocol] TCP connect failed: %s (errno=%d)", strerror(errno), errno);
-        close(sockfd);
-        SSL_CTX_free(newCtx);
-        return -5;
+    // Short timeout only for the handshake. After success we clear it
+    // so that the read loop in handleMessage can use its own select() timeout.
+    struct timeval tv = { TLS_HANDSHAKE_TIMEOUT, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    _sock = fd;
+
+    _ssl = SSL_new(_sslctx);
+    if (!_ssl) {
+        logSSLErrors(@"SSL_new"); disconnectFromServer(); return -6;
     }
+    SSL_set_fd(_ssl, fd);
 
-    NSLog(@"[Protocol] TCP connected, starting TLS handshake...");
-
-    // Set TLS handshake timeouts (these apply to SSL_connect's read/write calls)
-    struct timeval tv;
-    tv.tv_sec = TLS_HANDSHAKE_TIMEOUT; tv.tv_usec = 0;
-    setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    SSL *newSsl = SSL_new(newCtx);
-    if (!newSsl) {
-        NSLog(@"[Protocol] SSL_new failed");
-        logOpenSSLErrors(@"SSL_new");
-        close(sockfd);
-        SSL_CTX_free(newCtx);
-        return -6;
-    }
-
-    SSL_set_fd(newSsl, sockfd);
-
-    int sslResult = SSL_connect(newSsl);
-    if (sslResult != 1) {
-        int sslError = SSL_get_error(newSsl, sslResult);
-        NSLog(@"[Protocol] SSL_connect FAILED: return=%d ssl_error=%d errno=%d (%s)",
-              sslResult, sslError, errno, strerror(errno));
-        logOpenSSLErrors(@"SSL_connect");
-
-        long verifyResult = SSL_get_verify_result(newSsl);
-        if (verifyResult != X509_V_OK) {
-            NSLog(@"[Protocol] Cert verify error %ld: %s",
-                  verifyResult, X509_verify_cert_error_string(verifyResult));
-        }
-
-        X509 *peerCert = SSL_get_peer_certificate(newSsl);
-        if (peerCert) {
-            char peerSubject[256];
-            X509_NAME_oneline(X509_get_subject_name(peerCert), peerSubject, sizeof(peerSubject));
-            NSLog(@"[Protocol] Server cert: %s", peerSubject);
-            X509_free(peerCert);
+    if (SSL_connect(_ssl) != 1) {
+        int sslErr = SSL_get_error(_ssl, -1);
+        NSLog(@"[Protocol] SSL_connect failed: ssl_err=%d errno=%d (%s)",
+              sslErr, errno, strerror(errno));
+        logSSLErrors(@"SSL_connect");
+        long vr = SSL_get_verify_result(_ssl);
+        if (vr != X509_V_OK)
+            NSLog(@"[Protocol] Cert verify: %ld (%s)",
+                  vr, X509_verify_cert_error_string(vr));
+        X509 *peer = SSL_get_peer_certificate(_ssl);
+        if (peer) {
+            char subj[256];
+            X509_NAME_oneline(X509_get_subject_name(peer), subj, sizeof(subj));
+            NSLog(@"[Protocol] Peer cert subject: %s", subj);
+            X509_free(peer);
         } else {
-            NSLog(@"[Protocol] Server presented NO certificate — "
-                  @"likely not a TLS endpoint! Check tcp_port in DNS TXT.");
+            NSLog(@"[Protocol] Server presented NO cert");
         }
-
-        SSL_free(newSsl);
-        close(sockfd);
-        SSL_CTX_free(newCtx);
-        return -7;
+        disconnectFromServer(); return -7;
     }
 
-    // ── Success — commit to global state under lock ──
-    NSLog(@"[Protocol] TLS OK: %s, cipher: %s", SSL_get_version(newSsl), SSL_get_cipher(newSsl));
+    NSLog(@"[Protocol] TLS OK: %s  cipher: %s",
+          SSL_get_version(_ssl), SSL_get_cipher(_ssl));
 
-    // Clear the handshake timeouts — the message loop should block indefinitely
-    // waiting for server pushes (the daemon sleeps here when idle)
+    // Clear handshake timeouts — handleMessage drives its own deadline
+    // via select().
     tv.tv_sec = 0; tv.tv_usec = 0;
-    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-    @synchronized(connectionLock) {
-        sslctx = newCtx;
-        ssl    = newSsl;
-        sock   = sockfd;
-    }
-
-    connectionStatus = @"ConnectedNotAuthenticated";
     NSLog(@"[Protocol] Connected to %s:%d", serverIP, port);
     return 0;
 }
 
-// ──────────────────────────────────────────────
-// Message handling
-// ──────────────────────────────────────────────
+void startLogin(NSString *address, RSA *privKey, NSString *language) {
+    (void)language;   // v2: language derived server-side from stored profile
 
-int handleMessage(void) {
-    if (!isConnected()) {
-        NSLog(@"[Protocol] handleMessage: not connected");
-        return 3;
-    }
+    if (_userPrivKey) { RSA_free(_userPrivKey); _userPrivKey = NULL; }
 
-    uint32_t netLength = 0;
-    if (sslReadExact(&netLength, 4) != 0) {
-        NSLog(@"[Protocol] Failed to read message length");
-        return 3;
-    }
+    _userAddress    = address;
+    _userPrivKey    = privKey;   // ownership taken
+    _loginTimestamp = (int64_t)time(NULL);
 
-    uint32_t length = ntohl(netLength);
-    if (length == 0 || length > MAX_MESSAGE_SIZE) {
-        NSLog(@"[Protocol] Invalid message length: %u", length);
-        return 2;
-    }
+    // Payload: addr_len[2] + addr[N] + timestamp[8] + proto_version[4]
+    const char *addrUTF8 = [address UTF8String];
+    uint16_t addrLen16 = (uint16_t)MIN(strlen(addrUTF8), (size_t)0xFFFF);
 
-    NSMutableData *receivedDataRaw = [NSMutableData dataWithLength:length];
-    if (sslReadExact([receivedDataRaw mutableBytes], (int)length) != 0) {
-        NSLog(@"[Protocol] Failed to read payload (%u bytes)", length);
-        return 3;
-    }
+    NSMutableData *p = [NSMutableData data];
+    uint8_t addrLenBE[2]; encodeBEUInt16(addrLen16, addrLenBE);
+    [p appendBytes:addrLenBE length:2];
+    [p appendBytes:addrUTF8  length:addrLen16];
+    uint8_t tsBE[8]; encodeBEInt64(_loginTimestamp, tsBE);
+    [p appendBytes:tsBE length:8];
+    uint32_t verBE = htonl(SGP_VERSION);
+    [p appendBytes:&verBE length:4];
 
-    NSError *error = nil;
-    NSDictionary *receivedData = [NSPropertyListSerialization propertyListWithData:receivedDataRaw
-                                                                           options:NSPropertyListImmutable
-                                                                            format:nil
-                                                                             error:&error];
-    if (!receivedData || ![receivedData isKindOfClass:[NSDictionary class]]) {
-        NSLog(@"[Protocol] Deserialization error: %@", error);
-        return 2;
-    }
-
-    NSNumber *typeNum = receivedData[@"$type"];
-    if (!typeNum) {
-        NSLog(@"[Protocol] Message missing $type");
-        return 2;
-    }
-    MessageTypesRecieved messageType = (MessageTypesRecieved)[typeNum unsignedIntegerValue];
-    NSLog(@"[Protocol] Received message type %u", (unsigned)messageType);
-
-    switch (messageType) {
-
-    case Hello:
-        if (!notificationDelegate) {
-            NSLog(@"[Protocol] Hello but no delegate");
-            return 2;
-        }
-        [notificationDelegate handleWelcomeMessage];
-        return 0;
-
-    case LoginChallenge: {
-        NSData *challengeEncrypted = receivedData[@"challenge"];
-        if (!challengeEncrypted || ![challengeEncrypted isKindOfClass:[NSData class]]) {
-            NSLog(@"[Protocol] Missing or invalid challenge data");
-            return 2;
-        }
-        if (!user_privKey) {
-            NSLog(@"[Protocol] No private key for challenge");
-            return 4;
-        }
-
-        const size_t rsaSize = RSA_size(user_privKey);
-        unsigned char *decBuf = malloc(rsaSize);
-        if (!decBuf) return 2;
-
-        int decLen = RSA_private_decrypt(
-            (int)[challengeEncrypted length],
-            [challengeEncrypted bytes],
-            decBuf, user_privKey, RSA_PKCS1_OAEP_PADDING);
-
-        if (decLen <= 0) {
-            free(decBuf);
-            logOpenSSLErrors(@"RSA_private_decrypt");
-            return 4;
-        }
-
-        NSData *decData = [NSData dataWithBytesNoCopy:decBuf length:decLen freeWhenDone:YES];
-        NSString *decStr = [[NSString alloc] initWithData:decData encoding:NSUTF8StringEncoding];
-        if (!decStr) {
-            NSLog(@"[Protocol] Challenge not valid UTF-8");
-            return 4;
-        }
-
-        NSArray *parts = [decStr componentsSeparatedByString:@","];
-        if ([parts count] < 3) {
-            NSLog(@"[Protocol] Malformed challenge (%lu parts)", (unsigned long)[parts count]);
-            return 4;
-        }
-
-        if (![parts[0] isEqualToString:user_address]) {
-            NSLog(@"[Protocol] Challenge address mismatch: '%@' vs '%@'", parts[0], user_address);
-            return 4;
-        }
-
-        NSTimeInterval ts = [parts[2] doubleValue];
-        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-        if (ts < now - 300.0 || ts > now + 60.0) {
-            NSLog(@"[Protocol] Challenge timestamp out of range: %@", parts[2]);
-            return 4;
-        }
-
-        NSMutableDictionary *resp = [NSMutableDictionary dictionaryWithObjectsAndKeys:
-                                     parts[1], @"nonce",
-                                     parts[2], @"timestamp",
-                                     nil];
-        if (!sendMessage(LoginChallengeResponse, resp)) return 3;
-        return 0;
-    }
-
-    case AuthenticationSuccessful:
-        connectionStatus = @"Connected";
-        NSLog(@"[Protocol] Authenticated");
-        if (notificationDelegate) [notificationDelegate authenticationSuccessful];
-        checkOfflineNotifications();
-        return 0;
-
-    case RecieveNotification:
-        if (!notificationDelegate) {
-            NSLog(@"[Protocol] Notification but no delegate");
-            return 2;
-        }
-        [notificationDelegate processNotificationMessage:receivedData];
-        return 0;
-
-    case ServerDisconnect:
-        NSLog(@"[Protocol] Server disconnect");
-        connectionStatus = @"Disconnected";
-        return 1;
-
-    default:
-        NSLog(@"[Protocol] Unknown message type: %u", (unsigned)messageType);
-        return 0;
-    }
+    sendMsg(SGP_C_LOGIN, [p bytes], (uint32_t)[p length]);
 }
 
-void startLogin(NSString *address, RSA *auth_privKey, NSString *language) {
-    user_address = address;
-    user_privKey = auth_privKey;
-    NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithObjectsAndKeys:
-                                 address,           @"address",
-                                 protocolVersion,   @"version",
-                                 language ?: @"en", @"lang",
-                                 nil];
-    sendMessage(LoginRequest, dict);
+void ackNotification(NSData *msgID, int status) {
+    if (!msgID || [msgID length] != SGP_MSG_ID_LEN) {
+        NSLog(@"[Protocol] ackNotification: bad msg_id length %lu",
+              (unsigned long)[msgID length]);
+        return;
+    }
+    uint8_t payload[SGP_MSG_ID_LEN + 1];
+    memcpy(payload, [msgID bytes], SGP_MSG_ID_LEN);
+    payload[SGP_MSG_ID_LEN] = (uint8_t)status;
+    sendMsg(SGP_C_ACK, payload, sizeof(payload));
+}
+
+BOOL registerDeviceToken(NSData *routingKey, NSString *bundleId) {
+    if (!routingKey || [routingKey length] != SGP_ROUTING_KEY_LEN || !bundleId)
+        return NO;
+    if (!isConnected()) {
+        NSLog(@"[Protocol] registerDeviceToken: not connected");
+        return NO;
+    }
+
+    dispatch_once(&_tokenWaitersOnce, ^{
+        _tokenWaiters = [[NSMutableDictionary alloc] init];
+    });
+
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    @synchronized(_tokenWaiters) { _tokenWaiters[bundleId] = sema; }
+
+    // Payload: routing_key[32] + bundle_id_len[2] + bundle_id[N]
+    const char *bidUTF8  = [bundleId UTF8String];
+    uint16_t    bidLen16 = (uint16_t)MIN(strlen(bidUTF8), (size_t)0xFFFF);
+
+    NSMutableData *payload = [NSMutableData data];
+    [payload appendData:routingKey];
+    uint8_t bidLenBE[2]; encodeBEUInt16(bidLen16, bidLenBE);
+    [payload appendBytes:bidLenBE length:2];
+    [payload appendBytes:bidUTF8  length:bidLen16];
+
+    BOOL sent = (sendMsg(SGP_C_REG_TOKEN,
+                         [payload bytes],
+                         (uint32_t)[payload length]) == 0);
+    if (!sent) {
+        @synchronized(_tokenWaiters) { [_tokenWaiters removeObjectForKey:bundleId]; }
+        return NO;
+    }
+
+    long rc = dispatch_semaphore_wait(
+        sema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    @synchronized(_tokenWaiters) { [_tokenWaiters removeObjectForKey:bundleId]; }
+    return (rc == 0);
+}
+
+void sendFeedback(NSData *routingKey, NSNumber *type, NSString *reason) {
+    if (!routingKey || [routingKey length] != SGP_ROUTING_KEY_LEN) return;
+
+    const char *reasonUTF8 = reason ? [reason UTF8String] : "";
+    uint16_t    reasonLen  = (uint16_t)MIN(strlen(reasonUTF8), (size_t)0xFFFF);
+
+    // Payload: routing_key[32] + type[1] + reason_len[2] + reason[N]
+    NSMutableData *payload = [NSMutableData data];
+    [payload appendData:routingKey];
+    uint8_t t = (uint8_t)[type unsignedIntegerValue];
+    [payload appendBytes:&t length:1];
+    uint8_t rLenBE[2]; encodeBEUInt16(reasonLen, rLenBE);
+    [payload appendBytes:rLenBE    length:2];
+    [payload appendBytes:reasonUTF8 length:reasonLen];
+
+    sendMsg(SGP_C_FEEDBACK, [payload bytes], (uint32_t)[payload length]);
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * handleMessage
+ *
+ * Called in a tight loop by the connection loop thread. Blocks until
+ * one message arrives (or the Ping timeout fires), then dispatches it.
+ *
+ * Ping/Pong state machine
+ * ────────────────────────
+ * select() is given a timeout of SGP_PING_INTERVAL_SEC normally.
+ * When a Ping is outstanding the timeout is clamped to the remaining
+ * Pong window so we detect expiry promptly.
+ *
+ *   Timeout with no pending Ping → send Ping, record time, return OK.
+ *   Timeout with pending Ping    → check elapsed:
+ *       ≥ SGP_PONG_TIMEOUT_SEC → return SGP_ERR_TIMEOUT.
+ *       <  SGP_PONG_TIMEOUT_SEC → return OK (will recheck next call).
+ *   Data arrives → reset idle timer, read + dispatch one message.
+ * ───────────────────────────────────────────────────────────────── */
+
+int handleMessage(void) {
+    if (!isConnected()) return SGP_ERR_IO;
+
+    // ── select() with appropriate timeout ────────────────────────
+    {
+        long waitSec = SGP_PING_INTERVAL_SEC;
+
+        if (_pingPendingSince > 0.0) {
+            double elapsed = monotonicSec() - _pingPendingSince;
+            if (elapsed >= (double)SGP_PONG_TIMEOUT_SEC) {
+                NSLog(@"[Protocol] Pong timeout after %.1fs — dead connection", elapsed);
+                return SGP_ERR_TIMEOUT;
+            }
+            long remaining = SGP_PONG_TIMEOUT_SEC - (long)elapsed;
+            waitSec = MAX(remaining, 1L);
+        }
+
+        fd_set rfds; FD_ZERO(&rfds); FD_SET(_sock, &rfds);
+        struct timeval tv = { waitSec, 0 };
+        int sel = select(_sock + 1, &rfds, NULL, NULL, &tv);
+
+        if (sel < 0) {
+            if (errno == EINTR) return SGP_OK;
+            NSLog(@"[Protocol] select(): %s", strerror(errno));
+            return SGP_ERR_IO;
+        }
+
+        if (sel == 0) {
+            // Timeout — no data received.
+            if (_pingPendingSince > 0.0) {
+                // Outstanding Ping; timeout window not fully elapsed yet
+                // (we'd have caught it above if it had). Recheck next call.
+                return SGP_OK;
+            }
+            NSLog(@"[Protocol] Idle for %lds — sending Ping", waitSec);
+            if (sendPing() != 0) {
+                NSLog(@"[Protocol] Failed to send Ping");
+                return SGP_ERR_IO;
+            }
+            return SGP_OK;
+        }
+        // sel > 0: socket is readable — fall through.
+    }
+
+    // ── Read the 8-byte header ────────────────────────────────────
+    uint8_t hdr[SGP_HEADER_SIZE];
+    if (sslReadExact(hdr, SGP_HEADER_SIZE) != 0) {
+        NSLog(@"[Protocol] Failed to read header");
+        return SGP_ERR_IO;
+    }
+
+    if (hdr[0] != SGP_MAGIC) {
+        NSLog(@"[Protocol] Bad magic 0x%02X (expected 0x%02X)", hdr[0], SGP_MAGIC);
+        return SGP_ERR_PROTO;
+    }
+    if (hdr[1] != SGP_VERSION) {
+        NSLog(@"[Protocol] Unsupported version 0x%02X (we speak 0x%02X)",
+              hdr[1], SGP_VERSION);
+        return SGP_ERR_PROTO;
+    }
+
+    SGPMsgType msgType = (SGPMsgType)hdr[2];
+    // hdr[3] = flags — reserved; ignore unknown bits for forward compat.
+
+    uint32_t payloadLen;
+    memcpy(&payloadLen, hdr + 4, 4);
+    payloadLen = ntohl(payloadLen);
+
+    if (payloadLen > SGP_MAX_PAYLOAD_LEN) {
+        NSLog(@"[Protocol] Payload too large: %u bytes", payloadLen);
+        return SGP_ERR_PROTO;
+    }
+
+    // ── Read payload ──────────────────────────────────────────────
+    uint8_t *raw = NULL;
+    if (payloadLen > 0) {
+        raw = malloc(payloadLen);
+        if (!raw) return SGP_ERR_IO;
+        if (sslReadExact(raw, (int)payloadLen) != 0) {
+            NSLog(@"[Protocol] Failed to read %u-byte payload", payloadLen);
+            free(raw);
+            return SGP_ERR_IO;
+        }
+    }
+    const uint8_t *p = raw;
+
+    // Any data from the server clears the outstanding Ping timer.
+    _pingPendingSince = 0.0;
+
+    NSLog(@"[Protocol] ← type=0x%02X len=%u", (unsigned)msgType, payloadLen);
+
+    int result = SGP_OK;
+
+    switch (msgType) {
+
+    /* ── SGP_S_HELLO ─────────────────────────────────────────────── */
+    case SGP_S_HELLO: {
+        uint32_t serverVer = 0;
+        if (payloadLen >= 4) { memcpy(&serverVer, p, 4); serverVer = ntohl(serverVer); }
+        NSLog(@"[Protocol] Hello: server version=%u", serverVer);
+        if (!_delegate) { result = SGP_ERR_PROTO; break; }
+        [_delegate handleWelcomeMessage];
+        break;
+    }
+
+    /* ── SGP_S_CHALLENGE ─────────────────────────────────────────── */
+    case SGP_S_CHALLENGE: {
+        if (payloadLen != SGP_NONCE_LEN) {
+            NSLog(@"[Protocol] Challenge: wrong nonce length %u", payloadLen);
+            result = SGP_ERR_PROTO; break;
+        }
+        memcpy(_pendingNonce, p, SGP_NONCE_LEN);
+        _hasPendingNonce = YES;
+        if (sendLoginResponse() != 0) {
+            NSLog(@"[Protocol] Failed to send login response");
+            result = SGP_ERR_AUTH;
+        }
+        break;
+    }
+
+    /* ── SGP_S_AUTH_OK ───────────────────────────────────────────── */
+    case SGP_S_AUTH_OK: {
+        NSLog(@"[Protocol] Authenticated");
+        if (_delegate) [_delegate authenticationSuccessful];
+        sendMsg(SGP_C_POLL, NULL, 0);   // drain offline queue
+        break;
+    }
+
+    /* ── SGP_S_NOTIFY ────────────────────────────────────────────── */
+    case SGP_S_NOTIFY: {
+        // Minimum prefix: routing_key[32]+msg_id[16]+flags[1]+data_len[4] = 53
+        if (payloadLen < 53) {
+            NSLog(@"[Protocol] Notify: payload too short (%u)", payloadLen);
+            result = SGP_ERR_PROTO; break;
+        }
+        if (!_delegate) { result = SGP_ERR_PROTO; break; }
+
+        NSData *routingKey = [NSData dataWithBytes:p      length:SGP_ROUTING_KEY_LEN];
+        NSData *msgID      = [NSData dataWithBytes:p + 32 length:SGP_MSG_ID_LEN];
+
+        uint8_t flags    = p[48];
+        BOOL isEncrypted = (flags & 0x01) != 0;
+        BOOL isJSON      = (flags & 0x02) != 0;
+
+        uint32_t dataLen;
+        memcpy(&dataLen, p + 49, 4);
+        dataLen = ntohl(dataLen);
+
+        uint32_t cursor = 53;
+        if ((uint64_t)cursor + dataLen > payloadLen) {
+            NSLog(@"[Protocol] Notify: data_len %u overruns payload", dataLen);
+            result = SGP_ERR_PROTO; break;
+        }
+
+        NSData *data = [NSData dataWithBytes:p + cursor length:dataLen];
+        cursor += dataLen;
+
+        NSData *iv = nil;
+        if (isEncrypted) {
+            if (cursor + SGP_GCM_IV_LEN > payloadLen) {
+                NSLog(@"[Protocol] Notify: IV truncated");
+                result = SGP_ERR_PROTO; break;
+            }
+            iv = [NSData dataWithBytes:p + cursor length:SGP_GCM_IV_LEN];
+        }
+
+        NSMutableDictionary *notif = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+            routingKey,                     @"routing_key",
+            msgID,                          @"msg_id",
+            @(isEncrypted),                 @"is_encrypted",
+            isJSON ? @"json" : @"plist",    @"data_type",
+            data,                           @"data",
+            nil];
+        if (iv) notif[@"iv"] = iv;
+
+        [_delegate processNotificationMessage:notif];
+        break;
+    }
+
+    /* ── SGP_S_DISCONNECT ────────────────────────────────────────── */
+    case SGP_S_DISCONNECT: {
+        uint8_t reason = (payloadLen >= 1) ? p[0] : SGP_DISC_NORMAL;
+        NSLog(@"[Protocol] Server disconnect reason=0x%02X", reason);
+        result = (reason == SGP_DISC_AUTH_FAIL) ? SGP_ERR_AUTH : SGP_ERR_CLOSED;
+        break;
+    }
+
+    /* ── SGP_S_TOKEN_ACK ─────────────────────────────────────────── */
+    case SGP_S_TOKEN_ACK: {
+        // routing_key[32] + bundle_id_len[2] + bundle_id[N]
+        if (payloadLen < 34) { result = SGP_ERR_PROTO; break; }
+        uint16_t bidLen; memcpy(&bidLen, p + 32, 2); bidLen = ntohs(bidLen);
+        if ((uint32_t)34 + bidLen > payloadLen) { result = SGP_ERR_PROTO; break; }
+
+        NSString *bundleId = [[NSString alloc] initWithBytes:p + 34
+                                                       length:bidLen
+                                                     encoding:NSUTF8StringEncoding];
+        if (!bundleId) { result = SGP_ERR_PROTO; break; }
+
+        dispatch_once(&_tokenWaitersOnce, ^{
+            _tokenWaiters = [[NSMutableDictionary alloc] init];
+        });
+        dispatch_semaphore_t sema = nil;
+        @synchronized(_tokenWaiters) { sema = _tokenWaiters[bundleId]; }
+        if (sema) dispatch_semaphore_signal(sema);
+
+        if (_delegate && [_delegate respondsToSelector:
+                @selector(deviceTokenRegistrationCompleted:)])
+            [_delegate deviceTokenRegistrationCompleted:bundleId];
+
+        [bundleId release];
+        break;
+    }
+
+    /* ── SGP_S_PONG ──────────────────────────────────────────────── */
+    case SGP_S_PONG: {
+        // _pingPendingSince already cleared above on any received data.
+        if (payloadLen == SGP_PING_SEQ_LEN) {
+            uint64_t seq = 0;
+            for (int i = 0; i < 8; i++) seq = (seq << 8) | p[i];
+            NSLog(@"[Protocol] ← Pong seq=%llu", (unsigned long long)seq);
+        }
+        break;
+    }
+
+    /* ── Unknown ─────────────────────────────────────────────────── */
+    default:
+        // Silently ignore unknown types for forward compatibility.
+        // A newer server may introduce types the client doesn't know yet.
+        NSLog(@"[Protocol] Unknown type 0x%02X (%u bytes) — ignoring",
+              (unsigned)msgType, payloadLen);
+        break;
+    }
+
+    free(raw);
+    return result;
 }

@@ -18,17 +18,21 @@ typedef enum {
 } ServerInfoSection;
 
 @interface SNServerInfoViewController () {
+    // ── Profile / config ─────────────────────────────────────────
     NSString *_serverAddress;
     NSString *_resolvedIP;
     NSString *_resolvedPort;
     NSString *_deviceAddress;
-    NSString *_connectionStatus;
-    NSString *_lastUpdated;
     NSString *_certSubject;
     NSString *_certIssuer;
     NSString *_certExpiry;
     BOOL      _isRegistered;
     BOOL      _isEnabled;
+
+    // ── Live daemon status (from StatusServer socket) ─────────────
+    // Stored as the raw payload so we never lose information.
+    // All display strings are derived from this on demand.
+    SGStatusPayload _statusPayload;
 }
 @end
 
@@ -42,6 +46,8 @@ typedef enum {
     self = [super initWithStyle:UITableViewStyleGrouped];
     if (self) {
         self.title = @"Registration Info";
+        memset(&_statusPayload, 0, sizeof(_statusPayload));
+        _statusPayload.state = SGStateStarting;
     }
     return self;
 }
@@ -49,13 +55,18 @@ typedef enum {
 - (void)viewDidLoad {
     [super viewDidLoad];
     [self loadData];
-    
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                    (__bridge const void *)(self),
-                                    SNServerInfoStatusChanged,
-                                    CFSTR("com.skyglow.snd.request_update"),
-                                    NULL,
-                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+
+    // "com.skyglow.snd.request_update" is the UI-to-UI refresh signal.
+    // It is NOT the daemon reload signal (reload_config).
+    // We listen here so that unregister/register in other view controllers
+    // triggers a refresh of this screen too.
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        (__bridge const void *)(self),
+        SNServerInfoStatusChanged,
+        CFSTR("com.skyglow.snd.request_update"),
+        NULL,
+        CFNotificationSuspensionBehaviorDeliverImmediately);
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -65,10 +76,11 @@ typedef enum {
 }
 
 - (void)dealloc {
-    CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                       (__bridge const void *)(self),
-                                       CFSTR("com.skyglow.snd.request_update"),
-                                       NULL);
+    CFNotificationCenterRemoveObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        (__bridge const void *)(self),
+        CFSTR("com.skyglow.snd.request_update"),
+        NULL);
 }
 
 static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
@@ -84,36 +96,58 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
 }
 
 // ──────────────────────────────────────────────
-// Data loading  (all via SNDataManager)
+// Data loading
 // ──────────────────────────────────────────────
 
 - (void)loadData {
     SNDataManager *dm = [SNDataManager shared];
-    
-    _isEnabled        = [dm isEnabled];
-    _serverAddress    = [dm serverAddress];
-    _deviceAddress    = [dm deviceAddress];
-    _isRegistered     = [dm isRegistered];
-    _connectionStatus = [dm connectionStatus];
-    
-    NSDate *updated = [dm lastUpdated];
-    if (updated) {
-        NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
-        [fmt setDateStyle:NSDateFormatterShortStyle];
-        [fmt setTimeStyle:NSDateFormatterMediumStyle];
-        _lastUpdated = [fmt stringFromDate:updated];
-    } else {
-        _lastUpdated = @"—";
-    }
-    
+
+    // ── Config / profile ─────────────────────────────────────────
+    _isEnabled     = [dm isEnabled];
+    _serverAddress = [dm serverAddress];
+    _deviceAddress = [dm deviceAddress];
+    _isRegistered  = [dm isRegistered];
+
     NSDictionary *certInfo = [dm parseCertificatePEM:[dm serverPubKeyPEM]];
-    _certSubject = [certInfo objectForKey:@"subject"];
-    _certIssuer  = [certInfo objectForKey:@"issuer"];
-    _certExpiry  = [certInfo objectForKey:@"expiry"];
-    
+    _certSubject = certInfo[@"subject"];
+    _certIssuer  = certInfo[@"issuer"];
+    _certExpiry  = certInfo[@"expiry"];
+
     NSDictionary *dns = [dm cachedDNSForServerAddress:_serverAddress];
-    _resolvedIP   = [dns objectForKey:@"ip"];
-    _resolvedPort = [dns objectForKey:@"port"];
+    _resolvedIP   = dns[@"ip"];
+    _resolvedPort = dns[@"port"];
+
+    // ── Live daemon status (socket query) ─────────────────────────
+    // Called synchronously; queryDaemonStatus has a 300 ms timeout
+    // and returns a safe empty payload if the daemon is unreachable.
+    _statusPayload = [dm queryDaemonStatus];
+}
+
+// ── Formatting helpers ────────────────────────────────────────────
+
+/// Human-readable timestamp from an epoch value (0 → "—").
+- (NSString *)formattedTimestamp:(int64_t)epoch {
+    if (epoch == 0) return @"—";
+    NSDate *date = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)epoch];
+    NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+    [fmt setDateStyle:NSDateFormatterShortStyle];
+    [fmt setTimeStyle:NSDateFormatterMediumStyle];
+    return [fmt stringFromDate:date];
+}
+
+/// "Xh Ym" uptime string derived from daemon start time. Returns @"—" if
+/// startTime is 0 (daemon not running or not heard from yet).
+- (NSString *)formattedUptime {
+    if (_statusPayload.startTime == 0) return @"—";
+    int64_t now     = (int64_t)time(NULL);
+    int64_t elapsed = now - _statusPayload.startTime;
+    if (elapsed < 0)  return @"—";
+    if (elapsed < 60) return [NSString stringWithFormat:@"%llds", (long long)elapsed];
+    long long mins  = elapsed / 60;
+    long long hours = mins / 60;
+    mins %= 60;
+    if (hours > 0) return [NSString stringWithFormat:@"%lldh %lldm", hours, mins];
+    return [NSString stringWithFormat:@"%lldm", mins];
 }
 
 // ──────────────────────────────────────────────
@@ -126,12 +160,10 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (!_isRegistered) {
-        if (section == 0) return 1;
-        if (section == 1) return 1;
-        return 0;
+        return (section == 0 || section == 1) ? 1 : 0;
     }
     switch ((ServerInfoSection)section) {
-        case SectionStatus:      return 3;
+        case SectionStatus:      return 5; // Status, Updated, Uptime, Failures, Enabled
         case SectionServer:      return 2;
         case SectionCertificate: return 3;
         case SectionDevice:      return 1;
@@ -163,9 +195,10 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     static NSString *valueCellID  = @"ValueCell";
     static NSString *actionCellID = @"ActionCell";
-    
+
     SNDataManager *dm = [SNDataManager shared];
-    
+
+    // ── Not registered ───────────────────────────────────────────
     if (!_isRegistered) {
         if (indexPath.section == 0) {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:valueCellID];
@@ -187,9 +220,10 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
         cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
         return cell;
     }
-    
+
+    // ── Actions ───────────────────────────────────────────────────
     ServerInfoSection section = (ServerInfoSection)indexPath.section;
-    
+
     if (section == SectionActions) {
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:actionCellID];
         if (!cell)
@@ -200,7 +234,8 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
         cell.textLabel.textColor = [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:1.0];
         return cell;
     }
-    
+
+    // ── Value rows ────────────────────────────────────────────────
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:valueCellID];
     if (!cell)
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
@@ -208,39 +243,67 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.accessoryType  = UITableViewCellAccessoryNone;
     cell.detailTextLabel.textColor = [UIColor darkGrayColor];
-    
+
+    SGState state = (SGState)_statusPayload.state;
+
     switch (section) {
         case SectionStatus:
             switch (indexPath.row) {
                 case 0:
                     cell.textLabel.text = @"Status";
-                    cell.detailTextLabel.text = [dm friendlyStatusString:_connectionStatus];
-                    cell.detailTextLabel.textColor = [dm colorForStatus:_connectionStatus];
+                    cell.detailTextLabel.text  = [dm friendlyStringForState:state];
+                    cell.detailTextLabel.textColor = [dm colorForState:state];
                     break;
                 case 1:
                     cell.textLabel.text = @"Last Updated";
-                    cell.detailTextLabel.text = _lastUpdated;
+                    cell.detailTextLabel.text = [self formattedTimestamp:_statusPayload.timestamp];
                     break;
                 case 2:
+                    cell.textLabel.text = @"Uptime";
+                    cell.detailTextLabel.text = [self formattedUptime];
+                    break;
+                case 3: {
+                    cell.textLabel.text = @"Failures";
+                    uint32_t f = _statusPayload.consecutiveFailures;
+                    cell.detailTextLabel.text = f > 0
+                        ? [NSString stringWithFormat:@"%u", f]
+                        : @"0";
+                    cell.detailTextLabel.textColor = f > 0
+                        ? [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:1.0]
+                        : [UIColor darkGrayColor];
+                    break;
+                }
+                case 4:
                     cell.textLabel.text = @"Enabled";
                     cell.detailTextLabel.text = _isEnabled ? @"Yes" : @"No";
                     break;
             }
             break;
+
         case SectionServer:
             switch (indexPath.row) {
                 case 0:
                     cell.textLabel.text = @"Address";
                     cell.detailTextLabel.text = _serverAddress ?: @"—";
                     break;
-                case 1:
+                case 1: {
+                    // Prefer live IP from status payload (what the daemon
+                    // actually connected to), fall back to cached DNS.
+                    NSString *liveIP = nil;
+                    if (_statusPayload.serverIP[0] != '\0') {
+                        liveIP = [NSString stringWithUTF8String:_statusPayload.serverIP];
+                    }
+                    NSString *ip   = liveIP ?: _resolvedIP;
+                    NSString *port = _resolvedPort;
                     cell.textLabel.text = @"Endpoint";
-                    cell.detailTextLabel.text = (_resolvedIP && _resolvedPort)
-                    ? [NSString stringWithFormat:@"%@:%@", _resolvedIP, _resolvedPort]
-                    : @"Not resolved";
+                    cell.detailTextLabel.text = (ip && port)
+                        ? [NSString stringWithFormat:@"%@:%@", ip, port]
+                        : (ip ?: @"Not resolved");
                     break;
+                }
             }
             break;
+
         case SectionCertificate:
             switch (indexPath.row) {
                 case 0: cell.textLabel.text = @"Common Name"; cell.detailTextLabel.text = _certSubject ?: @"—"; break;
@@ -248,11 +311,13 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
                 case 2: cell.textLabel.text = @"Expires";     cell.detailTextLabel.text = _certExpiry  ?: @"—"; break;
             }
             break;
+
         case SectionDevice:
             cell.textLabel.text = @"Device Address";
             cell.detailTextLabel.text = _deviceAddress ?: @"—";
             cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             break;
+
         default: break;
     }
     return cell;
@@ -264,14 +329,14 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    
+
     if (!_isRegistered) {
         if (indexPath.section == 1) [self performRegistration];
         return;
     }
-    
+
     ServerInfoSection section = (ServerInfoSection)indexPath.section;
-    
+
     if (section == SectionActions) {
         [self confirmUnregister];
     } else if (section == SectionDevice && _deviceAddress) {
@@ -301,27 +366,25 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
 
 - (void)showMessage:(NSString *)message withTitle:(NSString *)title {
     Class alertControllerClass = NSClassFromString(@"UIAlertController");
-    
+
     if (alertControllerClass) {
-        // iOS 8+ modern alert
         SEL alertCreateSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
         id (*createAlert)(Class, SEL, id, id, NSInteger) = (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
         id alert = createAlert(alertControllerClass, alertCreateSel, title, message, 1);
-        
+
         Class alertActionClass = NSClassFromString(@"UIAlertAction");
         SEL actionCreateSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
         id (*createAction)(Class, SEL, id, NSInteger, id) = (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
         id action = createAction(alertActionClass, actionCreateSel, @"OK", 0, nil);
-        
+
         SEL addActionSel = NSSelectorFromString(@"addAction:");
         void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
         addAction(alert, addActionSel, action);
-        
+
         SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
         void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
         present(self, presentSel, alert, YES, nil);
     } else {
-        // Pre-iOS 8 fallback
         [[[UIAlertView alloc] initWithTitle:title
                                     message:message
                                    delegate:nil
@@ -340,32 +403,30 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
         [self showMessage:@"Please enter a server address first." withTitle:@"Error"];
         return;
     }
-    
+
     __block id activeAlert = nil;
     UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
                                         initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
-    
+
     Class alertControllerClass = NSClassFromString(@"UIAlertController");
     if (alertControllerClass) {
-        // iOS 8+ Loading Alert
         SEL alertCreateSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
         id (*createAlert)(Class, SEL, id, id, NSInteger) = (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
         activeAlert = createAlert(alertControllerClass, alertCreateSel, @"Registering", @"\n\n\n", 1);
-        
+
         SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
         void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
         present(self, presentSel, activeAlert, YES, nil);
-        
+
         SEL viewSel = NSSelectorFromString(@"view");
         UIView *(*getView)(id, SEL) = (UIView *(*)(id, SEL))objc_msgSend;
         UIView *alertView = getView(activeAlert, viewSel);
-        
+
         spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
         spinner.center = CGPointMake(CGRectGetMidX(alertView.bounds), CGRectGetMidY(alertView.bounds));
         [alertView addSubview:spinner];
         [spinner startAnimating];
     } else {
-        // Pre-iOS 8 Loading Alert
         UIAlertView *alertView = [[UIAlertView alloc] initWithTitle:@"Registering"
                                                             message:@"\n"
                                                            delegate:nil
@@ -373,27 +434,27 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
                                                   otherButtonTitles:nil];
         activeAlert = alertView;
         [alertView show];
-        
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
-                           spinner.center = CGPointMake(CGRectGetMidX(alertView.bounds), CGRectGetMidY(alertView.bounds) + 20);
+                           spinner.center = CGPointMake(CGRectGetMidX(alertView.bounds),
+                                                        CGRectGetMidY(alertView.bounds) + 20);
                            [alertView addSubview:spinner];
                            [spinner startAnimating];
                        });
     }
-    
+
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [[SNDataManager shared] clearAllTokens];
         [[SNDataManager shared] clearDNSCache];
-        
+
         NSString *result = RegisterAccount(inputAddress);
-        
+
         if (!result) {
+            // Restart daemon so it picks up the new profile
             [self reloadDaemon];
         }
-        
+
         dispatch_async(dispatch_get_main_queue(), ^{
-            // Dismiss the loading alert
             if (alertControllerClass) {
                 SEL dismissSel = NSSelectorFromString(@"dismissViewControllerAnimated:completion:");
                 void (*dismiss)(id, SEL, BOOL, id) = (void (*)(id, SEL, BOOL, id))objc_msgSend;
@@ -401,10 +462,10 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
             } else {
                 [(UIAlertView *)activeAlert dismissWithClickedButtonIndex:0 animated:YES];
             }
-            
-            // Show result
+
             if (result) {
-                [self showMessage:[NSString stringWithFormat:@"Error: %@", result] withTitle:@"Registration Failed"];
+                [self showMessage:[NSString stringWithFormat:@"Error: %@", result]
+                        withTitle:@"Registration Failed"];
             } else {
                 [self loadData];
                 [self.tableView reloadData];
@@ -423,21 +484,20 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
 
 - (void)confirmUnregister {
     Class alertControllerClass = NSClassFromString(@"UIAlertController");
-    
+
     if (alertControllerClass) {
-        // iOS 8+ Confirmation
         SEL alertCreateSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
         id (*createAlert)(Class, SEL, id, id, NSInteger) = (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
-        id alert = createAlert(alertControllerClass, alertCreateSel, @"Unregister?", @"This will remove your server profile and stop all notifications.", 1);
-        
+        id alert = createAlert(alertControllerClass, alertCreateSel,
+                               @"Unregister?",
+                               @"This will remove your server profile and stop all notifications.", 1);
+
         Class alertActionClass = NSClassFromString(@"UIAlertAction");
         SEL actionCreateSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
-        
-        // Cancel Action (style 1)
+
         id (*createCancel)(Class, SEL, id, NSInteger, id) = (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
         id cancelAction = createCancel(alertActionClass, actionCreateSel, @"Cancel", 1, nil);
-        
-        // Destructive Action (style 2)
+
         __weak typeof(self) weakSelf = self;
         void (^unregisterBlock)(id) = ^(id action) {
             [[SNDataManager shared] unregister];
@@ -446,18 +506,16 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
         };
         id (*createDestructive)(Class, SEL, id, NSInteger, id) = (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
         id unregisterAction = createDestructive(alertActionClass, actionCreateSel, @"Unregister", 2, unregisterBlock);
-        
+
         SEL addActionSel = NSSelectorFromString(@"addAction:");
         void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
         addAction(alert, addActionSel, cancelAction);
         addAction(alert, addActionSel, unregisterAction);
-        
+
         SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
         void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
         present(self, presentSel, alert, YES, nil);
-        
     } else {
-        // Pre-iOS 8 Confirmation
         [[[UIAlertView alloc]
           initWithTitle:@"Unregister?"
           message:@"This will remove your server profile and stop all notifications."
