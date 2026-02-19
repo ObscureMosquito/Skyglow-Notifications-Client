@@ -5,6 +5,8 @@
 #import <mach/mach.h>
 #import <mach/message.h>
 #include <bootstrap.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
 #import "../TweakMachMessages.h"
 
 extern char **environ;
@@ -93,7 +95,7 @@ typedef enum {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch ((DebugSection)section) {
-        case SectionManualReg:   return 2; // TextField + Button
+        case SectionManualReg:   return 3; // TextField + Register Button + Test Notif Button
         case SectionSavedTokens: return _savedApps.count > 0 ? _savedApps.count : 1;
         case SectionStats:       return 2;
         case SectionDaemon:      return 1;
@@ -104,7 +106,7 @@ typedef enum {
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     switch ((DebugSection)section) {
-        case SectionManualReg:   return @"Manual Registration";
+        case SectionManualReg:   return @"Manual Registration & Testing";
         case SectionSavedTokens: return @"Saved Tokens";
         case SectionStats:       return @"Database Statistics";
         case SectionDaemon:      return @"Daemon";
@@ -152,9 +154,22 @@ typedef enum {
                                               reuseIdentifier:buttonCellID];
                 cell.textLabel.textAlignment = NSTextAlignmentCenter;
             }
-            cell.textLabel.text = @"Register Bundle ID";
-            cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
-            cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            cell.selectionStyle = UITableViewCellSelectionStyleBlue; // Changed from Default to Blue
+            
+            if (indexPath.row == 1) {
+                cell.textLabel.text = @"Register Bundle ID";
+                // Standard iOS blue
+                cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
+            } else if (indexPath.row == 2) { 
+                // Only configure visuals here!
+                cell.textLabel.text = @"Send Test Notification";
+                if ([UIColor respondsToSelector:@selector(systemPurpleColor)]) {
+                    cell.textLabel.textColor = [UIColor performSelector:@selector(systemPurpleColor)];
+                } else {
+                    cell.textLabel.textColor = [UIColor purpleColor];
+                }
+            }
+            
             return cell;
         }
     }
@@ -179,7 +194,7 @@ typedef enum {
             cell.detailTextLabel.text = [NSString stringWithFormat:@"Token: %@...",
                                          [hex substringToIndex:truncLen]];
             cell.detailTextLabel.textColor = [UIColor grayColor];
-            cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            cell.selectionStyle = UITableViewCellSelectionStyleBlue; // Changed from Default to Blue
             cell.accessoryType  = UITableViewCellAccessoryDisclosureIndicator;
         }
         return cell;
@@ -211,7 +226,7 @@ typedef enum {
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
     }
     
-    cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+    cell.selectionStyle = UITableViewCellSelectionStyleBlue; // Changed from Default to Blue
     cell.accessoryType  = UITableViewCellAccessoryNone;
     
     if (indexPath.section == SectionDaemon) {
@@ -236,30 +251,44 @@ typedef enum {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
-    if (indexPath.section == SectionManualReg && indexPath.row == 1) {
-        [_manualBundleIDParams resignFirstResponder];
-
-        NSString *bundleID = _manualBundleIDParams.text;
-        if (bundleID.length == 0) {
-            [self showAlert:@"Error" message:@"Please enter a valid Bundle ID."];
-            return;
-        }
-
-        [[SNDataManager shared] setAppStatusValue:YES forBundleId:bundleID];
+    if (indexPath.section == SectionManualReg) {
+        [_manualBundleIDParams resignFirstResponder]; // Dismiss keyboard if open
         
-        NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.skyglow.sndp"] ?: @{};
-        NSMutableDictionary *mutablePrefs = [prefs mutableCopy];
-        [mutablePrefs setObject:bundleID forKey:@"lastRegisteredApp"];
-        [[NSUserDefaults standardUserDefaults] setPersistentDomain:mutablePrefs forName:@"com.skyglow.sndp"];
-        [[NSUserDefaults standardUserDefaults] synchronize];
+        if (indexPath.row == 1) { // Register Button
+            NSString *bundleID = _manualBundleIDParams.text;
+            if (bundleID.length == 0) {
+                [self showAlert:@"Error" message:@"Please enter a valid Bundle ID."];
+                return;
+            }
 
-        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                             CFSTR("com.skyglow.sgn.registerInputApp"),
-                                             NULL, NULL, TRUE);
+            [[SNDataManager shared] setAppStatusValue:YES forBundleId:bundleID];
+            
+            NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.skyglow.sndp"] ?: @{};
+            NSMutableDictionary *mutablePrefs = [prefs mutableCopy];
+            [mutablePrefs setObject:bundleID forKey:@"lastRegisteredApp"];
+            [[NSUserDefaults standardUserDefaults] setPersistentDomain:mutablePrefs forName:@"com.skyglow.sndp"];
+            [[NSUserDefaults standardUserDefaults] synchronize];
 
-        [self showAlert:@"Request Sent"
-                message:[NSString stringWithFormat:@"Registration request for '%@' sent to SpringBoard.", bundleID]];
-        _manualBundleIDParams.text = @"";
+            CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                                 CFSTR("com.skyglow.sgn.registerInputApp"),
+                                                 NULL, NULL, TRUE);
+
+            [self showAlert:@"Request Sent"
+                    message:[NSString stringWithFormat:@"Registration request for '%@' sent to SpringBoard.", bundleID]];
+            _manualBundleIDParams.text = @"";
+            
+        } else if (indexPath.row == 2) { // Test Notification Button
+            
+            NSLog(@"[SGN-Settings] Sending Darwin signal: com.skyglow.test-inject");
+            
+            // Fire the test notification Darwin event we catch in SpringBoard
+            CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                                 CFSTR("com.skyglow.test-inject"),
+                                                 NULL, NULL, TRUE);
+                                                 
+            [self showAlert:@"Test Triggered"
+                    message:@"Sent signal 'com.skyglow.test-inject' to SpringBoard."];
+        }
         
     } else if (indexPath.section == SectionSavedTokens && _savedApps.count > 0) {
         NSDictionary *app = _savedApps[indexPath.row];
@@ -326,12 +355,41 @@ typedef enum {
 // ──────────────────────────────────────────────
 
 - (void)showAlert:(NSString *)title message:(NSString *)msg {
-    UIAlertView *av = [[UIAlertView alloc] initWithTitle:title
-                                                 message:msg
-                                                delegate:nil
-                                       cancelButtonTitle:@"OK"
-                                       otherButtonTitles:nil];
-    [av show];
+    Class alertControllerClass = NSClassFromString(@"UIAlertController");
+    
+    if (alertControllerClass) {
+        // ── iOS 8+ Modern UIAlertController via Runtime ──
+        
+        // UIAlertControllerStyleAlert = 1
+        SEL alertCreateSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
+        id (*createAlert)(Class, SEL, id, id, NSInteger) = (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
+        id alert = createAlert(alertControllerClass, alertCreateSel, title, msg, 1);
+        
+        // UIAlertActionStyleDefault = 0
+        Class alertActionClass = NSClassFromString(@"UIAlertAction");
+        SEL actionCreateSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
+        id (*createAction)(Class, SEL, id, NSInteger, id) = (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
+        id action = createAction(alertActionClass, actionCreateSel, @"OK", 0, nil);
+        
+        // [alert addAction:action]
+        SEL addActionSel = NSSelectorFromString(@"addAction:");
+        void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
+        addAction(alert, addActionSel, action);
+        
+        // [self presentViewController:alert animated:YES completion:nil]
+        SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
+        void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
+        present(self, presentSel, alert, YES, nil);
+        
+    } else {
+        // ── Pre-iOS 8 Fallback (UIAlertView) ──
+        UIAlertView *av = [[UIAlertView alloc] initWithTitle:title
+                                                     message:msg
+                                                    delegate:nil
+                                           cancelButtonTitle:@"OK"
+                                           otherButtonTitles:nil];
+        [av show];
+    }
 }
 
 @end

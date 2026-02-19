@@ -2,6 +2,8 @@
 #import "SNDataManager.h"
 #include <spawn.h>
 #include <sys/wait.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
 
 extern NSString *RegisterAccount(NSString *serverAddress);
 extern char **environ;
@@ -81,9 +83,9 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
     });
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ──────────────────────────────────────────────
 // Data loading  (all via SNDataManager)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ──────────────────────────────────────────────
 
 - (void)loadData {
     SNDataManager *dm = [SNDataManager shared];
@@ -101,7 +103,7 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
         [fmt setTimeStyle:NSDateFormatterMediumStyle];
         _lastUpdated = [fmt stringFromDate:updated];
     } else {
-        _lastUpdated = @"â€”";
+        _lastUpdated = @"—";
     }
     
     NSDictionary *certInfo = [dm parseCertificatePEM:[dm serverPubKeyPEM]];
@@ -114,9 +116,9 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
     _resolvedPort = [dns objectForKey:@"port"];
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ──────────────────────────────────────────────
 // TableView DataSource
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ──────────────────────────────────────────────
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     return _isRegistered ? SectionCount : 2;
@@ -164,7 +166,6 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
     
     SNDataManager *dm = [SNDataManager shared];
     
-    // â”€â”€ Not registered â”€â”€
     if (!_isRegistered) {
         if (indexPath.section == 0) {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:valueCellID];
@@ -187,7 +188,6 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
         return cell;
     }
     
-    // â”€â”€ Actions â”€â”€
     ServerInfoSection section = (ServerInfoSection)indexPath.section;
     
     if (section == SectionActions) {
@@ -201,7 +201,6 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
         return cell;
     }
     
-    // â”€â”€ Value rows â”€â”€
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:valueCellID];
     if (!cell)
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
@@ -232,7 +231,7 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
             switch (indexPath.row) {
                 case 0:
                     cell.textLabel.text = @"Address";
-                    cell.detailTextLabel.text = _serverAddress ?: @"â€”";
+                    cell.detailTextLabel.text = _serverAddress ?: @"—";
                     break;
                 case 1:
                     cell.textLabel.text = @"Endpoint";
@@ -244,14 +243,14 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
             break;
         case SectionCertificate:
             switch (indexPath.row) {
-                case 0: cell.textLabel.text = @"Common Name"; cell.detailTextLabel.text = _certSubject ?: @"â€”"; break;
-                case 1: cell.textLabel.text = @"Issuer";      cell.detailTextLabel.text = _certIssuer  ?: @"â€”"; break;
-                case 2: cell.textLabel.text = @"Expires";     cell.detailTextLabel.text = _certExpiry  ?: @"â€”"; break;
+                case 0: cell.textLabel.text = @"Common Name"; cell.detailTextLabel.text = _certSubject ?: @"—"; break;
+                case 1: cell.textLabel.text = @"Issuer";      cell.detailTextLabel.text = _certIssuer  ?: @"—"; break;
+                case 2: cell.textLabel.text = @"Expires";     cell.detailTextLabel.text = _certExpiry  ?: @"—"; break;
             }
             break;
         case SectionDevice:
             cell.textLabel.text = @"Device Address";
-            cell.detailTextLabel.text = _deviceAddress ?: @"â€”";
+            cell.detailTextLabel.text = _deviceAddress ?: @"—";
             cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             break;
         default: break;
@@ -259,9 +258,9 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
     return cell;
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ──────────────────────────────────────────────
 // TableView Delegate
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ──────────────────────────────────────────────
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
@@ -277,15 +276,13 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
         [self confirmUnregister];
     } else if (section == SectionDevice && _deviceAddress) {
         [[UIPasteboard generalPasteboard] setString:_deviceAddress];
-        [[[UIAlertView alloc] initWithTitle:@"Copied"
-                                    message:@"Device address copied."
-                                   delegate:nil
-                          cancelButtonTitle:@"OK"
-                          otherButtonTitles:nil] show];
+        [self showMessage:@"Device address copied." withTitle:@"Copied"];
     }
 }
 
-// Daemon restart helper
+// ──────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────
 
 - (void)reloadDaemon {
     NSString *path = [[NSBundle bundleForClass:[self class]]
@@ -302,63 +299,115 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
     }
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+- (void)showMessage:(NSString *)message withTitle:(NSString *)title {
+    Class alertControllerClass = NSClassFromString(@"UIAlertController");
+    
+    if (alertControllerClass) {
+        // iOS 8+ modern alert
+        SEL alertCreateSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
+        id (*createAlert)(Class, SEL, id, id, NSInteger) = (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
+        id alert = createAlert(alertControllerClass, alertCreateSel, title, message, 1);
+        
+        Class alertActionClass = NSClassFromString(@"UIAlertAction");
+        SEL actionCreateSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
+        id (*createAction)(Class, SEL, id, NSInteger, id) = (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
+        id action = createAction(alertActionClass, actionCreateSel, @"OK", 0, nil);
+        
+        SEL addActionSel = NSSelectorFromString(@"addAction:");
+        void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
+        addAction(alert, addActionSel, action);
+        
+        SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
+        void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
+        present(self, presentSel, alert, YES, nil);
+    } else {
+        // Pre-iOS 8 fallback
+        [[[UIAlertView alloc] initWithTitle:title
+                                    message:message
+                                   delegate:nil
+                          cancelButtonTitle:@"OK"
+                          otherButtonTitles:nil] show];
+    }
+}
+
+// ──────────────────────────────────────────────
 // Registration
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ──────────────────────────────────────────────
 
 - (void)performRegistration {
     NSString *inputAddress = [[SNDataManager shared] serverAddressInput];
     if (!inputAddress || inputAddress.length == 0) {
-        [[[UIAlertView alloc] initWithTitle:@"Error"
-                                    message:@"Please enter a server address first."
-                                   delegate:nil
-                          cancelButtonTitle:@"OK"
-                          otherButtonTitles:nil] show];
+        [self showMessage:@"Please enter a server address first." withTitle:@"Error"];
         return;
     }
     
-    UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Registering"
-                                                    message:@"\n"
-                                                   delegate:nil
-                                          cancelButtonTitle:nil
-                                          otherButtonTitles:nil];
+    __block id activeAlert = nil;
     UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
                                         initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
-    [alert show];
     
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-                       spinner.center = CGPointMake(CGRectGetMidX(alert.bounds), CGRectGetMidY(alert.bounds) + 20);
-                       [alert addSubview:spinner];
-                       [spinner startAnimating];
-                   });
+    Class alertControllerClass = NSClassFromString(@"UIAlertController");
+    if (alertControllerClass) {
+        // iOS 8+ Loading Alert
+        SEL alertCreateSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
+        id (*createAlert)(Class, SEL, id, id, NSInteger) = (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
+        activeAlert = createAlert(alertControllerClass, alertCreateSel, @"Registering", @"\n\n\n", 1);
+        
+        SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
+        void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
+        present(self, presentSel, activeAlert, YES, nil);
+        
+        SEL viewSel = NSSelectorFromString(@"view");
+        UIView *(*getView)(id, SEL) = (UIView *(*)(id, SEL))objc_msgSend;
+        UIView *alertView = getView(activeAlert, viewSel);
+        
+        spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
+        spinner.center = CGPointMake(CGRectGetMidX(alertView.bounds), CGRectGetMidY(alertView.bounds));
+        [alertView addSubview:spinner];
+        [spinner startAnimating];
+    } else {
+        // Pre-iOS 8 Loading Alert
+        UIAlertView *alertView = [[UIAlertView alloc] initWithTitle:@"Registering"
+                                                            message:@"\n"
+                                                           delegate:nil
+                                                  cancelButtonTitle:nil
+                                                  otherButtonTitles:nil];
+        activeAlert = alertView;
+        [alertView show];
+        
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+                           spinner.center = CGPointMake(CGRectGetMidX(alertView.bounds), CGRectGetMidY(alertView.bounds) + 20);
+                           [alertView addSubview:spinner];
+                           [spinner startAnimating];
+                       });
+    }
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // Clean stale data before re-registering (new identity = old tokens useless)
         [[SNDataManager shared] clearAllTokens];
         [[SNDataManager shared] clearDNSCache];
         
         NSString *result = RegisterAccount(inputAddress);
         
         if (!result) {
-            // Registration succeeded â restart the daemon so it picks up the
-            // new profile. Posting reload_config alone isn't enough because
-            // the daemon may have exited (return 0) when it had no profile.
             [self reloadDaemon];
         }
         
         dispatch_async(dispatch_get_main_queue(), ^{
-            [alert dismissWithClickedButtonIndex:0 animated:YES];
+            // Dismiss the loading alert
+            if (alertControllerClass) {
+                SEL dismissSel = NSSelectorFromString(@"dismissViewControllerAnimated:completion:");
+                void (*dismiss)(id, SEL, BOOL, id) = (void (*)(id, SEL, BOOL, id))objc_msgSend;
+                dismiss(activeAlert, dismissSel, YES, nil);
+            } else {
+                [(UIAlertView *)activeAlert dismissWithClickedButtonIndex:0 animated:YES];
+            }
+            
+            // Show result
             if (result) {
-                [[[UIAlertView alloc] initWithTitle:@"Registration Failed"
-                                            message:[NSString stringWithFormat:@"Error: %@", result]
-                                           delegate:nil
-                                  cancelButtonTitle:@"OK"
-                                  otherButtonTitles:nil] show];
+                [self showMessage:[NSString stringWithFormat:@"Error: %@", result] withTitle:@"Registration Failed"];
             } else {
                 [self loadData];
                 [self.tableView reloadData];
-                // Post UI refresh so other views update
                 CFNotificationCenterPostNotificationWithOptions(
                     CFNotificationCenterGetDarwinNotifyCenter(),
                     CFSTR("com.skyglow.snd.request_update"),
@@ -368,17 +417,54 @@ static void SNServerInfoStatusChanged(CFNotificationCenterRef center,
     });
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ──────────────────────────────────────────────
 // Unregistration
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ──────────────────────────────────────────────
 
 - (void)confirmUnregister {
-    [[[UIAlertView alloc]
-      initWithTitle:@"Unregister?"
-      message:@"This will remove your server profile and stop all notifications."
-      delegate:self
-      cancelButtonTitle:@"Cancel"
-      otherButtonTitles:@"Unregister", nil] show];
+    Class alertControllerClass = NSClassFromString(@"UIAlertController");
+    
+    if (alertControllerClass) {
+        // iOS 8+ Confirmation
+        SEL alertCreateSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
+        id (*createAlert)(Class, SEL, id, id, NSInteger) = (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
+        id alert = createAlert(alertControllerClass, alertCreateSel, @"Unregister?", @"This will remove your server profile and stop all notifications.", 1);
+        
+        Class alertActionClass = NSClassFromString(@"UIAlertAction");
+        SEL actionCreateSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
+        
+        // Cancel Action (style 1)
+        id (*createCancel)(Class, SEL, id, NSInteger, id) = (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
+        id cancelAction = createCancel(alertActionClass, actionCreateSel, @"Cancel", 1, nil);
+        
+        // Destructive Action (style 2)
+        __weak typeof(self) weakSelf = self;
+        void (^unregisterBlock)(id) = ^(id action) {
+            [[SNDataManager shared] unregister];
+            [weakSelf loadData];
+            [weakSelf.tableView reloadData];
+        };
+        id (*createDestructive)(Class, SEL, id, NSInteger, id) = (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
+        id unregisterAction = createDestructive(alertActionClass, actionCreateSel, @"Unregister", 2, unregisterBlock);
+        
+        SEL addActionSel = NSSelectorFromString(@"addAction:");
+        void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
+        addAction(alert, addActionSel, cancelAction);
+        addAction(alert, addActionSel, unregisterAction);
+        
+        SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
+        void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
+        present(self, presentSel, alert, YES, nil);
+        
+    } else {
+        // Pre-iOS 8 Confirmation
+        [[[UIAlertView alloc]
+          initWithTitle:@"Unregister?"
+          message:@"This will remove your server profile and stop all notifications."
+          delegate:self
+          cancelButtonTitle:@"Cancel"
+          otherButtonTitles:@"Unregister", nil] show];
+    }
 }
 
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {

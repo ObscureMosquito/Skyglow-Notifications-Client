@@ -122,4 +122,22 @@ void daemonStatusStatusUpdate(CFNotificationCenterRef center,
     self.logLabel.text = userFriendlyMessage;
 }
 
+- (UIColor *)scanlinePattern {
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(1, 2), NO, 0.0);
+    CGContextRef context = UIGraphicsGetCurrentContext();
+    
+    // Top pixel: Transparent/Bright
+    [[UIColor clearColor] setFill];
+    CGContextFillRect(context, CGRectMake(0, 0, 1, 1));
+    
+    // Bottom pixel: Dark/Scanline
+    [[UIColor colorWithWhite:0.0 alpha:0.3] setFill];
+    CGContextFillRect(context, CGRectMake(0, 1, 1, 1));
+    
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    
+    return [UIColor colorWithPatternImage:image];
+}
+
 @end
