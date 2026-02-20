@@ -10,11 +10,10 @@ if [ -d /var/jb ]; then
 fi
 
 PLIST_PATH="$JB_PREFIX/Library/LaunchDaemons/com.skyglow.snd.plist"
-KEYS_PATH="$JB_PREFIX/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Keys"
+KEYS_PATH="$JB_PREFIX/Library/PreferenceBundles/SGNPreferenceBundle.bundle/Keys"
 
 echo "[Skyglow] Using prefix: ${JB_PREFIX:-/}"
 
-# Unload daemon (modern jailbreaks)
 if [ -f "$PLIST_PATH" ]; then
     if command -v launchctl >/dev/null 2>&1; then
         echo "[Skyglow] Unloading daemon with launchctl"

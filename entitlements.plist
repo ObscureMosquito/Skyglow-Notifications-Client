@@ -5,10 +5,5 @@
     <true/>
     <key>com.apple.private.security.container-required</key>
     <false/>
-    <!-- Add the missing entitlements below -->
-    <key>com.apple.localnotification.schedulingproxy</key>
-    <true/>
-    <key>com.apple.springboard.launchapplications</key>
-    <true/>
 </dict>
 </plist>

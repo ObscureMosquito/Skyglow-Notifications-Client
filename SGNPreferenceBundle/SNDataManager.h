@@ -5,7 +5,7 @@
 // The settings bundle links against StatusServer.c (or the .o), so the C
 // symbols are available at link time. The header is shared via a relative
 // path from the bundle source tree.
-#include "../StatusServer.h"
+#include "../Skyglow-Notifications-Daemon/StatusServer.h"
 
 /// Centralized data access for the Skyglow Notifications settings bundle.
 /// All plist reading, plist writing, and SQLite queries go through this singleton.

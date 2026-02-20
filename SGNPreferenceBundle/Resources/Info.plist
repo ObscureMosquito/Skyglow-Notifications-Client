@@ -5,7 +5,7 @@
 	<!--key>CFBundleDevelopmentRegion</key>
 	<string>English</string>
 	<key>CFBundleExecutable</key>
-	<string>SkyglowNotificationsDaemonSettings</string>
+	<string>SGNPreferenceBundle</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.skyglow.snds</string>
 	<key>CFBundleInfoDictionaryVersion</key>

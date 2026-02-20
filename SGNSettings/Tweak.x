@@ -54,7 +54,7 @@ static NSString *const kSGNPlistNameKey  = @"sgn_plist_name";
         }
     }
 
-    NSString *bundlePath = @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle";
+    NSString *bundlePath = @"/Library/PreferenceBundles/SGNPreferenceBundle.bundle";
 	NSBundle *prefBundle = [NSBundle bundleWithPath:bundlePath];
 	[prefBundle load];
 	Class rootCls = [prefBundle principalClass];

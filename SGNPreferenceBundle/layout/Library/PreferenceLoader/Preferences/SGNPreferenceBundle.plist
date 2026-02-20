@@ -4,8 +4,8 @@
 <dict>
 	<key>entry</key>
 	<dict>
-		<key>bundle</key>
-		<string>SkyglowNotificationsDaemonSettings</string>
+		<!--key>bundle</key>
+		<string>SGNPreferenceBundle</string>
 		<key>cell</key>
 		<string>PSLinkCell</string>
 		<key>detail</key>
@@ -15,7 +15,7 @@
 		<key>isController</key>
 		<true/>
 		<key>label</key>
-		<string>Skyglow Notifications</string>
+		<string>Skyglow Notifications</string-->
 	</dict>
 </dict>
 </plist>

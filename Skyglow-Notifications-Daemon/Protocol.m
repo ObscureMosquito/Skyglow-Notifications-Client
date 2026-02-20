@@ -656,12 +656,18 @@ BOOL registerDeviceToken(NSData *routingKey, NSString *bundleId) {
                          (uint32_t)[payload length]) == 0);
     if (!sent) {
         @synchronized(_tokenWaiters) { [_tokenWaiters removeObjectForKey:bundleId]; }
+#if !__has_feature(objc_arc)
+        dispatch_release(sema);
+#endif
         return NO;
     }
 
     long rc = dispatch_semaphore_wait(
         sema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
     @synchronized(_tokenWaiters) { [_tokenWaiters removeObjectForKey:bundleId]; }
+#if !__has_feature(objc_arc)
+    dispatch_release(sema);
+#endif
     return (rc == 0);
 }
 

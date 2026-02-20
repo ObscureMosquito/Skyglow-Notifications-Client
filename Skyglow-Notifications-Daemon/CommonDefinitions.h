@@ -2,7 +2,7 @@
 #import <netinet/in.h>
 #import <arpa/inet.h>
 
-#define kBundlePath @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle"
+#define kBundlePath @"/Library/PreferenceBundles/SGNPreferenceBundle.bundle"
 
 extern NSString *SERVER_IP;
 extern int SERVER_PORT;

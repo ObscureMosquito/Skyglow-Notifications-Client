@@ -20,6 +20,5 @@ extern char **environ;
 
 - (void)reloadDaemon;
 - (void)pushDebugView;
-- (void)registerDevice;
 
 @end

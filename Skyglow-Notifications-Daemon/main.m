@@ -977,6 +977,7 @@ int main(void) {
             NSLog(@"[Main] Failed to initialize database");
             StatusServer_post(SGStateError, 0, 0, NULL);
             StatusServer_shutdown();
+            [serverAddress release];    serverAddress    = nil;
             [daemon release];
             return -1;
         }
@@ -1001,6 +1002,8 @@ int main(void) {
             StatusServer_post(SGStateIdleDNSFailed, 0, 0, NULL);
             idleUntilConfigReload(daemon);
             StatusServer_shutdown();
+            [serverAddress release];    serverAddress    = nil;
+            [db release];               db               = nil;
             [daemon release];
             return 0;
         }
@@ -1012,6 +1015,8 @@ int main(void) {
             NSLog(@"[Main] Invalid IP from DNS: %@", ip);
             StatusServer_post(SGStateErrorBadConfig, 0, 0, NULL);
             StatusServer_shutdown();
+            [serverAddress release];    serverAddress    = nil;
+            [db release];               db               = nil;
             [daemon release];
             return -1;
         }
@@ -1019,6 +1024,8 @@ int main(void) {
             NSLog(@"[Main] Invalid port from DNS: %@", port);
             StatusServer_post(SGStateErrorBadConfig, 0, 0, NULL);
             StatusServer_shutdown();
+            [serverAddress release];    serverAddress    = nil;
+            [db release];               db               = nil;
             [daemon release];
             return -1;
         }
@@ -1082,6 +1089,7 @@ int main(void) {
         [serverIPString release];   serverIPString   = nil;
         [serverPortString release]; serverPortString = nil;
         [db release];               db               = nil;
+        [machMsgs release];
         [daemon release];
         gDaemon = nil;
     }

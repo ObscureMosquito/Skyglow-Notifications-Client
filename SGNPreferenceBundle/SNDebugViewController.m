@@ -7,7 +7,6 @@
 #include <bootstrap.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
-#import "../TweakMachMessages.h"
 
 extern char **environ;
 

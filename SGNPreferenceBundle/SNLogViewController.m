@@ -25,7 +25,7 @@
     self.logLabel.font            = [UIFont boldSystemFontOfSize:13.0];
     [self.view addSubview:self.logLabel];
 
-    NSString *imagePath = @"/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/Overlay-Gloss.png";
+    NSString *imagePath = @"/Library/PreferenceBundles/SGNPreferenceBundle.bundle/Overlay-Gloss.png";
     UIImage *glossImage = [UIImage imageWithContentsOfFile:imagePath];
     if (glossImage) {
         self.overlayView = [[UIImageView alloc] initWithImage:glossImage];

@@ -17,7 +17,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #include <bootstrap.h>
-#import "TweakMachMessages.h"
+#import "../Skyglow-Notifications-Daemon/TweakMachMessages.h"
 
 // ═══════════════════════════════════════════════
 #pragma mark - Constants & Globals

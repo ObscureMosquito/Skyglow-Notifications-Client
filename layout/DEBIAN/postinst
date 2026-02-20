@@ -3,7 +3,6 @@ set -e
 
 echo "[Skyglow] Running post-install script"
 
-# Detect rootless (if applicable, though iOS 6 is usually rootful)
 JB_PREFIX=""
 if [ -d /var/jb ]; then
     JB_PREFIX="/var/jb"
@@ -11,57 +10,51 @@ fi
 
 PLIST_PATH="$JB_PREFIX/Library/LaunchDaemons/com.skyglow.snd.plist"
 DAEMON_PATH="$JB_PREFIX/usr/local/bin/SkyglowNotificationsDaemon"
-# This is the missing path!
-HELPER_PATH="$JB_PREFIX/Library/PreferenceBundles/SkyglowNotificationsDaemonSettings.bundle/sndrestart"
+HELPER_PATH="$JB_PREFIX/Library/PreferenceBundles/SGNPreferenceBundle.bundle/sndrestart"
 
 echo "[Skyglow] Using prefix: ${JB_PREFIX:-/}"
 
-# --- 1. Create LaunchDaemon plist if missing (Your existing code) ---
 if [ ! -f "$PLIST_PATH" ]; then
     echo "[Skyglow] Creating LaunchDaemon plist"
     mkdir -p "$(dirname "$PLIST_PATH")"
 
     cat > "$PLIST_PATH" << EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.skyglow.snd</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$DAEMON_PATH</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>StartInterval</key>
-    <integer>1800</integer>
-    <key>KeepAlive</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>/dev/null</string>
-    <key>StandardErrorPath</key>
-    <string>/dev/null</string>
-</dict>
-</plist>
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+        <key>Label</key>
+        <string>com.skyglow.snd</string>
+        <key>ProgramArguments</key>
+        <array>
+            <string>$DAEMON_PATH</string>
+        </array>
+        <key>RunAtLoad</key>
+        <true/>
+        <key>StartInterval</key>
+        <integer>1800</integer>
+        <key>KeepAlive</key>
+        <true/>
+        <key>StandardOutPath</key>
+        <string>/dev/null</string>
+        <key>StandardErrorPath</key>
+        <string>/dev/null</string>
+    </dict>
+    </plist>
 EOF
 fi
 
-# Fix plist permissions
 chown root:wheel "$PLIST_PATH"
 chmod 644 "$PLIST_PATH"
 
-# --- 2. Fix Helper Tool Permissions (THE MISSING PART) ---
 if [ -f "$HELPER_PATH" ]; then
     echo "[Skyglow] Setting SUID for sndrestart helper"
     chown root:wheel "$HELPER_PATH"
-    # 4755 = Read/Exec by everyone, but runs as Owner (Root)
     chmod 4755 "$HELPER_PATH"
 else
     echo "[Skyglow] WARNING: Helper tool not found at $HELPER_PATH"
 fi
 
-# --- 3. Fix Daemon Permissions ---
 if [ -f "$DAEMON_PATH" ]; then
     chown root:wheel "$DAEMON_PATH"
     chmod 755 "$DAEMON_PATH"
@@ -69,15 +62,12 @@ else
     echo "[Skyglow] WARNING: daemon binary not found at $DAEMON_PATH"
 fi
 
-# --- 4. Load the Daemon ---
 if command -v launchctl >/dev/null 2>&1; then
     echo "[Skyglow] Loading daemon with launchctl"
     launchctl unload "$PLIST_PATH" 2>/dev/null || true
     launchctl load "$PLIST_PATH"
 fi
 
-# --- 5. Kill Settings to refresh the bundle ---
-# This ensures the new binary permissions are picked up if Settings was running
 killall -9 Preferences 2>/dev/null || true
 
 echo "[Skyglow] Installation complete"
