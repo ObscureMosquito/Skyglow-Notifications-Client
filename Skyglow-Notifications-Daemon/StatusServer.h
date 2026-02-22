@@ -122,52 +122,35 @@ typedef enum : uint8_t {
     /// Clean shutdown in progress.
     SGStateShuttingDown             = 14,
 
+    /// First-time setup: C_REGISTER sent, waiting for S_CHALLENGE/S_REGISTER_OK/FAIL.
+    /// On S_REGISTER_OK the profile is persisted and C_LOGIN is sent immediately
+    /// on the same connection (server resets to CONNECTED state after REGISTER_OK).
+    SGStateRegistering              = 15,
+
 } SGState;
 
-
 /* ─────────────────────────────────────────────────────────────────
- * Wire payload
+ * Status Payload
+ * * Sent to WATCH clients on every state transition, and QUERY clients
+ * immediately upon connection.
  *
- * Fixed-size. Written verbatim to the socket.
- * Clients read exactly sizeof(SGStatusPayload) bytes.
- *
- * All multi-byte integers are host byte order (local IPC only;
- * no network transport, so no need for htons/ntohl here).
+ * Fields are explicitly ordered largest-to-smallest to guarantee
+ * natural memory alignment (multiples of 8 bytes for int64_t) to
+ * prevent EXC_BAD_ACCESS hardware traps on ARMv6/ARMv7 (iOS 4/5/6).
  * ───────────────────────────────────────────────────────────────── */
-
 #pragma pack(push, 1)
 typedef struct {
-    /// Always SS_PAYLOAD_MAGIC (0x5347). Client should reject if wrong.
-    uint16_t    magic;
-
-    /// Always SS_PAYLOAD_VERSION. Client should reject if unsupported.
-    uint8_t     version;
-
-    /// Current daemon state (SGState).
-    uint8_t     state;
-
-    /// Unix timestamp of this status update (seconds since epoch).
-    int64_t     timestamp;
-
-    /// Unix timestamp of daemon start (for uptime calculation).
-    int64_t     startTime;
-
-    /// Consecutive connection failures since last clean connect.
-    uint32_t    consecutiveFailures;
-
-    /// Current backoff interval in seconds (0 if not backing off).
-    uint32_t    currentBackoffSec;
-
-    /// Server IP currently connected to (or last attempted), NUL-terminated.
-    /// 46 bytes covers IPv4 and IPv6 presentation strings.
-    char        serverIP[46];
-
-    /// Reserved for future use. Must be zero.
-    uint8_t     reserved[8];
-
+    uint16_t    magic;               // Offset: 0
+    uint8_t     version;             // Offset: 2
+    uint8_t     state;               // Offset: 3 (SGState enum)
+    uint8_t     padding1[4];         // Offset: 4 (Pads to 8 bytes to align the next field)
+    int64_t     timestamp;           // Offset: 8 (Perfectly Aligned to 8)
+    int64_t     startTime;           // Offset: 16 (Perfectly Aligned to 8)
+    uint32_t    consecutiveFailures; // Offset: 24 (Aligned to 4)
+    uint32_t    currentBackoffSec;   // Offset: 28 (Aligned to 4)
+    char        serverIP[64];        // Offset: 32 (Total struct size = 96 bytes)
 } SGStatusPayload;
 #pragma pack(pop)
-
 
 /* ─────────────────────────────────────────────────────────────────
  * Public API

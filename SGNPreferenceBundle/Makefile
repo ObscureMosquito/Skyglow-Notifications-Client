@@ -9,7 +9,6 @@ SGNPreferenceBundle_FILES = \
     SNRootListController.m \
     SNLogViewController.m \
     SNRegisterAccount.m \
-    ../Skyglow-Notifications-Daemon/ServerLocationFinder.m \
     SNAppToggleCell.m \
     SNAppListController.m \
     SNServerInfoViewController.m \

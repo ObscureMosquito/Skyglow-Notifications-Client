@@ -5,26 +5,26 @@
  *
  * Implementation notes:
  *
- *  - One background thread runs the accept loop. It blocks on accept()
- *    indefinitely. When a client connects it reads the 1-byte mode
- *    selector, handles it inline for QUERY, or registers the fd for
- *    WATCH. Watch fds are stored in a fixed array guarded by a mutex.
+ * - One background thread runs the accept loop. It blocks on accept()
+ * indefinitely. When a client connects it reads the 1-byte mode
+ * selector, handles it inline for QUERY, or registers the fd for
+ * WATCH. Watch fds are stored in a fixed array guarded by a mutex.
  *
- *  - StatusServer_post() holds the watcher mutex only long enough to
- *    snapshot the fd array, then releases it before doing any I/O.
- *    This prevents a slow/dead watcher from blocking state transitions
- *    in the daemon.
+ * - StatusServer_post() holds the watcher mutex only long enough to
+ * snapshot the fd array, then releases it before doing any I/O.
+ * This prevents a slow/dead watcher from blocking state transitions
+ * in the daemon.
  *
- *  - A failed write to a watcher (EPIPE, EBADF, etc.) marks that slot
- *    as -1. Cleanup is deferred to the next broadcast or the accept
- *    thread's periodic sweep, whichever comes first.
+ * - A failed write to a watcher (EPIPE, EBADF, etc.) marks that slot
+ * as -1. Cleanup is deferred to the next broadcast or the accept
+ * thread's periodic sweep, whichever comes first.
  *
- *  - The accept thread is started with pthread_create and is the only
- *    thread that calls accept(). It exits cleanly when _serverFd is
- *    closed and accept() returns EBADF/EINVAL.
+ * - The accept thread is started with pthread_create and is the only
+ * thread that calls accept(). It exits cleanly when _serverFd is
+ * closed and accept() returns EBADF/EINVAL.
  *
- *  - All public functions are safe to call before StatusServer_start()
- *    returns (they check _running and no-op if false).
+ * - All public functions are safe to call before StatusServer_start()
+ * returns (they check _running and no-op if false).
  */
 
 #include "StatusServer.h"
@@ -120,14 +120,14 @@ static SGStatusPayload build_payload_locked(SGState     state,
                                              uint32_t    backoffSec,
                                              const char *serverIP) {
     SGStatusPayload p;
-    memset(&p, 0, sizeof(p));
-    p.magic              = SS_PAYLOAD_MAGIC;
-    p.version            = SS_PAYLOAD_VERSION;
-    p.state              = (uint8_t)state;
-    p.timestamp          = (int64_t)time(NULL);
-    p.startTime          = _currentPayload.startTime;   // preserved from start
+    memset(&p, 0, sizeof(p)); // Zeros padding bytes and trailing string nulls
+    p.magic               = SS_PAYLOAD_MAGIC;
+    p.version             = SS_PAYLOAD_VERSION;
+    p.state               = (uint8_t)state;
+    p.timestamp           = (int64_t)time(NULL);
+    p.startTime           = _currentPayload.startTime;   // preserved from start
     p.consecutiveFailures = failures;
-    p.currentBackoffSec  = backoffSec;
+    p.currentBackoffSec   = backoffSec;
     if (serverIP) {
         strlcpy(p.serverIP, serverIP, sizeof(p.serverIP));
     }
@@ -154,7 +154,6 @@ static void broadcast_payload(const SGStatusPayload *payload) {
             close(fd);
             pthread_mutex_lock(&_lock);
             // Confirm it's still the same fd before clearing
-            // (another thread could have reused the slot, though unlikely).
             if (_watchers[i] == fd) _watchers[i] = -1;
             pthread_mutex_unlock(&_lock);
         }
@@ -221,13 +220,10 @@ static void handle_client(int clientFd) {
 
         if (add_watcher(clientFd) != 0) {
             // Watcher table full — reject.
-            // In practice this should never happen (8 slots for a status UI).
             fprintf(stderr, "[StatusServer] Watcher table full, rejecting client\n");
             close(clientFd);
         }
         // clientFd is now owned by the watchers table.
-        // It will be closed by broadcast_payload() on the next failed write,
-        // or by StatusServer_shutdown().
 
     } else {
         // Unknown mode byte — not our client.
@@ -247,7 +243,6 @@ static void *accept_thread(void *arg) {
             // EBADF / EINVAL means _serverFd was closed by shutdown.
             if (errno == EBADF || errno == EINVAL) break;
             fprintf(stderr, "[StatusServer] accept() error: %s\n", strerror(errno));
-            // Brief pause to avoid spinning on a persistent error.
             usleep(100000);
             continue;
         }
@@ -275,10 +270,8 @@ int StatusServer_start(const char *socketPath, int64_t daemonStartTime) {
 
     strlcpy(_socketPath, socketPath, sizeof(_socketPath));
 
-    // Initialize watcher slots to empty.
     for (int i = 0; i < SS_MAX_WATCHERS; i++) _watchers[i] = -1;
 
-    // Initialize current payload.
     memset(&_currentPayload, 0, sizeof(_currentPayload));
     _currentPayload.magic     = SS_PAYLOAD_MAGIC;
     _currentPayload.version   = SS_PAYLOAD_VERSION;
@@ -286,10 +279,8 @@ int StatusServer_start(const char *socketPath, int64_t daemonStartTime) {
     _currentPayload.startTime = daemonStartTime;
     _currentPayload.timestamp = (int64_t)time(NULL);
 
-    // Remove any stale socket file from a previous run.
     unlink(socketPath);
 
-    // Create the socket.
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
         fprintf(stderr, "[StatusServer] socket() failed: %s\n", strerror(errno));
@@ -308,7 +299,6 @@ int StatusServer_start(const char *socketPath, int64_t daemonStartTime) {
         return -1;
     }
 
-    // Restrict to the daemon's own uid.
     chmod(socketPath, 0600);
 
     if (listen(fd, 8) < 0) {
@@ -321,7 +311,6 @@ int StatusServer_start(const char *socketPath, int64_t daemonStartTime) {
     _serverFd = fd;
     atomic_store(&_running, 1);
 
-    // Start the accept thread.
     int err = pthread_create(&_acceptThread, NULL, accept_thread, NULL);
     if (err != 0) {
         fprintf(stderr, "[StatusServer] pthread_create failed: %s\n", strerror(err));
@@ -362,22 +351,17 @@ void StatusServer_current(SGStatusPayload *outPayload) {
 void StatusServer_shutdown(void) {
     if (!atomic_load(&_running)) return;
 
-    // Post shutdown state to all watchers before closing.
     StatusServer_post(SGStateShuttingDown, 0, 0, NULL);
 
     atomic_store(&_running, 0);
 
-    // Close the listening socket. This causes accept() to return
-    // EBADF/EINVAL in the accept thread, which exits the loop.
     if (_serverFd >= 0) {
         close(_serverFd);
         _serverFd = -1;
     }
 
-    // Wait for the accept thread to exit.
     pthread_join(_acceptThread, NULL);
 
-    // Close all remaining watch connections.
     pthread_mutex_lock(&_lock);
     for (int i = 0; i < SS_MAX_WATCHERS; i++) {
         if (_watchers[i] >= 0) {
@@ -387,7 +371,6 @@ void StatusServer_shutdown(void) {
     }
     pthread_mutex_unlock(&_lock);
 
-    // Remove the socket file.
     if (_socketPath[0] != '\0') {
         unlink(_socketPath);
     }
@@ -410,6 +393,7 @@ const char *SGState_name(SGState state) {
         case SGStateErrorBadConfig:      return "ErrorBadConfig";
         case SGStateError:               return "Error";
         case SGStateShuttingDown:        return "ShuttingDown";
+        case SGStateRegistering:         return "Registering";
         default:                         return "Unknown";
     }
 }

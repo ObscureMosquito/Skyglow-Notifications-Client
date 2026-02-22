@@ -62,11 +62,11 @@ else
     echo "[Skyglow] WARNING: daemon binary not found at $DAEMON_PATH"
 fi
 
-if command -v launchctl >/dev/null 2>&1; then
-    echo "[Skyglow] Loading daemon with launchctl"
-    launchctl unload "$PLIST_PATH" 2>/dev/null || true
-    launchctl load "$PLIST_PATH"
-fi
+#if command -v launchctl >/dev/null 2>&1; then
+#    echo "[Skyglow] Loading daemon with launchctl"
+#    launchctl unload "$PLIST_PATH" 2>/dev/null || true
+#    launchctl load "$PLIST_PATH"
+#fi
 
 killall -9 Preferences 2>/dev/null || true
 

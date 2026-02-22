@@ -4,23 +4,18 @@
 #import "DBManager.h"
 #import <Foundation/Foundation.h>
 
-/// The server address string from the registration profile.
-/// e.g. @"sgn.example.com". Set once in main() before threads start.
-extern NSString *serverAddress;
-
-/// Shared database instance. Initialized in main() before threads start.
+/// Shared database instance.
 extern DBManager *db;
 
-/// Resolved server IP string (e.g. @"93.184.216.34").
-/// Set once in main() after DNS resolution. Read by connectionLoop.
-/// Must not be modified after the connection loop thread starts.
-extern NSString *serverIPString;
+// --- Thread-Safe Configuration Accessors ---
 
-/// Resolved server port string (e.g. @"4443").
-/// Same lifecycle as serverIPString.
-extern NSString *serverPortString;
+void SetServerAddress(NSString *address);
+NSString *GetServerAddress(void);
 
-// serverIP (char *) and serverPortStr (char *) have been removed.
-// Use serverIPString and serverPortString (NSString *) instead.
+void SetServerIPString(NSString *ip);
+NSString *GetServerIPString(void);
+
+void SetServerPortString(NSString *port);
+NSString *GetServerPortString(void);
 
 #endif /* SKYGLOW_GLOBALS_H */

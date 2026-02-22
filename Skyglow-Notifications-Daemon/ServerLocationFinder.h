@@ -1,7 +1,13 @@
-#include <CFNetwork/CFHost.h>
+#ifndef SKYGLOW_SERVER_LOCATION_FINDER_H
+#define SKYGLOW_SERVER_LOCATION_FINDER_H
+
 #import <Foundation/Foundation.h>
-#import <CFNetwork/CFNetwork.h>
-#import <dns_sd.h>
 
+@interface ServerLocationFinder : NSObject
 
-NSDictionary *QueryServerLocation(NSString *domain);
++ (NSDictionary *)resolveServerLocation:(NSString *)serverAddr;
++ (void)refreshDNSCacheAsync:(NSString *)serverAddr;
+
+@end
+
+#endif /* SKYGLOW_SERVER_LOCATION_FINDER_H */
