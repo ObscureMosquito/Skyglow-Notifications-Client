@@ -1,4 +1,4 @@
-TARGET := iphone:clang:7.0:6.0
+TARGET := iphone:clang:6.0:6.0
 ARCHS = armv7
 include $(THEOS)/makefiles/common.mk
 THEOS_DEVICE_IP = iPod
@@ -6,19 +6,19 @@ THEOS_DEVICE_IP = iPod
 TOOL_NAME = SkyglowNotificationsDaemon
 SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/main.m \
-    Skyglow-Notifications-Daemon/Protocol.m \
-    Skyglow-Notifications-Daemon/ServerLocationFinder.m \
-    Skyglow-Notifications-Daemon/DBManager.m \
-    Skyglow-Notifications-Daemon/CryptoManager.m \
-    Skyglow-Notifications-Daemon/LocalIPC.m \
-    Skyglow-Notifications-Daemon/Tokens.m \
-    Skyglow-Notifications-Daemon/StatusServer.c \
-    Skyglow-Notifications-Daemon/PayloadParser.m \
-    Skyglow-Notifications-Daemon/Globals.m \
-    Skyglow-Notifications-Daemon/GrowthAlgorithm.c \
-    Skyglow-Notifications-Daemon/NetworkMonitor.m \
-    Skyglow-Notifications-Daemon/NotificationDaemon.m
-SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-deprecated-declarations -I$(THEOS_PROJECT_DIR)/openssl/include
+    Skyglow-Notifications-Daemon/SGProtocolHandler.m \
+    Skyglow-Notifications-Daemon/SGServerLocator.m \
+    Skyglow-Notifications-Daemon/SGDatabaseManager.m \
+    Skyglow-Notifications-Daemon/SGCryptoEngine.m \
+    Skyglow-Notifications-Daemon/SGMachServer.m \
+    Skyglow-Notifications-Daemon/SGTokenManager.m \
+    Skyglow-Notifications-Daemon/SGStatusServer.c \
+    Skyglow-Notifications-Daemon/SGPayloadParser.m \
+    Skyglow-Notifications-Daemon/SGConfiguration.m \
+    Skyglow-Notifications-Daemon/SGKeepAliveStrategy.c \
+    Skyglow-Notifications-Daemon/SGReachabilityMonitor.m \
+    Skyglow-Notifications-Daemon/SGDaemon.m
+SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result -Wno-deprecated-declarations -I$(THEOS_PROJECT_DIR)/openssl/include
 SkyglowNotificationsDaemon_LDFLAGS = \
   $(THEOS_PROJECT_DIR)/openssl/lib/libssl.a \
   $(THEOS_PROJECT_DIR)/openssl/lib/libcrypto.a
@@ -30,9 +30,9 @@ SkyglowNotificationsDaemon_LIBRARIES += sqlite3
 
 include $(THEOS_MAKE_PATH)/tool.mk
 
-SUBPROJECTS += SGNPreferenceBundle
-SUBPROJECTS += SGNSpringboard
-SUBPROJECTS += SGNSettings
+#SUBPROJECTS += SGNPreferenceBundle
+#SUBPROJECTS += SGNSpringboard
+#SUBPROJECTS += SGNSettings
 include $(THEOS_MAKE_PATH)/aggregate.mk
 
 TOOL_NAME = sgn_test_token
