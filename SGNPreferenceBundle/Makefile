@@ -1,5 +1,5 @@
-TARGET := iphone:clang:6.0:6.0
-ARCHS = armv7
+TARGET := iphone:clang:16.5:16.5
+ARCHS = armv7 arm64 arm64e
 
 include $(THEOS)/makefiles/common.mk
 
@@ -8,7 +8,6 @@ BUNDLE_NAME = SGNPreferenceBundle
 SGNPreferenceBundle_FILES = \
     SNRootListController.m \
     SNLogViewController.m \
-    SNRegisterAccount.m \
     SNAppToggleCell.m \
     SNAppListController.m \
     SNServerInfoViewController.m \
@@ -22,8 +21,8 @@ SGNPreferenceBundle_LDFLAGS = \
   $(THEOS_PROJECT_DIR)/openssl/lib/libcrypto.a \
   -lsqlite3
 SGNPreferenceBundle_INSTALL_PATH = /Library/PreferenceBundles
-SGNPreferenceBundle_CFLAGS = -fobjc-arc -Wno-arc-performSelector-leaks -I$(THEOS_PROJECT_DIR)/openssl/include
-ADDITIONAL_CFLAGS += -D"API_AVAILABLE(...)= " -D"API_DEPRECATED(...)= " -D"API_UNAVAILABLE(...)= " -D"instancetype=id"
+SGNPreferenceBundle_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -I$(THEOS_PROJECT_DIR)/openssl/include
+#ADDITIONAL_CFLAGS += -D"API_AVAILABLE(...)= " -D"API_DEPRECATED(...)= " -D"API_UNAVAILABLE(...)= " -D"instancetype=id"
 
 include $(THEOS_MAKE_PATH)/bundle.mk
 

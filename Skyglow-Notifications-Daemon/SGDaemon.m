@@ -359,10 +359,28 @@ cleanup_assertion:
             return;
         }
 
-        if ([newServerAddr isEqualToString:[[SGConfiguration sharedConfiguration] serverAddress]]) return;
+        [_stateLock lock];
+        BOOL isRunningNow = _isRunning;
+        [_stateLock unlock];
+
+        if ([newServerAddr isEqualToString:[[SGConfiguration sharedConfiguration] serverAddress]]) {
+            if (isRunningNow) return; 
+
+            // Address didn't change, but we are currently disabled/stopped. Needs restart!
+            [_stateLock lock];
+            _shouldDisconnect = NO;
+            [_stateLock unlock];
+
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                [self runPrimaryConnectionLoop];
+            });
+            return;
+        }
 
         [self requestGracefulDisconnect];
-        dispatch_semaphore_wait(_loopExitSema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+        if (isRunningNow) {
+            dispatch_semaphore_wait(_loopExitSema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+        }
 
         [[SGConfiguration sharedConfiguration] setServerAddress:newServerAddr];
         [self transitionToState:SGStateResolvingDNS];
@@ -381,6 +399,15 @@ cleanup_assertion:
 
         [[SGConfiguration sharedConfiguration] setServerIPAddress:txt[@"tcp_addr"]];
         [[SGConfiguration sharedConfiguration] setServerPort:txt[@"tcp_port"]];
+
+        // We successfully resolved the new address. Kickstart the loop again.
+        [_stateLock lock];
+        _shouldDisconnect = NO;
+        [_stateLock unlock];
+
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            [self runPrimaryConnectionLoop];
+        });
     }
 }
 

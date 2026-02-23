@@ -4,7 +4,7 @@
 <dict>
 	<key>entry</key>
 	<dict>
-		<!--key>bundle</key>
+		<key>bundle</key>
 		<string>SGNPreferenceBundle</string>
 		<key>cell</key>
 		<string>PSLinkCell</string>
@@ -15,7 +15,7 @@
 		<key>isController</key>
 		<true/>
 		<key>label</key>
-		<string>Skyglow Notifications</string-->
+		<string>Skyglow Notifications</string>
 	</dict>
 </dict>
 </plist>

@@ -6,6 +6,4 @@
 
 @interface SNLogViewController : UIViewController
 
-- (void)updateLogWithStatus;
-
 @end

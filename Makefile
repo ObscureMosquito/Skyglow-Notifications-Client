@@ -1,6 +1,8 @@
-TARGET := iphone:clang:6.0:6.0
-ARCHS = armv7
+TARGET := iphone:clang:16.5:16.5
+ARCHS = armv7 arm64 arm64e
+
 include $(THEOS)/makefiles/common.mk
+
 THEOS_DEVICE_IP = iPod
  
 TOOL_NAME = SkyglowNotificationsDaemon
@@ -18,7 +20,7 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/SGKeepAliveStrategy.c \
     Skyglow-Notifications-Daemon/SGReachabilityMonitor.m \
     Skyglow-Notifications-Daemon/SGDaemon.m
-SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result -Wno-deprecated-declarations -I$(THEOS_PROJECT_DIR)/openssl/include
+SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result -I$(THEOS_PROJECT_DIR)/openssl/include
 SkyglowNotificationsDaemon_LDFLAGS = \
   $(THEOS_PROJECT_DIR)/openssl/lib/libssl.a \
   $(THEOS_PROJECT_DIR)/openssl/lib/libcrypto.a
@@ -30,9 +32,9 @@ SkyglowNotificationsDaemon_LIBRARIES += sqlite3
 
 include $(THEOS_MAKE_PATH)/tool.mk
 
-#SUBPROJECTS += SGNPreferenceBundle
+SUBPROJECTS += SGNPreferenceBundle
 #SUBPROJECTS += SGNSpringboard
-#SUBPROJECTS += SGNSettings
+SUBPROJECTS += SGNSettings
 include $(THEOS_MAKE_PATH)/aggregate.mk
 
 TOOL_NAME = sgn_test_token

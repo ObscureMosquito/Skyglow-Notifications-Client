@@ -51,7 +51,7 @@
     // Tell running daemon to re-read config (handles disable while connected)
     CFNotificationCenterPostNotificationWithOptions(
         CFNotificationCenterGetDarwinNotifyCenter(),
-        CFSTR("com.skyglow.snd.reload_config"),
+        CFSTR("com.skyglow.sgn.reload_config"),
         NULL, NULL, kCFNotificationDeliverImmediately);
     
     // Also restart daemon via launchctl (handles enable when daemon wasn't running)
