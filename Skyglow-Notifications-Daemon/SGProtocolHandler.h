@@ -78,6 +78,7 @@ typedef enum : uint8_t {
                                      serverVersion:(uint32_t)version;
 - (void)protocolDidFailRegistrationWithCode:(uint8_t)code reason:(NSString *)reason;
 - (void)protocolDidReceiveKeepAlivePong;
+- (void)protocolDidReceiveTimeSyncWithOffset:(int64_t)offsetSeconds;
 @end
 
 // --- Public C-API ---

@@ -1,663 +1,576 @@
 /*
- * Tweak.xm — Skyglow Notifications SpringBoard Hook
+ * Tweak.x — Skyglow Notifications SpringBoard Hook
  *
  * Responsibilities:
- *   1. Run a Mach server to receive push messages from the daemon
- *      and deliver them to the system notification infrastructure.
- *   2. Intercept remote-notification registration so apps can be
- *      routed through Skyglow instead of APNS.
- *   3. Send uninstall feedback to the daemon when apps are removed.
- *   4. (Debug) Auto-register com.apple.Preferences on boot.
+ * 1. Run a Mach server to receive push messages from the daemon.
+ * 2. Intercept remote-notification registration to route through Skyglow.
+ * 3. Send uninstall feedback to the daemon when apps are removed.
+ *
+ * iOS Version Support:
+ *   Notification Delivery: iOS 3–9 (versioned paths)
+ *   Registration Hook:     iOS 3–8 (SBRemoteNotificationServer)
+ *                          iOS 9   (UNNotificationRegistrarConnectionListener)
+ *   Uninstall Hook:        iOS 3–7 (SBApplicationUninstallationOperation)
+ *                          iOS 8–9 (SBApplicationController -uninstallApplication:)
  */
 
 #import <Foundation/Foundation.h>
-#import <CoreFoundation/CoreFoundation.h>
 #import <UIKit/UIKit.h>
 #import <mach/mach.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #include <bootstrap.h>
-#import "../Skyglow-Notifications-Daemon/TweakMachMessages.h"
+#import "../Skyglow-Notifications-Daemon/SGMachProtocol.h"
 
-// ═══════════════════════════════════════════════
-#pragma mark - Constants & Globals
-// ═══════════════════════════════════════════════
-
-static NSString *const kPrefsPlistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
-
-/// The Mach port we own for receiving push delivery messages from the daemon.
-static mach_port_t gPushReceiverPort = MACH_PORT_NULL;
-
-// ═══════════════════════════════════════════════
 #pragma mark - Private Class Interfaces
-// ═══════════════════════════════════════════════
-
-@class SBRemoteApplication;
 
 @interface APSIncomingMessage : NSObject
-- (instancetype)initWithTopic:(id)topic userInfo:(id)userInfo;
-- (void)setTimestamp:(id)date;
-@end
-
-@interface SBRemoteNotificationServer : NSObject
-+ (instancetype)sharedInstance;
-- (void)connection:(id)conn didReceiveIncomingMessage:(id)msg;
-- (void)connection:(id)conn didReceiveMessageForTopic:(id)topic userInfo:(id)info;
-- (int)registerApplication:(id)application forEnvironment:(id)environment withTypes:(int)notificationTypes;
-- (void)unregisterApplication:(id)application forEnvironment:(id)environment;
+- (instancetype)initWithTopic:(NSString *)topic userInfo:(NSDictionary *)userInfo;
+- (void)setTimestamp:(NSDate *)date;
 @end
 
 @interface SBApplicationController : NSObject
 + (instancetype)sharedInstance;
 - (id)applicationWithDisplayIdentifier:(NSString *)displayIdentifier;
+- (id)applicationWithBundleIdentifier:(NSString *)bundleIdentifier;
+- (void)uninstallApplication:(id)application;
 @end
 
-@interface UNUserNotificationServer : NSObject
+@interface SBRemoteNotificationServer : NSObject
 + (instancetype)sharedInstance;
+- (int)registerApplication:(id)application forEnvironment:(NSString *)environment withTypes:(int)types;
 @end
 
-@interface UNSUserNotificationServer : NSObject
-+ (instancetype)sharedInstance;
+@interface UNNotificationRegistrarConnectionListener : NSObject
+- (void)requestTokenForRemoteNotificationsForBundleIdentifier:(NSString *)bundleIdentifier withResult:(id)resultBlock;
 @end
 
-@interface SBRemoteApplication : NSObject
-- (void)remoteNotificationRegistrationSucceededWithDeviceToken:(NSData *)token;
-@end
+static NSString *const kPrefsPlistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
+static mach_port_t gPushReceiverPort = MACH_PORT_NULL;
 
-@interface UIApplication (Private)
-- (NSString *)bundleIdentifier;
-- (SBRemoteApplication *)remoteApplication;
-@end
-
-@interface SBRemoteNotificationClient : NSObject
-- (instancetype)initWithBundleIdentifier:(NSString *)bundleIdentifier;
-- (void)setEnvironment:(id)env;
-- (id)environment;
-- (int)appEnabledTypes;
-- (void)setAppEnabledTypes:(int)types;
-- (int)settingsPresentedTypes;
-- (void)setSettingsPresentedTypes:(int)types;
-- (void)setLastKnownDeviceToken:(NSData *)token;
-@end
-
-@interface SBApplicationPersistence : NSObject
-+ (instancetype)sharedInstance;
-- (void)setArchivedObject:(id)obj forKey:(NSString *)key bundleOrDisplayIdentifier:(NSString *)ident;
-@end
-
-@interface SBRemoteNotificationPermissionAlert : NSObject
-- (instancetype)initWithApplication:(id)app notificationTypes:(int)types;
-@end
-
-@interface SBAlertItemsController : NSObject
-+ (instancetype)sharedInstance;
-- (void)deactivateAlertItemsOfClass:(Class)cls;
-- (void)activateAlertItem:(id)item;
-@end
-
-// ═══════════════════════════════════════════════
 #pragma mark - Utility Helpers
-// ═══════════════════════════════════════════════
 
-/// Safe ivar access without MSHookIvar.
 static id GetIvar(id obj, const char *name) {
     if (!obj || !name) return nil;
     Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
     return iv ? object_getIvar(obj, iv) : nil;
 }
 
-/// Read the appStatus dictionary from the prefs plist.
-static NSDictionary *ReadAppStatus(void) {
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath];
-    id status = [prefs objectForKey:@"appStatus"];
-    return [status isKindOfClass:[NSDictionary class]] ? status : @{};
+static id SBApp_LookupByIdentifier(NSString *bundleId) {
+    SBApplicationController *ctrl = [%c(SBApplicationController) sharedInstance];
+    // iOS 8+ uses bundleIdentifier, iOS 3-7 uses displayIdentifier
+    if ([ctrl respondsToSelector:@selector(applicationWithBundleIdentifier:)]) {
+        return [ctrl applicationWithBundleIdentifier:bundleId];
+    }
+    return [ctrl applicationWithDisplayIdentifier:bundleId];
 }
 
-/// Ensure a bundle ID exists in the appStatus plist.
-/// If new, defaults to @YES (Skyglow enabled).
-/// This is the ONLY function that mutates appStatus.
 static void EnsureAppInPlist(NSString *bundleId) {
     if (!bundleId.length) return;
-
-    NSDictionary *appStatus = ReadAppStatus();
-    if ([appStatus objectForKey:bundleId] != nil) return; // already present
-
-    NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath] mutableCopy]
-                                  ?: [NSMutableDictionary dictionary];
-    NSMutableDictionary *newStatus = [[prefs objectForKey:@"appStatus"] mutableCopy]
-                                      ?: [NSMutableDictionary dictionary];
-    [newStatus setObject:@YES forKey:bundleId];
-    [prefs setObject:newStatus forKey:@"appStatus"];
+    NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath] mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *appStatus = [[prefs objectForKey:@"appStatus"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    if ([appStatus objectForKey:bundleId] != nil) { [appStatus release]; [prefs release]; return; }
+    [appStatus setObject:@YES forKey:bundleId];
+    [prefs setObject:appStatus forKey:@"appStatus"];
     [prefs writeToFile:kPrefsPlistPath atomically:YES];
-
-    NSLog(@"[SGN] Registered %@ in appStatus (defaulting to Skyglow)", bundleId);
+    [appStatus release];
+    [prefs release];
 }
 
-/// Check whether a given app should use Skyglow (YES) or APNS (NO).
-/// Also ensures the app is recorded in appStatus on first encounter.
 static BOOL ShouldUseSkyglowForApp(NSString *bundleId) {
     if (!bundleId.length) return NO;
-
-    // Ensure it's registered (writes @YES on first encounter)
     EnsureAppInPlist(bundleId);
-
-    // Now read the actual value — must use boolValue, not truthiness!
-    // (@NO is non-nil, so a bare nil-check would always return YES)
-    NSDictionary *appStatus = ReadAppStatus();
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath];
+    NSDictionary *appStatus = [prefs objectForKey:@"appStatus"];
     return [[appStatus objectForKey:bundleId] boolValue];
 }
 
-// ═══════════════════════════════════════════════
-#pragma mark - Mach IPC: Token Request
-// ═══════════════════════════════════════════════
+/// Lightweight probe: check if the daemon's Mach service is registered.
+/// Does NOT send a message — only checks bootstrap namespace.
+static BOOL IsDaemonReachable(void) {
+    mach_port_t port = MACH_PORT_NULL;
+    kern_return_t kr = bootstrap_look_up(bootstrap_port, SKYGLOW_MACH_SERVICE_NAME_TOKEN, &port);
+    if (kr == KERN_SUCCESS && port != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), port);
+        return YES;
+    }
+    return NO;
+}
 
-/// Request a device token from the Skyglow daemon via Mach IPC.
-/// Returns nil on failure. Thread-safe.
+static void ShowDaemonOfflineAlert(NSString *bundleId) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSString *msg = [NSString stringWithFormat:
+            @"Skyglow cannot register \"%@\" for notifications because the daemon is not running. "
+            @"Please enable Skyglow in Settings and try again.", bundleId];
+        id alert = [[NSClassFromString(@"UIAlertView") alloc]
+            initWithTitle:@"Skyglow" message:msg delegate:nil
+            cancelButtonTitle:@"OK" otherButtonTitles:nil];
+        [alert show];
+        [alert release];
+    });
+}
+
+#pragma mark - Mach IPC: Token & Feedback
+
 static NSData *RequestTokenFromDaemon(NSString *bundleID) {
     if (!bundleID.length) return nil;
 
-    mach_port_t replyPort  = MACH_PORT_NULL;
+    mach_port_t replyPort = MACH_PORT_NULL;
     mach_port_t daemonPort = MACH_PORT_NULL;
-    kern_return_t kr;
     NSData *result = nil;
 
-    // Allocate a reply port
-    kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &replyPort);
-    if (kr != KERN_SUCCESS) {
-        NSLog(@"[SGN] Reply port alloc failed: %s", mach_error_string(kr));
+    if (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &replyPort) != KERN_SUCCESS) return nil;
+    mach_port_insert_right(mach_task_self(), replyPort, replyPort, MACH_MSG_TYPE_MAKE_SEND);
+
+    if (bootstrap_look_up(bootstrap_port, SKYGLOW_MACH_SERVICE_NAME_TOKEN, &daemonPort) != KERN_SUCCESS) {
+        mach_port_deallocate(mach_task_self(), replyPort);
         return nil;
     }
-    kr = mach_port_insert_right(mach_task_self(), replyPort, replyPort, MACH_MSG_TYPE_MAKE_SEND);
-    if (kr != KERN_SUCCESS) {
-        NSLog(@"[SGN] Reply port send right failed: %s", mach_error_string(kr));
-        goto cleanup;
-    }
 
-    // Look up daemon
-    kr = bootstrap_look_up(bootstrap_port, SKYGLOW_MACH_SERVICE_NAME_TOKEN, &daemonPort);
-    if (kr != KERN_SUCCESS || daemonPort == MACH_PORT_NULL) {
-        NSLog(@"[SGN] Daemon lookup failed: %s", mach_error_string(kr));
-        goto cleanup;
-    }
+    SGMachTokenRequestMessage req;
+    memset(&req, 0, sizeof(req));
+    req.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND);
+    req.header.msgh_size = sizeof(req);
+    req.header.msgh_remote_port = daemonPort;
+    req.header.msgh_local_port = replyPort;
+    req.header.msgh_id = SG_MACH_MSG_REQUEST_TOKEN;
+    req.type = SG_MACH_MSG_REQUEST_TOKEN;
+    strlcpy(req.bundleID, [bundleID UTF8String], sizeof(req.bundleID));
 
-    // Build & send request
-    {
-        MachTokenRequestMessage req;
-        memset(&req, 0, sizeof(req));
-
-        req.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND);
-        req.header.msgh_size        = (mach_msg_size_t)sizeof(req);
-        req.header.msgh_remote_port = daemonPort;
-        req.header.msgh_local_port  = replyPort;
-        req.header.msgh_id          = 100;
-        req.body.msgh_descriptor_count = 0;
-        req.type = SKYGLOW_REQUEST_TOKEN;
-
-        strlcpy(req.bundleID, [bundleID UTF8String] ?: "", sizeof(req.bundleID));
-
-        kr = mach_msg(&req.header, MACH_SEND_MSG, sizeof(req), 0,
-                      MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-        if (kr != KERN_SUCCESS) {
-            NSLog(@"[SGN] Token request send failed: %s", mach_error_string(kr));
-            goto cleanup;
+    if (mach_msg(&req.header, MACH_SEND_MSG, sizeof(req), 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL) == KERN_SUCCESS) {
+        SGMachTokenResponseMessage resp;
+        memset(&resp, 0, sizeof(resp));
+        if (mach_msg(&resp.header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof(resp), replyPort, 5000, MACH_PORT_NULL) == KERN_SUCCESS) {
+            if (resp.type == SG_MACH_MSG_RESPONSE_TOKEN && resp.tokenLength <= SKYGLOW_MAX_TOKEN_SIZE) {
+                result = [NSData dataWithBytes:resp.tokenData length:resp.tokenLength];
+            }
         }
-    }
-
-    // Receive response (20s timeout)
-    {
-        union {
-            MachTokenResponseMessage resp;
-            uint8_t pad[sizeof(MachTokenResponseMessage) + 512];
-        } buf;
-        memset(&buf, 0, sizeof(buf));
-
-        kr = mach_msg(&buf.resp.header,
-                      MACH_RCV_MSG | MACH_RCV_TIMEOUT,
-                      0, (mach_msg_size_t)sizeof(buf),
-                      replyPort, 20000, MACH_PORT_NULL);
-
-        if (kr != KERN_SUCCESS) {
-            NSLog(@"[SGN] Token response recv failed: %s", mach_error_string(kr));
-            goto cleanup;
-        }
-
-        if (buf.resp.type == SKYGLOW_RESPONSE_TOKEN &&
-            buf.resp.tokenLength > 0 &&
-            buf.resp.tokenLength <= sizeof(buf.resp.tokenData)) {
-            result = [NSData dataWithBytes:buf.resp.tokenData length:buf.resp.tokenLength];
-        } else {
-            NSLog(@"[SGN] Token error for %@: %s", bundleID, buf.resp.error);
-        }
-    }
-
-cleanup:
-    if (daemonPort != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), daemonPort);
-    if (replyPort  != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), replyPort);
-    return result;
-}
-
-// ═══════════════════════════════════════════════
-#pragma mark - Mach IPC: Feedback (Uninstall)
-// ═══════════════════════════════════════════════
-
-/// Notify the daemon that a bundle should be unregistered.
-static void SendFeedbackToDaemon(NSString *bundleId, NSString *reason) {
-    if (!bundleId.length) return;
-    if (!reason) reason = @"unknown";
-
-    mach_port_t daemonPort = MACH_PORT_NULL;
-    kern_return_t kr = bootstrap_look_up(bootstrap_port, SKYGLOW_MACH_SERVICE_NAME_TOKEN, &daemonPort);
-    if (kr != KERN_SUCCESS || daemonPort == MACH_PORT_NULL) {
-        NSLog(@"[SGN] Feedback: daemon lookup failed: %s", mach_error_string(kr));
-        return;
-    }
-
-    MachFeedbackResponce msg;
-    memset(&msg, 0, sizeof(msg));
-
-    msg.header.msgh_bits        = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
-    msg.header.msgh_size        = (mach_msg_size_t)((sizeof(msg) + 3) & ~3u);
-    msg.header.msgh_remote_port = daemonPort;
-    msg.header.msgh_id          = SKYGLOW_FEEDBACK_DATA;
-    msg.body.msgh_descriptor_count = 0;
-    msg.type = SKYGLOW_FEEDBACK_DATA;
-
-    strlcpy(msg.topic,  [bundleId UTF8String] ?: "", sizeof(msg.topic));
-    strlcpy(msg.reason, [reason UTF8String]   ?: "", sizeof(msg.reason));
-
-    kr = mach_msg(&msg.header, MACH_SEND_MSG, msg.header.msgh_size, 0,
-                  MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-    if (kr != KERN_SUCCESS) {
-        NSLog(@"[SGN] Feedback send failed: %s", mach_error_string(kr));
     }
 
     mach_port_deallocate(mach_task_self(), daemonPort);
+    mach_port_deallocate(mach_task_self(), replyPort);
+    return result;
 }
 
-// ═══════════════════════════════════════════════
-#pragma mark - Notification Delivery
-// ═══════════════════════════════════════════════
+static void SendFeedbackToDaemon(NSString *bundleId, NSString *reason) {
+    if (!bundleId.length) return;
+    mach_port_t daemonPort = MACH_PORT_NULL;
+    if (bootstrap_look_up(bootstrap_port, SKYGLOW_MACH_SERVICE_NAME_TOKEN, &daemonPort) != KERN_SUCCESS) return;
 
-/// Deliver a push notification into the system notification infrastructure.
-/// Routes to the correct API based on iOS version.
+    SGMachFeedbackResponse msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+    msg.header.msgh_size = sizeof(msg);
+    msg.header.msgh_remote_port = daemonPort;
+    msg.header.msgh_id = SG_MACH_MSG_FEEDBACK_DATA;
+    msg.type = SG_MACH_MSG_FEEDBACK_DATA;
+
+    strlcpy(msg.topic, [bundleId UTF8String], sizeof(msg.topic));
+    strlcpy(msg.reason, [reason UTF8String] ?: "uninstalled", sizeof(msg.reason));
+
+    mach_msg(&msg.header, MACH_SEND_MSG, sizeof(msg), 0, MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+    mach_port_deallocate(mach_task_self(), daemonPort);
+}
+
+/// Shared token delivery logic: requests a token from the daemon and delivers
+/// it back to the app via its remoteApplication proxy. Safe across all iOS versions.
+static void DeliverSkyglowToken(NSString *bundleId) {
+    NSString *safeBundleId = [bundleId copy];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSData *token = RequestTokenFromDaemon(safeBundleId);
+        if (!token || [token length] == 0) {
+            // Daemon is not running or failed to respond — warn the user
+            NSLog(@"[SGN] Token request failed for %@ — daemon may not be running", safeBundleId);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSString *msg = [NSString stringWithFormat:
+                    @"Skyglow: Failed to register %@. The notification daemon may not be running.",
+                    safeBundleId];
+                if (NSClassFromString(@"UILocalNotification")) {
+                    // iOS 4+: Local notification banner
+                    UILocalNotification *note = [[NSClassFromString(@"UILocalNotification") alloc] init];
+                    [note setAlertBody:msg];
+                    [note setSoundName:@"UILocalNotificationDefaultSoundName"];
+                    [[UIApplication sharedApplication] presentLocalNotificationNow:note];
+                    [note release];
+                } else {
+                    // iOS 3: UIAlertView fallback
+                    id alert = [[NSClassFromString(@"UIAlertView") alloc]
+                        initWithTitle:@"Skyglow" message:msg delegate:nil
+                        cancelButtonTitle:@"OK" otherButtonTitles:nil];
+                    [alert show];
+                    [alert release];
+                }
+            });
+            [safeBundleId release];
+            return;
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            @try {
+                id freshApp = SBApp_LookupByIdentifier(safeBundleId);
+                if (freshApp && [freshApp respondsToSelector:@selector(remoteApplication)]) {
+                    id remoteApp = [freshApp performSelector:@selector(remoteApplication)];
+                    if (remoteApp && [remoteApp respondsToSelector:@selector(remoteNotificationRegistrationSucceededWithDeviceToken:)]) {
+                        [remoteApp performSelector:@selector(remoteNotificationRegistrationSucceededWithDeviceToken:) withObject:token];
+                    }
+                }
+            } @catch (NSException *e) {
+                NSLog(@"[SGN] Exception delivering token to %@: %@", safeBundleId, e);
+            }
+            [safeBundleId release];
+        });
+    });
+}
+
+#pragma mark - Notification Delivery
+
+static NSDictionary *WrapInAPNSFormat(NSDictionary *flat) {
+    NSMutableDictionary *alert = [NSMutableDictionary dictionary];
+    if (flat[@"title"]) [alert setObject:flat[@"title"] forKey:@"title"];
+    if (flat[@"body"])  [alert setObject:flat[@"body"]  forKey:@"body"];
+
+    NSMutableDictionary *aps = [NSMutableDictionary dictionary];
+    if (alert.count > 0) [aps setObject:alert forKey:@"alert"];
+    if (flat[@"sound"])   [aps setObject:flat[@"sound"] forKey:@"sound"];
+
+    NSMutableDictionary *result = [NSMutableDictionary dictionaryWithObject:aps forKey:@"aps"];
+    if (flat[@"custom_data"]) [result setObject:flat[@"custom_data"] forKey:@"custom_data"];
+    return result;
+}
+
 static void DeliverNotification(NSString *topic, NSDictionary *userInfo) {
     if (!topic.length) return;
-    if (!userInfo) userInfo = @{};
+    NSDictionary *apnsPayload = WrapInAPNSFormat(userInfo ?: @{});
 
-    // Build APSIncomingMessage
-    Class APSClass = objc_getClass("APSIncomingMessage");
-    id apsMessage = nil;
-    if (APSClass) {
-        apsMessage = [[APSClass alloc] initWithTopic:topic userInfo:userInfo];
-        if ([apsMessage respondsToSelector:@selector(setTimestamp:)]) {
-            [apsMessage setTimestamp:[NSDate date]];
-        }
-    }
+    double cfVersion = kCFCoreFoundationVersionNumber;
 
-    double cf = kCFCoreFoundationVersionNumber;
-    id server = nil;
-    id connection = nil;
-
-    if (cf < 700.0) {
-        // ── Pre-iOS 6 ──
-        server = [objc_getClass("SBRemoteNotificationServer") sharedInstance];
-        if ([server respondsToSelector:@selector(connection:didReceiveMessageForTopic:userInfo:)]) {
-            [server connection:nil didReceiveMessageForTopic:topic userInfo:userInfo];
-        }
-    } else if (cf < 1200.0) {
-        // ── iOS 6 / 7 / 8 ──
-        server = [objc_getClass("SBRemoteNotificationServer") sharedInstance];
-        
-        // Attempt to find a valid connection (usually 'production')
-        @try {
-            NSDictionary *envMap = [server valueForKey:@"_environmentsToConnections"];
-            connection = [envMap objectForKey:@"production"];
-        } @catch (NSException *e) {}
-
-        if (server && apsMessage) {
-            if ([server respondsToSelector:@selector(connection:didReceiveIncomingMessage:)]) {
-                [server connection:connection didReceiveIncomingMessage:apsMessage];
+    @try {
+        if (cfVersion < 700.0) {
+            // iOS 3–5: connection:didReceiveMessageForTopic:userInfo: (3-arg, needs objc_msgSend)
+            id server = [NSClassFromString(@"SBRemoteNotificationServer") performSelector:@selector(sharedInstance)];
+            if (server) {
+                SEL sel = @selector(connection:didReceiveMessageForTopic:userInfo:);
+                void (*send)(id, SEL, id, id, id) = (void *)objc_msgSend;
+                send(server, sel, nil, topic, apnsPayload);
             }
+        } else if (cfVersion < 1200.0) {
+            // iOS 6–8: connection:didReceiveIncomingMessage: with APSIncomingMessage
+            APSIncomingMessage *msg = [[NSClassFromString(@"APSIncomingMessage") alloc] initWithTopic:topic userInfo:apnsPayload];
+            [[NSClassFromString(@"SBRemoteNotificationServer") performSelector:@selector(sharedInstance)]
+                performSelector:@selector(connection:didReceiveIncomingMessage:) withObject:nil withObject:msg];
+            [msg release];
+        } else {
+            // iOS 9: UNUserNotificationServer chain
+            APSIncomingMessage *msg = [[NSClassFromString(@"APSIncomingMessage") alloc] initWithTopic:topic userInfo:apnsPayload];
+            id userNS = [NSClassFromString(@"UNUserNotificationServer") performSelector:@selector(sharedInstance)];
+            id registrar = GetIvar(userNS, "_registrarConnectionListener");
+            id remoteSrv = GetIvar(registrar, "_remoteNotificationServer") ?: GetIvar(registrar, "_removeNotificationServer");
+            if ([remoteSrv respondsToSelector:@selector(connection:didReceiveIncomingMessage:)]) {
+                [remoteSrv performSelector:@selector(connection:didReceiveIncomingMessage:) withObject:nil withObject:msg];
+            }
+            [msg release];
         }
-    } else if (cf < 1300.0) {
-        // ── iOS 9 ──
-        id userNS  = [objc_getClass("UNUserNotificationServer") sharedInstance];
-        id registrar  = GetIvar(userNS, "_registrarConnectionListener");
-        id remoteSrv  = GetIvar(registrar, "_remoteNotificationServer");
-        if (!remoteSrv) remoteSrv = GetIvar(registrar, "_removeNotificationServer");
-
-        if (remoteSrv && apsMessage) {
-            [remoteSrv connection:nil didReceiveIncomingMessage:apsMessage];
-        }
-    } else {
-        // ── iOS 10+ ──
-        id userNS    = [objc_getClass("UNSUserNotificationServer") sharedInstance];
-        id remoteSrv = GetIvar(userNS, "_remoteNotificationService");
-
-        if (remoteSrv && apsMessage) {
-             [remoteSrv connection:nil didReceiveIncomingMessage:apsMessage];
-        }
+    } @catch (NSException *e) {
+        NSLog(@"[SGN] Failed to inject push notification: %@", e);
     }
 }
 
-// ═══════════════════════════════════════════════
-#pragma mark - Push Receiver Mach Server
-// ═══════════════════════════════════════════════
+#pragma mark - Push Receiver Mach Loop
 
-/// Process a single push request from the daemon.
-static void HandlePushMessage(MachPushRequestMessage *req) {
-    NSString *topic = [NSString stringWithUTF8String:req->topic];
-    if (!topic.length) return;
-
-    NSDictionary *userInfo = nil;
-    if (req->userInfoLength > 0 && req->userInfoLength <= SKYGLOW_MAX_USERINFO_SIZE) {
-        NSData *data = [NSData dataWithBytes:req->userInfoData length:req->userInfoLength];
-        id parsed = [NSPropertyListSerialization propertyListWithData:data
-                                                              options:NSPropertyListImmutable
-                                                               format:NULL
-                                                                error:NULL];
-        if ([parsed isKindOfClass:[NSDictionary class]]) {
-            userInfo = parsed;
-        }
-    }
-
-    NSLog(@"[SGN] Delivering push for topic: %@", topic);
-    DeliverNotification(topic, userInfo ?: @{});
-}
-
-/// Mach message receive loop (runs on background thread).
 static void PushReceiverLoop(void) {
     while (1) {
-        MachPushRequestMessage req;
-        memset(&req, 0, sizeof(req));
+        @autoreleasepool {
+            SGMachPushRequestMessage req;
+            memset(&req, 0, sizeof(req));
 
-        kern_return_t kr = mach_msg(&req.header, MACH_RCV_MSG, 0, sizeof(req),
-                                    gPushReceiverPort, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
-        if (kr != KERN_SUCCESS) {
-            NSLog(@"[SGN] Push recv error: %s", mach_error_string(kr));
-            continue;
-        }
-        if (req.type == SKYGLOW_REQUEST_PUSH) {
-            HandlePushMessage(&req);
+            kern_return_t kr = mach_msg(&req.header, MACH_RCV_MSG, 0, sizeof(req), gPushReceiverPort, MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
+            if (kr == KERN_SUCCESS && req.type == SG_MACH_MSG_REQUEST_PUSH) {
+                NSString *topic = [NSString stringWithUTF8String:req.topic];
+                NSDictionary *userInfo = nil;
+                if (req.userInfoLength > 0 && req.userInfoLength <= SKYGLOW_MAX_USERINFO_SIZE) {
+                    NSData *data = [NSData dataWithBytes:req.userInfoData length:req.userInfoLength];
+                    userInfo = [NSPropertyListSerialization propertyListWithData:data options:NSPropertyListImmutable format:NULL error:NULL];
+                }
+                NSLog(@"[SGN] Delivering push for topic: %@", topic);
+                DeliverNotification(topic, userInfo);
+            }
         }
     }
 }
 
-/// Set up the push receiver Mach service and start the listener.
 static BOOL StartPushReceiver(void) {
-    kern_return_t kr;
-
-    kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &gPushReceiverPort);
-    if (kr != KERN_SUCCESS) {
-        NSLog(@"[SGN] Push port alloc failed: %s", mach_error_string(kr));
-        return NO;
-    }
-
-    kr = mach_port_insert_right(mach_task_self(), gPushReceiverPort, gPushReceiverPort,
-                                MACH_MSG_TYPE_MAKE_SEND);
-    if (kr != KERN_SUCCESS) {
-        NSLog(@"[SGN] Push port send right failed: %s", mach_error_string(kr));
-        return NO;
-    }
+    if (mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &gPushReceiverPort) != KERN_SUCCESS) return NO;
+    if (mach_port_insert_right(mach_task_self(), gPushReceiverPort, gPushReceiverPort, MACH_MSG_TYPE_MAKE_SEND) != KERN_SUCCESS) return NO;
 
     mach_port_t bsPort = MACH_PORT_NULL;
     task_get_bootstrap_port(mach_task_self(), &bsPort);
-
-    kr = bootstrap_register(bsPort, SKYGLOW_MACH_SERVICE_NAME_PUSH, gPushReceiverPort);
-    if (kr != KERN_SUCCESS) {
-        NSLog(@"[SGN] Push service register failed: %s", mach_error_string(kr));
-        return NO;
-    }
-
-    NSLog(@"[SGN] Push receiver registered on %s", SKYGLOW_MACH_SERVICE_NAME_PUSH);
+    if (bootstrap_register(bsPort, SKYGLOW_MACH_SERVICE_NAME_PUSH, gPushReceiverPort) != KERN_SUCCESS) return NO;
     return YES;
 }
 
-// ═══════════════════════════════════════════════
-#pragma mark - Hooks
-// ═══════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+#pragma mark - Versioned Hooks: Uninstall Detection
+// ═══════════════════════════════════════════════════════════════════════
 
-// ── App Uninstall: notify daemon to clean up tokens ──
-
+// iOS 3–7: SBApplicationUninstallationOperation exists
+%group HookUninstall_Classic
 %hook SBApplicationUninstallationOperation
-
 - (void)main {
     NSString *bundleId = [(id)self valueForKey:@"_bundleIdentifier"];
     if (bundleId.length) {
-        NSLog(@"[SGN] App uninstalling: %@", bundleId);
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             SendFeedbackToDaemon(bundleId, @"App uninstalled");
         });
     }
     %orig;
 }
-
+%end
 %end
 
-// ── Remote Notification Registration ──
+// iOS 8–9: SBApplicationController -uninstallApplication:
+%group HookUninstall_Modern
+%hook SBApplicationController
+- (void)uninstallApplication:(id)application {
+    NSString *bundleId = nil;
+    if ([application respondsToSelector:@selector(bundleIdentifier)]) {
+        bundleId = [application performSelector:@selector(bundleIdentifier)];
+    }
+    if (bundleId.length) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            SendFeedbackToDaemon(bundleId, @"App uninstalled");
+        });
+    }
+    %orig;
+}
+%end
+%end
 
+// ═══════════════════════════════════════════════════════════════════════
+#pragma mark - Versioned Hooks: Token Registration (Choice Dialog)
+// ═══════════════════════════════════════════════════════════════════════
+
+// --- Pending Registration Context (single-process, only one dialog at a time) ---
+static id sPendingServer      = nil;   // SBRemoteNotificationServer or UNNotificationRegistrarConnectionListener
+static id sPendingApp         = nil;   // SBApplication (iOS 3-8 only)
+static id sPendingEnv         = nil;   // environment string (iOS 3-8 only)
+static int sPendingTypes      = 0;     // notification types (iOS 3-8 only)
+static NSString *sPendingBundleId = nil;
+static id sPendingResultBlock = nil;   // result block (iOS 9 only)
+static BOOL sPendingIsModern  = NO;    // YES = iOS 9 path
+static BOOL sPassThrough      = NO;    // Flag to let %orig pass on re-entry
+
+// --- Alert Delegate ---
+// Button indices: 0 = "Use Apple Push" (cancel), 1 = "Use Skyglow"
+@interface SGRegistrationAlertDelegate : NSObject
+@end
+
+@implementation SGRegistrationAlertDelegate
+
+- (void)alertView:(id)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
+    if (buttonIndex == 1) {
+        // ── "Use Skyglow" ──
+        if (!IsDaemonReachable()) {
+            ShowDaemonOfflineAlert(sPendingBundleId);
+            // Don't register anything — dialog will re-appear on next app launch
+        } else {
+            // Remember the choice so the dialog doesn't reappear
+            NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath] mutableCopy] ?: [NSMutableDictionary dictionary];
+            NSMutableDictionary *appStatus = [[prefs objectForKey:@"appStatus"] mutableCopy] ?: [NSMutableDictionary dictionary];
+            [appStatus setObject:@YES forKey:sPendingBundleId];
+            [prefs setObject:appStatus forKey:@"appStatus"];
+            [prefs writeToFile:kPrefsPlistPath atomically:YES];
+            [appStatus release];
+            [prefs release];
+
+            // Daemon is running: register through the system, then deliver our token
+            if (sPendingIsModern) {
+                sPassThrough = YES;
+                [sPendingServer requestTokenForRemoteNotificationsForBundleIdentifier:sPendingBundleId withResult:sPendingResultBlock];
+            } else {
+                sPassThrough = YES;
+                [(SBRemoteNotificationServer *)sPendingServer registerApplication:sPendingApp forEnvironment:sPendingEnv withTypes:sPendingTypes];
+            }
+            DeliverSkyglowToken(sPendingBundleId);
+        }
+    } else {
+        // ── "Use Apple Push" ──
+        // Remove from Skyglow plist so future registrations go straight through
+        NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath] mutableCopy] ?: [NSMutableDictionary dictionary];
+        NSMutableDictionary *appStatus = [[prefs objectForKey:@"appStatus"] mutableCopy] ?: [NSMutableDictionary dictionary];
+        [appStatus setObject:@NO forKey:sPendingBundleId];
+        [prefs setObject:appStatus forKey:@"appStatus"];
+        [prefs writeToFile:kPrefsPlistPath atomically:YES];
+        [appStatus release];
+        [prefs release];
+
+        // Re-invoke with pass-through so %orig runs normally
+        if (sPendingIsModern) {
+            sPassThrough = YES;
+            [sPendingServer requestTokenForRemoteNotificationsForBundleIdentifier:sPendingBundleId withResult:sPendingResultBlock];
+        } else {
+            sPassThrough = YES;
+            [(SBRemoteNotificationServer *)sPendingServer registerApplication:sPendingApp forEnvironment:sPendingEnv withTypes:sPendingTypes];
+        }
+    }
+
+    // Cleanup
+    [sPendingServer release];      sPendingServer = nil;
+    [sPendingApp release];         sPendingApp = nil;
+    [sPendingEnv release];         sPendingEnv = nil;
+    [sPendingBundleId release];    sPendingBundleId = nil;
+    [sPendingResultBlock release]; sPendingResultBlock = nil;
+    sPendingTypes = 0;
+    sPendingIsModern = NO;
+}
+@end
+
+static SGRegistrationAlertDelegate *sAlertDelegate = nil;
+
+static void ShowRegistrationChoiceAlert(NSString *bundleId) {
+    if (!sAlertDelegate) sAlertDelegate = [[SGRegistrationAlertDelegate alloc] init];
+
+    NSString *msg = [NSString stringWithFormat:
+        @"\"%@\" wants to receive push notifications. "
+        @"Would you like to route them through Skyglow, or use standard Apple Push?",
+        bundleId];
+    id alert = [[NSClassFromString(@"UIAlertView") alloc]
+        initWithTitle:@"Skyglow Notifications"
+              message:msg
+             delegate:sAlertDelegate
+    cancelButtonTitle:@"Use Apple Push"
+    otherButtonTitles:@"Use Skyglow", nil];
+    [alert show];
+    [alert release];
+}
+
+// --- iOS 3–8: SBRemoteNotificationServer ---
+%group HookRegistration_Classic
 %hook SBRemoteNotificationServer
-
-- (int)registerApplication:(id)application
-            forEnvironment:(id)environment
-                 withTypes:(int)notificationTypes {
-
-    NSString *bundleId = [application bundleIdentifier];
-    NSLog(@"[SGN] registerApplication:%@ env:%@ types:%d", bundleId, environment, notificationTypes);
-
-    if (!bundleId.length) return %orig;
-
-    // ── Client setup (same as original) ──
-
-    BOOL needsUpdate = NO;
-
-    NSMutableDictionary *clientsByBundle = [self valueForKey:@"_bundleIdentifiersToClients"];
-    SBRemoteNotificationClient *client = [clientsByBundle objectForKey:bundleId];
-
-    if (!client) {
-        client = [[%c(SBRemoteNotificationClient) alloc] initWithBundleIdentifier:bundleId];
-        [clientsByBundle setObject:client forKey:bundleId];
-        needsUpdate = YES;
+- (int)registerApplication:(id)application forEnvironment:(id)environment withTypes:(int)notificationTypes {
+    // Pass-through: called from alert delegate to complete registration
+    if (sPassThrough) {
+        sPassThrough = NO;
+        return %orig;
     }
 
-    if (![[client environment] isEqual:environment]) {
-        [client setEnvironment:environment];
-        needsUpdate = YES;
+    NSString *bundleId = [application performSelector:@selector(bundleIdentifier)];
+
+    // Apps manually disabled in Settings → pass through to Apple Push directly
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath];
+    NSDictionary *appStatus = [prefs objectForKey:@"appStatus"];
+    id existing = [appStatus objectForKey:bundleId];
+    if (existing && ![existing boolValue]) {
+        return %orig; // User previously chose "Use Apple Push"
     }
 
-    int requestedTypes = notificationTypes & 0xF;
-    if ([client appEnabledTypes] != requestedTypes) {
-        [client setAppEnabledTypes:requestedTypes];
-        needsUpdate = YES;
-    }
+    // First-time or Skyglow-enabled: show the choice dialog
+    [sPendingServer release];   sPendingServer = [self retain];
+    [sPendingApp release];      sPendingApp = [application retain];
+    [sPendingEnv release];      sPendingEnv = [environment retain];
+    [sPendingBundleId release]; sPendingBundleId = [bundleId copy];
+    sPendingTypes = notificationTypes;
+    sPendingIsModern = NO;
 
-    // ── Connection lookup ──
-
-    NSMutableDictionary *envToConn = [self valueForKey:@"_environmentsToConnections"];
-    id connection = [envToConn objectForKey:environment];
-
-    if (!connection) {
-        [self performSelector:@selector(calculateTopics)];
-        connection = [envToConn objectForKey:environment];
-    }
-
-    BOOL hasValidAPNS = NO;
-    if (connection && [connection respondsToSelector:@selector(hasIdentity)]) {
-        hasValidAPNS = ((intptr_t)[connection performSelector:@selector(hasIdentity)]) != 0;
-    }
-
-    // ── Permission alert logic ──
-
-    int presentedTypes = [client settingsPresentedTypes];
-
-    if ((notificationTypes & 0x8) != 0 && (presentedTypes & 0x8) == 0) {
-        int alertTypes = (requestedTypes != 0x8) ? 0xF : 0x8;
-        id alert = [[%c(SBRemoteNotificationPermissionAlert) alloc]
-                    initWithApplication:application notificationTypes:alertTypes];
-        if (alert) {
-            SBAlertItemsController *ctrl = [%c(SBAlertItemsController) sharedInstance];
-            [ctrl deactivateAlertItemsOfClass:%c(SBRemoteNotificationPermissionAlert)];
-            [ctrl activateAlertItem:alert];
-            [client setSettingsPresentedTypes:presentedTypes | requestedTypes];
-        }
-    } else if ((notificationTypes & ~presentedTypes & 0x7) != 0) {
-        id alert = [[%c(SBRemoteNotificationPermissionAlert) alloc]
-                    initWithApplication:application notificationTypes:0x7];
-        if (alert) {
-            SBAlertItemsController *ctrl = [%c(SBAlertItemsController) sharedInstance];
-            [ctrl deactivateAlertItemsOfClass:%c(SBRemoteNotificationPermissionAlert)];
-            [ctrl activateAlertItem:alert];
-            [client setSettingsPresentedTypes:presentedTypes | requestedTypes];
-        }
-    }
-
-    // ── Token: Skyglow or APNS ──
-
-    NSData *token = nil;
-
-    if (ShouldUseSkyglowForApp(bundleId)) {
-        NSLog(@"[SGN] Using Skyglow for %@", bundleId);
-        token = RequestTokenFromDaemon(bundleId);
-    } else {
-        NSLog(@"[SGN] Using APNS for %@", bundleId);
-        if (hasValidAPNS) {
-            token = [connection performSelector:@selector(publicToken)];
-        }
-    }
-
-    if (token) {
-        NSLog(@"[SGN] Delivering token (%lu bytes) to %@", (unsigned long)token.length, bundleId);
-        if ([application respondsToSelector:@selector(remoteApplication)]) {
-            SBRemoteApplication *remoteApp = [(UIApplication *)application remoteApplication];
-            [remoteApp remoteNotificationRegistrationSucceededWithDeviceToken:token];
-        }
-        [client setLastKnownDeviceToken:token];
-    } else {
-        NSLog(@"[SGN] No token available for %@", bundleId);
-    }
-
-    // ── Persist & recalculate ──
-
-    if (needsUpdate) {
-        [[%c(SBApplicationPersistence) sharedInstance]
-            setArchivedObject:client
-                       forKey:@"SBRemoteNotificationClient"
-    bundleOrDisplayIdentifier:bundleId];
-        [self performSelector:@selector(calculateTopics)];
-    }
-
-    return needsUpdate;
+    ShowRegistrationChoiceAlert(bundleId);
+    return 0; // Block registration until user decides
 }
-
+%end
 %end
 
-// ═══════════════════════════════════════════════
-#pragma mark - Constructor
-// ═══════════════════════════════════════════════
-
-// ═══════════════════════════════════════════════
-#pragma mark - Manual Registration Logic (Settings -> SpringBoard)
-// ═══════════════════════════════════════════════
-
-static void checkAndRegisterApplication(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
-    NSLog(@"[SGN] Received settings registration request...");
-
-    // Get the bundle id from the persistent domain
-    NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.skyglow.sndp"];
-    NSString *bundleIdentifier = [prefs objectForKey:@"lastRegisteredApp"];
-
-    if (!bundleIdentifier.length) {
-        NSLog(@"[SGN] No bundle ID found in lastRegisteredApp");
+// --- iOS 9: UNNotificationRegistrarConnectionListener ---
+%group HookRegistration_iOS9
+%hook UNNotificationRegistrarConnectionListener
+- (void)requestTokenForRemoteNotificationsForBundleIdentifier:(NSString *)bundleIdentifier withResult:(id)resultBlock {
+    // Pass-through: called from alert delegate to complete registration
+    if (sPassThrough) {
+        sPassThrough = NO;
+        %orig;
         return;
     }
 
-    // Get the list of registered bundle IDs (Private API)
-    id server = [%c(SBRemoteNotificationServer) sharedInstance];
-    id registeredBundleIDs = [server performSelector:@selector(_allPushRegisteredThirdPartyBundleIDs)];
+    // Apps manually disabled in Settings → pass through to Apple Push directly
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath];
+    NSDictionary *appStatus = [prefs objectForKey:@"appStatus"];
+    id existing = [appStatus objectForKey:bundleIdentifier];
+    if (existing && ![existing boolValue]) {
+        %orig;
+        return;
+    }
 
-    // Check if the bundle identifier is already registered
-    if ([registeredBundleIDs containsObject:bundleIdentifier]) {
-        NSLog(@"[SGN] %@ is already registered", bundleIdentifier);
-        // Optional: Send feedback back to settings?
-    } else {
-        NSLog(@"[SGN] Registering application: %@", bundleIdentifier);
+    // First-time or Skyglow-enabled: show the choice dialog
+    [sPendingServer release];      sPendingServer = [self retain];
+    [sPendingBundleId release];    sPendingBundleId = [bundleIdentifier copy];
+    [sPendingResultBlock release]; sPendingResultBlock = [resultBlock copy];
+    sPendingIsModern = YES;
 
-        // Obtain instance for app and register it
-        Class SBApplicationControllerClass = objc_getClass("SBApplicationController");
-        id appController = [SBApplicationControllerClass sharedInstance];
-        id app = [appController applicationWithDisplayIdentifier:bundleIdentifier];
+    ShowRegistrationChoiceAlert(bundleIdentifier);
+    // Block registration — do NOT call %orig
+}
+%end
+%end
 
-        if (!app) {
-            NSLog(@"[SGN] Error: Could not find SBApplication for %@", bundleIdentifier);
-            return;
+// ═══════════════════════════════════════════════════════════════════════
+#pragma mark - Settings Integration (All iOS Versions)
+// ═══════════════════════════════════════════════════════════════════════
+
+static void handleSettingsAppRegistration(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    CFPreferencesAppSynchronize(CFSTR("com.skyglow.sndp"));
+    NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.skyglow.sndp"];
+    NSString *bundleId = [prefs objectForKey:@"lastRegisteredApp"];
+
+    if (bundleId.length) {
+        // On all iOS versions, request token through the daemon directly.
+        // On iOS 3–8, this triggers our SBRemoteNotificationServer hook.
+        // On iOS 9, we call DeliverSkyglowToken directly since Settings
+        // may be used as an additional manual trigger.
+        if (kCFCoreFoundationVersionNumber < 1200.0) {
+            id app = SBApp_LookupByIdentifier(bundleId);
+            SBRemoteNotificationServer *server = [%c(SBRemoteNotificationServer) sharedInstance];
+            if (app && server) {
+                [server registerApplication:app forEnvironment:@"production" withTypes:7];
+            }
+        } else {
+            DeliverSkyglowToken(bundleId);
         }
-
-        NSString *environment = @"production";
-        // 7 = Badge(1) | Sound(2) | Alert(4)
-        unsigned notificationTypes = 7;
-
-        // Register the application for remote notifications
-        [server registerApplication:app forEnvironment:environment withTypes:notificationTypes];
-        NSLog(@"[SGN] Triggered registerApplication for %@", bundleIdentifier);
     }
 }
 
-static void checkAndUnregisterApplication(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
-    NSLog(@"[SGN] Received settings unregistration request...");
-
-    // Get the bundle id from the persistent domain
+static void handleSettingsAppUnregistration(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    CFPreferencesAppSynchronize(CFSTR("com.skyglow.sndp"));
     NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.skyglow.sndp"];
-    NSString *bundleIdentifier = [prefs objectForKey:@"lastUnregisteredApp"];
-
-    if (!bundleIdentifier.length) {
-        NSLog(@"[SGN] No bundle ID found in lastUnregisteredApp");
-        return;
+    NSString *bundleId = [prefs objectForKey:@"lastUnregisteredApp"];
+    if (bundleId.length) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            SendFeedbackToDaemon(bundleId, @"User removed from Skyglow");
+        });
     }
-
-    id server = [%c(SBRemoteNotificationServer) sharedInstance];
-    
-    // We can try to unregister it from SpringBoard
-    // NOTE: unregisterApplication:forEnvironment: might not be available across all versions,
-    // but the user requested "send bundle id to sb and unregister from there".
-    
-    Class SBApplicationControllerClass = objc_getClass("SBApplicationController");
-    id appController = [SBApplicationControllerClass sharedInstance];
-    id app = [appController applicationWithDisplayIdentifier:bundleIdentifier];
-
-    if (app) {
-         if ([server respondsToSelector:@selector(unregisterApplication:forEnvironment:)]) {
-             [server unregisterApplication:app forEnvironment:@"production"];
-             NSLog(@"[SGN] Triggered unregisterApplication for %@", bundleIdentifier);
-         }
-    }
-
-    // Also explicitly notify daemon that it's gone
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        SendFeedbackToDaemon(bundleIdentifier, @"Manual unregistration from settings");
-    });
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+#pragma mark - Constructor: Runtime Version Selection
+// ═══════════════════════════════════════════════════════════════════════
 
 %ctor {
-    // 1. Start push receiver
+    // Push receiver (all iOS versions)
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        if (StartPushReceiver()) {
-            PushReceiverLoop(); // blocks forever
-        }
+        if (StartPushReceiver()) PushReceiverLoop();
     });
 
-    // 2. Listen for manual registration requests from Settings
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                    NULL,
-                                    checkAndRegisterApplication,
-                                    CFSTR("com.skyglow.sgn.registerInputApp"),
-                                    NULL,
-                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    // Uninstall hooks: version-select at runtime
+    if (kCFCoreFoundationVersionNumber < 1140.0) {
+        %init(HookUninstall_Classic);    // iOS 3–7
+    } else {
+        %init(HookUninstall_Modern);     // iOS 8–9
+    }
 
-    // 3. Listen for manual unregistration requests from Settings
-    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
-                                    NULL,
-                                    checkAndUnregisterApplication,
-                                    CFSTR("com.skyglow.sgn.unregisterInputApp"),
-                                    NULL,
-                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    // Registration hooks: version-select at runtime
+    if (kCFCoreFoundationVersionNumber < 1200.0) {
+        %init(HookRegistration_Classic); // iOS 3–8
+    } else {
+        %init(HookRegistration_iOS9);    // iOS 9
+    }
+
+    // Settings integration (all iOS versions)
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, handleSettingsAppRegistration, CFSTR("com.skyglow.sgn.registerInputApp"), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, handleSettingsAppUnregistration, CFSTR("com.skyglow.sgn.unregisterInputApp"), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
 }

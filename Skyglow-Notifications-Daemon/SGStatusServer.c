@@ -50,10 +50,10 @@ static void* SGStatusServer_AcceptLoop(void* arg) {
             continue;
         }
 
-        int flags = fcntl(clientFd, F_GETFL, 0);
-        fcntl(clientFd, F_SETFL, flags | O_NONBLOCK);
-
         if (mode == SS_MODE_QUERY) {
+            // Query: set non-blocking, write snapshot, close immediately
+            int flags = fcntl(clientFd, F_GETFL, 0);
+            fcntl(clientFd, F_SETFL, flags | O_NONBLOCK);
             pthread_mutex_lock(&_lock);
             SGStatusPayload snap = _current;
             pthread_mutex_unlock(&_lock);

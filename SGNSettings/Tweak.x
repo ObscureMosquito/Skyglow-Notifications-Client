@@ -4,7 +4,6 @@
 #import <Preferences/PSListController.h>
 #import <Preferences/PSRootController.h>
 
-
 static NSString *const kSkyglowID = @"SkyglowNotificationsID";
 static NSString *const kSGNBundleObjKey  = @"sgn_bundle_obj";
 static NSString *const kSGNPlistNameKey  = @"sgn_plist_name";

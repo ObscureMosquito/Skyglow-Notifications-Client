@@ -23,6 +23,7 @@
 - (NSArray *)tokenEntriesForBundleIdentifier:(NSString *)bundleID;
 - (BOOL)removeTokenForBundleIdentifier:(NSString *)bundleID;
 - (NSArray *)allActiveRoutingKeys;
+- (NSSet *)registeredBundleIdentifiers;
 
 // --- Connectivity & Synchronization ---
 

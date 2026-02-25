@@ -67,6 +67,22 @@ static int64_t SG_DecodeBE64(const uint8_t p[8]) {
     return (int64_t)u;
 }
 
+static uint32_t SG_DecodeBE32(const uint8_t p[4]) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+/// Waits for the underlying socket to become ready for the given SSL direction.
+/// Returns 0 on ready, -1 on error/timeout.
+static int SG_WaitForSocket(int sock, int forWrite, int timeoutSec) {
+    if (sock < 0) return -1;
+    fd_set fds; FD_ZERO(&fds); FD_SET(sock, &fds);
+    struct timeval tv = {timeoutSec, 0};
+    if (forWrite)
+        return (select(sock + 1, NULL, &fds, NULL, &tv) > 0) ? 0 : -1;
+    else
+        return (select(sock + 1, &fds, NULL, NULL, &tv) > 0) ? 0 : -1;
+}
+
 static int SG_SSLReadExact(void *buf, int len) {
     if (!_ssl) return -1;
     int total = 0;
@@ -74,7 +90,14 @@ static int SG_SSLReadExact(void *buf, int len) {
         int n = SSL_read(_ssl, (char *)buf + total, len - total);
         if (n > 0) { total += n; continue; }
         int err = SSL_get_error(_ssl, n);
-        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) continue;
+        if (err == SSL_ERROR_WANT_READ) {
+            if (SG_WaitForSocket(_sock, 0, 10) != 0) return -1;
+            continue;
+        }
+        if (err == SSL_ERROR_WANT_WRITE) {
+            if (SG_WaitForSocket(_sock, 1, 10) != 0) return -1;
+            continue;
+        }
         return -1;
     }
     return 0;
@@ -87,7 +110,14 @@ static int SG_SSLWriteLocked(const void *buf, int len) {
         int n = SSL_write(_ssl, (const char *)buf + total, len - total);
         if (n > 0) { total += n; continue; }
         int err = SSL_get_error(_ssl, n);
-        if (err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ) continue;
+        if (err == SSL_ERROR_WANT_WRITE) {
+            if (SG_WaitForSocket(_sock, 1, 10) != 0) return -1;
+            continue;
+        }
+        if (err == SSL_ERROR_WANT_READ) {
+            if (SG_WaitForSocket(_sock, 0, 10) != 0) return -1;
+            continue;
+        }
         return -1;
     }
     return 0;
@@ -95,18 +125,27 @@ static int SG_SSLWriteLocked(const void *buf, int len) {
 
 static int SGP_LowLevelSend(SGPMsgType type, const void *payload, uint32_t len) {
     if (len > SGP_MAX_PAYLOAD_LEN) return -1;
-    uint8_t frame[SGP_HEADER_SIZE + SGP_MAX_PAYLOAD_LEN];
-    frame[0] = SGP_MAGIC; frame[1] = SGP_VERSION; frame[2] = (uint8_t)type; frame[3] = 0;
+
+    // Atomic single-write: protocol spec §3 requires header + payload
+    // in one write call. Heap-allocated to avoid 4KB stack pressure.
+    uint32_t frameLen = SGP_HEADER_SIZE + len;
+    uint8_t *frame = malloc(frameLen);
+    if (!frame) return -1;
+
+    frame[0] = SGP_MAGIC; frame[1] = SGP_VERSION;
+    frame[2] = (uint8_t)type; frame[3] = 0;
     uint32_t lenBE = htonl(len); memcpy(frame + 4, &lenBE, 4);
     if (len > 0 && payload) memcpy(frame + SGP_HEADER_SIZE, payload, len);
 
     pthread_mutex_lock(&_sendLock);
-    int rc = SG_SSLWriteLocked(frame, SGP_HEADER_SIZE + len);
+    int rc = SG_SSLWriteLocked(frame, (int)frameLen);
     pthread_mutex_unlock(&_sendLock);
+    free(frame);
     return rc;
 }
 
 static uint8_t *SG_SignPSS(RSA *rsa, const uint8_t *d1, size_t l1, const uint8_t *d2, size_t l2, const uint8_t *d3, size_t l3, size_t *outLen) {
+    *outLen = 0;
     uint8_t digest[32];
     EVP_MD_CTX *md = EVP_MD_CTX_new();
     EVP_DigestInit_ex(md, EVP_sha256(), NULL);
@@ -118,10 +157,27 @@ static uint8_t *SG_SignPSS(RSA *rsa, const uint8_t *d1, size_t l1, const uint8_t
 
     int size = RSA_size(rsa);
     uint8_t *em = malloc(size);
-    RSA_padding_add_PKCS1_PSS_mgf1(rsa, em, digest, EVP_sha256(), EVP_sha256(), -1);
+    if (!em) return NULL;
+
+    if (RSA_padding_add_PKCS1_PSS_mgf1(rsa, em, digest, EVP_sha256(), EVP_sha256(), -1) != 1) {
+        free(em);
+        return NULL;
+    }
+
     uint8_t *sig = malloc(size);
-    *outLen = RSA_private_encrypt(size, em, sig, rsa, RSA_NO_PADDING);
+    if (!sig) { free(em); return NULL; }
+
+    int sigLen = RSA_private_encrypt(size, em, sig, rsa, RSA_NO_PADDING);
+    memset(em, 0, size); // Zero padding buffer
     free(em);
+
+    if (sigLen <= 0) {
+        memset(sig, 0, size);
+        free(sig);
+        return NULL;
+    }
+
+    *outLen = (size_t)sigLen;
     return sig;
 }
 
@@ -133,8 +189,9 @@ static int SG_SendChallengeResponse(SGPMsgType type, RSA *rsa, NSString *addr, i
     _hasPendingNonce = NO;
     if (!sig) return -1;
 
-    // Buffer overflow & privilege escalation protection!
+    // Buffer overflow & privilege escalation protection
     if (sl > 512) {
+        memset(sig, 0, sl);
         free(sig);
         return -1;
     }
@@ -143,6 +200,7 @@ static int SG_SendChallengeResponse(SGPMsgType type, RSA *rsa, NSString *addr, i
     memcpy(p, tsBE, 8);
     p[8] = (sl >> 8) & 0xFF; p[9] = sl & 0xFF;
     memcpy(p + 10, sig, sl);
+    memset(sig, 0, sl); // Zero signature material
     free(sig);
     return SGP_LowLevelSend(type, p, (uint32_t)(10 + sl));
 }
@@ -170,6 +228,7 @@ NSString *SGP_BeginFirstTimeRegistration(void) {
     BIO_read(privBio, privBuf, (int)privLen);
     privBuf[privLen] = '\0';
     _regPendingPrivKey = [[NSString stringWithUTF8String:privBuf] retain];
+    memset(privBuf, 0, privLen); // Zero private key material
     free(privBuf); BIO_free(privBio);
 
     uint8_t *pubDer = NULL;
@@ -234,29 +293,66 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     SSL_CTX_set_options(_sslctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
     SSL_CTX_set_verify(_sslctx, SSL_VERIFY_PEER, NULL);
 
-    BIO *b = BIO_new_mem_buf((void *)[pinnedCert UTF8String], -1);
+    const char *utf8Cert = [pinnedCert UTF8String];
+    BIO *b = BIO_new_mem_buf((void *)utf8Cert, (int)strlen(utf8Cert));
     X509 *x = PEM_read_bio_X509(b, NULL, 0, NULL);
+    if (!x) {
+        NSLog(@"[SGP_ConnectToServer] OpenSSL Failed to read PEM X509 Certificate!");
+        unsigned long openSslErr;
+        while ((openSslErr = ERR_get_error()) != 0) {
+            char errBuf[256];
+            ERR_error_string_n(openSslErr, errBuf, sizeof(errBuf));
+            NSLog(@"[SGP_ConnectToServer] OpenSSL Error: %s", errBuf);
+        }
+    } else {
+        X509_STORE_add_cert(SSL_CTX_get_cert_store(_sslctx), x);
+        X509_free(x);
+    }
     BIO_free(b);
-    X509_STORE_add_cert(SSL_CTX_get_cert_store(_sslctx), x);
-    X509_free(x);
 
     _sock = socket(AF_INET, SOCK_STREAM, 0);
-    int tc = 0x100; 
-    setsockopt(_sock, SOL_SOCKET, 0x1086, &tc, sizeof(tc));
+    if (_sock < 0) { SGP_DisconnectFromServer(); return -1; }
 
-    // Prevent infinite hanging on dead networks (10 sec timeout)
-    struct timeval timeout;
-    timeout.tv_sec = 10;
-    timeout.tv_usec = 0;
-    setsockopt(_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(_sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    // TCP_NODELAY: disable Nagle's algorithm for low-latency notification delivery
+    int yes = 1;
+    setsockopt(_sock, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+
+    // Non-blocking connect with explicit 10-second timeout
+    int flags = fcntl(_sock, F_GETFL, 0);
+    fcntl(_sock, F_SETFL, flags | O_NONBLOCK);
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET; addr.sin_port = htons(port);
     inet_pton(AF_INET, ip, &addr.sin_addr);
 
-    connect(_sock, (struct sockaddr *)&addr, sizeof(addr)); 
+    int connectResult = connect(_sock, (struct sockaddr *)&addr, sizeof(addr));
+    if (connectResult < 0 && errno != EINPROGRESS) {
+        SGP_DisconnectFromServer();
+        return -2;
+    }
+
+    if (connectResult < 0) {
+        // Wait for connect to complete with timeout
+        fd_set wfds; FD_ZERO(&wfds); FD_SET(_sock, &wfds);
+        struct timeval tv = {10, 0};
+        int sel = select(_sock + 1, NULL, &wfds, NULL, &tv);
+        if (sel <= 0) { SGP_DisconnectFromServer(); return -3; }
+
+        int sockErr = 0; socklen_t errLen = sizeof(sockErr);
+        getsockopt(_sock, SOL_SOCKET, SO_ERROR, &sockErr, &errLen);
+        if (sockErr != 0) { SGP_DisconnectFromServer(); return -4; }
+    }
+
+    // Restore blocking mode for SSL
+    fcntl(_sock, F_SETFL, flags);
+
+    // Set read/write timeouts for post-connect I/O
+    struct timeval timeout;
+    timeout.tv_sec = 10;
+    timeout.tv_usec = 0;
+    setsockopt(_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(_sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 
     _ssl = SSL_new(_sslctx);
     SSL_set_fd(_ssl, _sock);
@@ -335,7 +431,6 @@ BOOL SGP_RegisterDeviceToken(NSData *routingKey, NSString *bundleID) {
     dispatch_once(&_tokenOnce, ^{ _tokenWaiters = [[NSMutableDictionary alloc] init]; });
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
     
-    // NEW: Wrap in NSValue for iOS 4/5 safety!
     @synchronized(_tokenWaiters) { _tokenWaiters[bundleID] = [NSValue valueWithPointer:sema]; }
 
     const char *bid = [bundleID UTF8String]; uint16_t bl = (uint16_t)strlen(bid);
@@ -345,14 +440,14 @@ BOOL SGP_RegisterDeviceToken(NSData *routingKey, NSString *bundleID) {
 
     if (SGP_LowLevelSend(SGP_C_REG_TOKEN, [p bytes], (uint32_t)[p length]) != 0) {
         @synchronized(_tokenWaiters) { [_tokenWaiters removeObjectForKey:bundleID]; }
-        dispatch_release(sema); // Prevent leak on send failure
+        dispatch_release(sema);
         return NO;
     }
     
     long rc = dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
     @synchronized(_tokenWaiters) { [_tokenWaiters removeObjectForKey:bundleID]; }
     
-    dispatch_release(sema); // Prevent leak on success/timeout
+    dispatch_release(sema);
     return (rc == 0);
 }
 
@@ -365,28 +460,44 @@ void SGP_SendClientDisconnect(void) {
 int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
     if (!SGP_IsConnected()) return SGP_ERR_IO;
 
-    fd_set rfds; FD_ZERO(&rfds); FD_SET(_sock, &rfds);
-    struct timeval tv = {(long)pingIntervalSec, 0};
+    // CRITICAL: Check SSL_pending() BEFORE select().
+    // After SSL_connect(), OpenSSL may have buffered the S_HELLO
+    // data internally (read-ahead). select() checks the raw socket
+    // FD which appears empty, causing an infinite block.
+    int hasPending = (_ssl && SSL_pending(_ssl) > 0);
 
-    if (_pingPendingSince > 0.0) {
-        double elapsed = SG_GetMonotonicSeconds() - _pingPendingSince;
-        if (elapsed >= (double)SGP_PONG_TIMEOUT_SEC) return SGP_ERR_TIMEOUT;
-        tv.tv_sec = (long)(SGP_PONG_TIMEOUT_SEC - elapsed);
-    }
+    if (!hasPending) {
+        fd_set rfds; FD_ZERO(&rfds); FD_SET(_sock, &rfds);
+    
+        struct timeval tv = {(long)pingIntervalSec, 0};
+        struct timeval *tv_ptr = (pingIntervalSec > 0.0) ? &tv : NULL;
 
-    int sel = select(_sock + 1, &rfds, NULL, NULL, &tv);
-    if (sel < 0) return SGP_ERR_IO;
-    if (sel == 0) {
-        if (_pingPendingSince > 0.0) return SGP_ERR_TIMEOUT;
-        _pingSeq++; _pingPendingSince = SG_GetMonotonicSeconds();
-        uint8_t seq[8]; SG_EncodeBE64((int64_t)_pingSeq, seq);
-        SGP_LowLevelSend(SGP_C_PING, seq, 8);
-        return SGP_OK;
+        if (_pingPendingSince > 0.0) {
+            double elapsed = SG_GetMonotonicSeconds() - _pingPendingSince;
+            if (elapsed >= (double)SGP_PONG_TIMEOUT_SEC) return SGP_ERR_TIMEOUT;
+            tv.tv_sec = (long)(SGP_PONG_TIMEOUT_SEC - elapsed);
+            tv_ptr = &tv;
+        }
+
+        int sel = select(_sock + 1, &rfds, NULL, NULL, tv_ptr);
+        if (sel < 0) return (errno == EINTR) ? SGP_OK : SGP_ERR_IO;
+    
+        if (sel == 0) {
+            if (pingIntervalSec <= 0.0) return SGP_OK; 
+        
+            if (_pingPendingSince > 0.0) return SGP_ERR_TIMEOUT;
+            _pingSeq++; _pingPendingSince = SG_GetMonotonicSeconds();
+            uint8_t seq[8]; SG_EncodeBE64((int64_t)_pingSeq, seq);
+            SGP_LowLevelSend(SGP_C_PING, seq, 8);
+            return SGP_OK;
+        }
     }
 
     uint8_t hdr[8];
     if (SG_SSLReadExact(hdr, 8) != 0) return SGP_ERR_IO;
-    uint32_t len = ntohl(*(uint32_t *)(hdr + 4));
+
+    // Safe unaligned read for payload length
+    uint32_t len = SG_DecodeBE32(hdr + 4);
 
     if (len > SGP_MAX_PAYLOAD_LEN) return SGP_ERR_PROTO;
 
@@ -395,19 +506,18 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         if (SG_SSLReadExact(raw, (int)len) != 0) return SGP_ERR_IO;
     }
     
-    _pingPendingSince = 0.0;
     SGPMsgType type = (SGPMsgType)hdr[2];
-    
-    // Pass 7: Phantom Anomaly Audit: 
-    // Fix Protocol Stall by bypassing the implicit 32-byte signature check for 0-byte PING/PONG heartbeats
-    if (type == SGP_S_PONG || type == SGP_C_PING) {
-        // Handle heartbeats immediately without expecting trailing padding
-    } else if (type == SGP_S_HELLO) {
-        [_delegate protocolDidReceiveWelcomeChallenge];
+
+    // Reset ping timer only on valid server-originated data frames
+    if (type != SGP_S_PONG) {
+        _pingPendingSince = 0.0;
     }
-    
+
     switch (type) {
-        case SGP_S_HELLO: break;
+        case SGP_S_HELLO: {
+            [_delegate protocolDidReceiveWelcomeChallenge];
+            break;
+        }
         case SGP_S_CHALLENGE: {
             if (len < 32) return SGP_ERR_PROTO;
             memcpy(_pendingNonce, raw, 32); _hasPendingNonce = YES;
@@ -421,9 +531,9 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             
             NSData *rk = [NSData dataWithBytes:raw length:32];
             NSData *mid = [NSData dataWithBytes:raw + 32 length:16];
-            uint32_t dl = ntohl(*(uint32_t *)(raw + 66));
+            uint32_t dl = SG_DecodeBE32(raw + 66);
             
-            // Buffer overflow & integer wraparound protection!
+            // Buffer overflow & integer wraparound protection
             if ((uint64_t)70 + dl > len) {
                 NSLog(@"[SGP] Protocol bounds violation in S_NOTIFY");
                 return SGP_ERR_PROTO;
@@ -434,21 +544,24 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             notif[@"data"] = [NSData dataWithBytes:raw + 70 length:dl];
             
             if (raw[64] & 0x01) {
-                if ((uint64_t)70 + dl + 12 > len) return SGP_ERR_PROTO; // Ensure IV fits securely
+                if ((uint64_t)70 + dl + 12 > len) return SGP_ERR_PROTO;
                 notif[@"iv"] = [NSData dataWithBytes:raw + 70 + dl length:12];
             }
             [_delegate protocolDidReceiveNotification:notif];
             break;
         }
         case SGP_S_DISCONNECT: {
-            if (len < 5) return SGP_ERR_PROTO;
-            _lastRetryHint = ntohl(*(uint32_t *)(raw + 1));
+            if (len < 1) return SGP_ERR_PROTO;
+            uint8_t reason = raw[0];
+            _lastRetryHint = (len >= 5) ? SG_DecodeBE32(raw + 1) : 0;
+            if (reason == SGP_DISC_AUTH_FAIL) return SGP_ERR_AUTH;
+            if (reason == SGP_DISC_REPLACED) return SGP_ERR_REPLACED;
             return SGP_ERR_CLOSED;
         }
         case SGP_S_TOKEN_ACK: {
-            if (len < 34) return SGP_ERR_PROTO; // Safety check
-            uint16_t bl; memcpy(&bl, raw + 32, 2); bl = ntohs(bl);
-            if ((uint64_t)34 + bl > len) return SGP_ERR_PROTO; // Overflow safe check
+            if (len < 34) return SGP_ERR_PROTO;
+            uint16_t bl = ((uint16_t)raw[32] << 8) | (uint16_t)raw[33];
+            if ((uint64_t)34 + bl > len) return SGP_ERR_PROTO;
             
             NSString *bid = [[[NSString alloc] initWithBytes:raw + 34 length:bl encoding:NSUTF8StringEncoding] autorelease];
             @synchronized(_tokenWaiters) { 
@@ -463,13 +576,53 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         }
         case SGP_S_REGISTER_OK: {
             if (len < 4) return SGP_ERR_PROTO;
-            [_delegate protocolDidCompleteRegistrationWithAddress:[_regPendingAddress autorelease] privateKey:[_regPendingPrivKey autorelease] serverVersion:ntohl(*(uint32_t *)raw)];
+            uint32_t serverVer = SG_DecodeBE32(raw);
+            [_delegate protocolDidCompleteRegistrationWithAddress:[_regPendingAddress autorelease] privateKey:[_regPendingPrivKey autorelease] serverVersion:serverVer];
             RSA_free(_regPendingRSA); _regPendingRSA = NULL; _regPendingAddress = nil; _regPendingPrivKey = nil;
+            break;
+        }
+        case SGP_S_REGISTER_FAIL: {
+            uint8_t code = (len >= 1) ? raw[0] : 0xFF;
+            NSString *reason = nil;
+            if (len >= 4) {
+                uint16_t rl = ((uint16_t)raw[1] << 8) | (uint16_t)raw[2];
+                if ((uint64_t)3 + rl <= len) {
+                    reason = [[[NSString alloc] initWithBytes:raw + 3 length:rl encoding:NSUTF8StringEncoding] autorelease];
+                }
+            }
+            if (!reason) reason = @"Unknown";
+            NSLog(@"[SGP] Registration failed: code=%u reason=%@", code, reason);
+            if (_regPendingRSA) { RSA_free(_regPendingRSA); _regPendingRSA = NULL; }
+            [_regPendingAddress release]; _regPendingAddress = nil;
+            [_regPendingPrivKey release]; _regPendingPrivKey = nil;
+            [_delegate protocolDidFailRegistrationWithCode:code reason:reason];
             break;
         }
         case SGP_S_PONG: {
             if (len < 8) return SGP_ERR_PROTO;
-            if (SG_DecodeBE64(raw) == (int64_t)_pingSeq) [_delegate protocolDidReceiveKeepAlivePong];
+            if (SG_DecodeBE64(raw) == (int64_t)_pingSeq) {
+                _pingPendingSince = 0.0;
+                [_delegate protocolDidReceiveKeepAlivePong];
+            }
+            break;
+        }
+        case SGP_S_PING: {
+            // Server-initiated keepalive: echo the payload back as C_PONG
+            SGP_LowLevelSend(SGP_C_PONG, raw, len);
+            break;
+        }
+        case SGP_S_POLL_DONE: {
+            [_delegate protocolDidFinishOfflineQueueDrain];
+            break;
+        }
+        case SGP_S_TIME_SYNC: {
+            if (len >= 8) {
+                int64_t serverTime = SG_DecodeBE64(raw);
+                int64_t localTime = (int64_t)time(NULL);
+                int64_t offset = serverTime - localTime;
+                NSLog(@"[SGP] Time sync: server=%lld local=%lld offset=%llds", serverTime, localTime, offset);
+                [_delegate protocolDidReceiveTimeSyncWithOffset:offset];
+            }
             break;
         }
         default: break;
@@ -479,6 +632,5 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
 
 void SGP_RequestOfflineMessages(void) {
     if (!SGP_IsConnected()) return;
-    // Sends a C_POLL (0x22) frame with 0 bytes of payload
     SGP_LowLevelSend(SGP_C_POLL, NULL, 0);
 }

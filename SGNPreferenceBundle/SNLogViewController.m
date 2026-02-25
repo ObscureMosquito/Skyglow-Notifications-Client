@@ -43,6 +43,7 @@
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    self.lastKnownState = (SGState)-1; // Force UI refresh on re-appear
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refreshDaemonStatus) name:@"SNDaemonStatusUpdated" object:nil];
     [[SNDataManager shared] startWatchingDaemonStatus];
     [self refreshDaemonStatus];

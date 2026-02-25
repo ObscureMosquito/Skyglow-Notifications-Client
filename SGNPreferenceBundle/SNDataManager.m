@@ -8,14 +8,23 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-static NSString *const kMainPrefsPath  = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
-static NSString *const kProfilePath    = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
-static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotifications/sqlite.db";
+static inline NSString * SGPath(NSString *path) {
+    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"]) {
+        return [@"/var/jb" stringByAppendingString:path];
+    }
+    return path;
+}
+
+static inline NSString * SGMainPrefsPath() { return SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp.plist"); }
+static inline NSString * SGProfilePath()   { return SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist"); }
+static inline NSString * SGDBPath()        { return SGPath(@"/var/mobile/Library/SkyglowNotifications/sqlite.db"); }
+static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_status.sock") UTF8String]; }
+static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_daemon.pid") UTF8String]; }
 
 @interface SNDataManager ()
-@property (nonatomic, assign) NSInteger watchCount;
 @property (nonatomic, assign) int watchSocketFD;
 @property (nonatomic, assign) BOOL isWatching;
+@property (nonatomic, assign) uint32_t watchGeneration;
 @end
 
 @implementation SNDataManager
@@ -27,32 +36,32 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
     return instance;
 }
 
-- (NSString *)mainPrefsPath { return kMainPrefsPath; }
-- (NSString *)profilePath   { return kProfilePath; }
-- (NSString *)dbPath        { return kDBPath; }
+- (NSString *)mainPrefsPath { return SGMainPrefsPath(); }
+- (NSString *)profilePath   { return SGProfilePath(); }
+- (NSString *)dbPath        { return SGDBPath(); }
 
 // --- Main Preferences ---
-- (NSDictionary *)mainPrefs { return [NSDictionary dictionaryWithContentsOfFile:kMainPrefsPath] ?: @{}; }
+- (NSDictionary *)mainPrefs { return [NSDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()] ?: @{}; }
 - (BOOL)isEnabled { return [[[self mainPrefs] objectForKey:@"enabled"] boolValue]; }
 
 - (NSDictionary *)appStatus { return [[self mainPrefs] objectForKey:@"appStatus"] ?: @{}; }
 
 - (void)setAppStatusValue:(BOOL)value forBundleId:(NSString *)bundleId {
     if (!bundleId) return;
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:kMainPrefsPath] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()] ?: [NSMutableDictionary dictionary];
     NSMutableDictionary *appSt = [NSMutableDictionary dictionaryWithDictionary:[prefs objectForKey:@"appStatus"] ?: @{}];
     [appSt setObject:@(value) forKey:bundleId];
     [prefs setObject:appSt forKey:@"appStatus"];
-    [prefs writeToFile:kMainPrefsPath atomically:YES];
+    [prefs writeToFile:SGMainPrefsPath() atomically:YES];
 }
 
 - (void)removeAppStatusForBundleId:(NSString *)bundleId {
     if (!bundleId) return;
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:kMainPrefsPath] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()] ?: [NSMutableDictionary dictionary];
     NSMutableDictionary *appSt = [NSMutableDictionary dictionaryWithDictionary:[prefs objectForKey:@"appStatus"] ?: @{}];
     [appSt removeObjectForKey:bundleId];
     [prefs setObject:appSt forKey:@"appStatus"];
-    [prefs writeToFile:kMainPrefsPath atomically:YES];
+    [prefs writeToFile:SGMainPrefsPath() atomically:YES];
 }
 
 - (NSString *)serverAddressInput {
@@ -62,7 +71,7 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
 
 - (void)clearDNSCache {
     sqlite3 *db = NULL;
-    if (sqlite3_open([kDBPath UTF8String], &db) == SQLITE_OK) {
+    if (sqlite3_open([SGDBPath() UTF8String], &db) == SQLITE_OK) {
         sqlite3_exec(db, "DELETE FROM dns_cache;", NULL, NULL, NULL);
         sqlite3_close(db);
     }
@@ -70,7 +79,7 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
 
 - (void)clearAllTokens {
     sqlite3 *db = NULL;
-    if (sqlite3_open([kDBPath UTF8String], &db) == SQLITE_OK) {
+    if (sqlite3_open([SGDBPath() UTF8String], &db) == SQLITE_OK) {
         sqlite3_exec(db, "DELETE FROM notifications;", NULL, NULL, NULL);
         sqlite3_close(db);
     }
@@ -78,13 +87,13 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
 
 - (void)setMainPrefValue:(id)value forKey:(NSString *)key {
     if (!key) return;
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:kMainPrefsPath] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()] ?: [NSMutableDictionary dictionary];
     if (value) [prefs setObject:value forKey:key]; else [prefs removeObjectForKey:key];
-    [prefs writeToFile:kMainPrefsPath atomically:YES];
+    [prefs writeToFile:SGMainPrefsPath() atomically:YES];
 }
 
 // --- Profile ---
-- (NSDictionary *)profile { return [NSDictionary dictionaryWithContentsOfFile:kProfilePath] ?: @{}; }
+- (NSDictionary *)profile { return [NSDictionary dictionaryWithContentsOfFile:SGProfilePath()] ?: @{}; }
 - (NSString *)serverAddress   { return [[self profile] objectForKey:@"server_address"]; }
 - (NSString *)deviceAddress   { return [[self profile] objectForKey:@"device_address"]; }
 - (NSString *)serverPubKeyPEM { return [[self profile] objectForKey:@"server_pub_key"]; }
@@ -96,7 +105,7 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
     memset(&empty, 0, sizeof(empty));
     
     BOOL isEnabled = NO;
-    FILE *pidFile = fopen("/var/run/skyglow_daemon.pid", "r");
+    FILE *pidFile = fopen(SGPIDPath(), "r");
     if (pidFile) {
         int pid = 0;
         if (fscanf(pidFile, "%d", &pid) == 1 && pid > 0) {
@@ -114,7 +123,7 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strlcpy(addr.sun_path, SS_SOCKET_PATH, sizeof(addr.sun_path));
+    strlcpy(addr.sun_path, SGPocketPath(), sizeof(addr.sun_path));
 
     struct timeval tv = {0, 300000}; // 300ms timeout so the UI never freezes
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -154,17 +163,20 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
 }
 
 - (void)startWatchingDaemonStatus {
-    self.watchCount++;
-    if (self.watchCount > 1) return;
+    // Tear down any existing watcher first to prevent stacking
+    [self stopWatchingDaemonStatus];
     
+    // Always give the subscriber a fresh status immediately
     self.latestPayload = [self queryDaemonStatus];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
     
     self.isWatching = YES;
     self.watchSocketFD = -1;
+    self.watchGeneration++;
+    uint32_t myGen = self.watchGeneration; // Capture for this invocation
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        while (self.isWatching) {
+        while (self.isWatching && self.watchGeneration == myGen) {
             int fd = socket(AF_UNIX, SOCK_STREAM, 0);
             if (fd < 0) { sleep(1); continue; }
             self.watchSocketFD = fd;
@@ -172,35 +184,43 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
             struct sockaddr_un addr;
             memset(&addr, 0, sizeof(addr));
             addr.sun_family = AF_UNIX;
-            strlcpy(addr.sun_path, SS_SOCKET_PATH, sizeof(addr.sun_path));
+            strlcpy(addr.sun_path, SGPocketPath(), sizeof(addr.sun_path));
+            
+            // Connect timeout: 1s
+            struct timeval connectTv = {1, 0};
+            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &connectTv, sizeof(connectTv));
             
             if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
                 close(fd);
                 self.watchSocketFD = -1;
                 
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    BOOL isEnabled = NO;
-                    FILE *pidFile = fopen("/var/run/skyglow_daemon.pid", "r");
-                    if (pidFile) {
-                        int pid = 0;
-                        if (fscanf(pidFile, "%d", &pid) == 1 && pid > 0) {
-                            if (kill(pid, 0) == 0) isEnabled = YES;
+                // Post fallback status (disabled/starting based on PID)
+                if (self.watchGeneration == myGen) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        SGStatusPayload empty;
+                        memset(&empty, 0, sizeof(empty));
+                        BOOL isEnabled = NO;
+                        FILE *pidFile = fopen(SGPIDPath(), "r");
+                        if (pidFile) {
+                            int pid = 0;
+                            if (fscanf(pidFile, "%d", &pid) == 1 && pid > 0) {
+                                if (kill(pid, 0) == 0) isEnabled = YES;
+                            }
+                            fclose(pidFile);
                         }
-                        fclose(pidFile);
-                    }
-                    
-                    SGStatusPayload empty;
-                    memset(&empty, 0, sizeof(empty));
-                    empty.state = isEnabled ? SGStateStarting : SGStateDisabled;
-                    if (self.latestPayload.state != empty.state) {
+                        empty.state = isEnabled ? SGStateStarting : SGStateDisabled;
                         self.latestPayload = empty;
                         [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
-                    }
-                });
+                    });
+                }
                 
-                sleep(1);
+                sleep(2);
                 continue;
             }
+            
+            // Set read timeout AFTER connect so we don't block forever
+            struct timeval readTv = {5, 0};
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &readTv, sizeof(readTv));
             
             uint8_t mode = 0x57; // SS_MODE_WATCH
             if (write(fd, &mode, 1) != 1) {
@@ -210,72 +230,76 @@ static NSString *const kDBPath         = @"/var/mobile/Library/SkyglowNotificati
                 continue;
             }
             
-            while (self.isWatching) {
+            // Inner read loop: blocks until daemon pushes a status update
+            while (self.isWatching && self.watchGeneration == myGen) {
                 SGStatusPayload payload;
                 memset(&payload, 0, sizeof(payload));
                 ssize_t total = 0, remaining = sizeof(payload);
                 uint8_t *buf = (uint8_t *)&payload;
+                BOOL readError = NO;
                 
                 while (remaining > 0) {
                     ssize_t n = read(fd, buf + total, remaining);
-                    if (n <= 0) break;
-                    total += n;
-                    remaining -= n;
+                    if (n > 0) {
+                        total += n;
+                        remaining -= n;
+                    } else if (n == 0) {
+                        readError = YES;
+                        break;
+                    } else {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            readError = YES;
+                            break;
+                        } else if (errno == EINTR) {
+                            continue;
+                        } else {
+                            readError = YES;
+                            break;
+                        }
+                    }
                 }
                 
-                if (total == sizeof(payload)) {
+                if (readError) {
+                    if (self.watchGeneration == myGen) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            self.latestPayload = [self queryDaemonStatus];
+                            [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
+                        });
+                    }
+                    break;
+                }
+                
+                if (total == sizeof(payload) && self.watchGeneration == myGen) {
                     dispatch_async(dispatch_get_main_queue(), ^{
                         self.latestPayload = payload;
                         [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
                     });
-                } else {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        BOOL isEnabled = NO;
-                        FILE *pidFile = fopen("/var/run/skyglow_daemon.pid", "r");
-                        if (pidFile) {
-                            int pid = 0;
-                            if (fscanf(pidFile, "%d", &pid) == 1 && pid > 0) {
-                                if (kill(pid, 0) == 0) isEnabled = YES;
-                            }
-                            fclose(pidFile);
-                        }
-                        
-                        SGStatusPayload empty;
-                        memset(&empty, 0, sizeof(empty));
-                        empty.state = isEnabled ? SGStateStarting : SGStateDisabled;
-                        if (self.latestPayload.state != empty.state) {
-                            self.latestPayload = empty;
-                            [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
-                        }
-                    });
-                    break;
                 }
             }
             
             close(fd);
             self.watchSocketFD = -1;
-            sleep(1);
+            // Brief pause before reconnecting to avoid tight loop
+            if (self.isWatching && self.watchGeneration == myGen) usleep(500000);
         }
     });
 }
 
 - (void)stopWatchingDaemonStatus {
-    self.watchCount--;
-    if (self.watchCount <= 0) {
-        self.watchCount = 0;
-        self.isWatching = NO;
-        if (self.watchSocketFD >= 0) {
-            close(self.watchSocketFD);
-            self.watchSocketFD = -1;
-        }
+    self.isWatching = NO;
+    if (self.watchSocketFD >= 0) {
+        // Shutdown + close unblocks the background read() immediately
+        shutdown(self.watchSocketFD, SHUT_RDWR);
+        close(self.watchSocketFD);
+        self.watchSocketFD = -1;
     }
 }
 
 // --- SQLite ---
 static sqlite3 *openDBReadOnly(void) {
     sqlite3 *db = NULL;
-    if (![[NSFileManager defaultManager] fileExistsAtPath:kDBPath]) return NULL;
-    if (sqlite3_open_v2([kDBPath UTF8String], &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+    if (![[NSFileManager defaultManager] fileExistsAtPath:SGDBPath()]) return NULL;
+    if (sqlite3_open_v2([SGDBPath() UTF8String], &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
         if (db) sqlite3_close(db);
         return NULL;
     }
@@ -338,13 +362,13 @@ static sqlite3 *openDBReadOnly(void) {
 }
 
 - (unsigned long long)dbFileSize {
-    return [[[NSFileManager defaultManager] attributesOfItemAtPath:kDBPath error:nil] fileSize];
+    return [[[NSFileManager defaultManager] attributesOfItemAtPath:SGDBPath() error:nil] fileSize];
 }
 
 - (void)removeAppFromDatabase:(NSString *)bundleId {
     if (!bundleId) return;
     sqlite3 *db = NULL;
-    if (sqlite3_open([kDBPath UTF8String], &db) == SQLITE_OK) {
+    if (sqlite3_open([SGDBPath() UTF8String], &db) == SQLITE_OK) {
         sqlite3_stmt *stmt = NULL;
         if (sqlite3_prepare_v2(db, "DELETE FROM notifications WHERE bundle_id = ?", -1, &stmt, NULL) == SQLITE_OK) {
             sqlite3_bind_text(stmt, 1, [bundleId UTF8String], -1, SQLITE_TRANSIENT);
@@ -419,11 +443,11 @@ static sqlite3 *openDBReadOnly(void) {
 // --- Unregistration ---
 - (void)unregisterDevice {
     // 1. Delete Profile Plist (Removes Device Address & Server Keys)
-    [[NSFileManager defaultManager] removeItemAtPath:kProfilePath error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:SGProfilePath() error:nil];
 
     // 2. Wipe cryptographic tokens and DNS, but KEEP appStatus in the main plist!
     sqlite3 *db = NULL;
-    if (sqlite3_open([kDBPath UTF8String], &db) == SQLITE_OK) {
+    if (sqlite3_open([SGDBPath() UTF8String], &db) == SQLITE_OK) {
         sqlite3_exec(db, "DELETE FROM notifications;", NULL, NULL, NULL);
         sqlite3_exec(db, "DELETE FROM dns_cache;", NULL, NULL, NULL);
     }
@@ -459,6 +483,7 @@ static sqlite3 *openDBReadOnly(void) {
         case SGStateError:             return @"Error";
         case SGStateStarting:          return @"Starting…";
         case SGStateShuttingDown:      return @"Shutting Down";
+        case SGStateRegistering:       return @"Registering…";
         default:                       return @"Unknown";
     }
 }
@@ -466,7 +491,7 @@ static sqlite3 *openDBReadOnly(void) {
 - (UIColor *)colorForState:(SGState)state {
     switch (state) {
         case SGStateConnected: return [UIColor colorWithRed:0.2 green:0.7 blue:0.2 alpha:1.0];
-        case SGStateConnecting: case SGStateAuthenticating: case SGStateResolvingDNS: case SGStateBackingOff: return [UIColor orangeColor];
+        case SGStateConnecting: case SGStateAuthenticating: case SGStateResolvingDNS: case SGStateBackingOff: case SGStateRegistering: return [UIColor orangeColor];
         case SGStateIdleNoNetwork: case SGStateIdleCircuitOpen: case SGStateIdleDNSFailed: return [UIColor colorWithRed:0.9 green:0.6 blue:0.1 alpha:1.0];
         case SGStateErrorAuth: case SGStateErrorBadConfig: case SGStateError: return [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:1.0];
         default: return [UIColor grayColor];

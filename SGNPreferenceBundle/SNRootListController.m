@@ -59,17 +59,11 @@
 }
 
 - (void)reloadDaemon {
-    NSString *path = [[NSBundle bundleForClass:[self class]] pathForResource:@"sndrestart" ofType:nil];
-    if (!path) return;
-    
-    pid_t pid = 0;
-    const char *cpath = [path fileSystemRepresentation];
-    char *const args[] = { (char *)cpath, NULL };
-    extern char **environ;
-    
-    if (posix_spawn(&pid, cpath, NULL, NULL, args, environ) == 0) {
-        waitpid(pid, NULL, 0);
-    }
+    // Send the signal to SpringBoard
+    CFNotificationCenterPostNotificationWithOptions(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFSTR("com.skyglow.sgn.trigger_restart"), // Must match the listener exactly
+        NULL, NULL, kCFNotificationDeliverImmediately);
 }
 
 - (void)pushDebugView {

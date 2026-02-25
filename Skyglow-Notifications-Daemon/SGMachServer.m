@@ -1,6 +1,7 @@
 #import "SGMachServer.h"
 #import "SGTokenManager.h"
 #import "SGDatabaseManager.h"
+#import "SGConfiguration.h"
 #import "SGMachProtocol.h"
 #include <bootstrap.h>
 #include <string.h>
@@ -103,13 +104,20 @@ kern_return_t SGMach_SendPushToAppTopic(NSString *topic, NSDictionary *payload) 
     
     SGMachTokenResponseMessage response;
     memset(&response, 0, sizeof(response));
-    response.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND, 0); // Fix: Correct right from MOVE_SEND_ONCE to MOVE_SEND
+    response.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
     response.header.msgh_size = sizeof(SGMachTokenResponseMessage);
     response.header.msgh_remote_port = request->header.msgh_remote_port;
     response.header.msgh_id = request->header.msgh_id + 100;
 
+    NSData *token = nil;
     NSError *error = nil;
-    NSData *token = [_tokenManager synchronizedTokenForBundleIdentifier:bundleID error:&error];
+    
+    // Explicitly reject requests if the daemon is disabled in Settings
+    if (![[SGConfiguration sharedConfiguration] isEnabled]) {
+        error = [NSError errorWithDomain:@"com.skyglow.mach" code:503 userInfo:@{NSLocalizedDescriptionKey: @"Daemon is explicitly disabled in Settings"}];
+    } else {
+        token = [_tokenManager synchronizedTokenForBundleIdentifier:bundleID error:&error];
+    }
 
     if (token) {
         response.type = SG_MACH_MSG_RESPONSE_TOKEN;
@@ -121,7 +129,6 @@ kern_return_t SGMach_SendPushToAppTopic(NSString *topic, NSDictionary *payload) 
         strlcpy(response.error, desc ? desc : "Unknown Hardware Token Generator Error", sizeof(response.error));
     }
 
-    // Fix: Timeout after 500ms and gracefully drop response if SpringBoard IPC hangs
     mach_msg(&response.header, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof(response), 0, MACH_PORT_NULL, 500, MACH_PORT_NULL);
     [bundleID release];
 }

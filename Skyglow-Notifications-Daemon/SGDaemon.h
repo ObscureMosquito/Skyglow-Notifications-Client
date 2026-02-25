@@ -8,26 +8,48 @@
 // --- State Machine Timing Constants ---
 #define SG_INITIAL_BACKOFF_SECONDS        2
 #define SG_MAX_BACKOFF_SECONDS            600
-#define SG_MAX_CONSECUTIVE_FAILURES       12
+#define SG_MAX_CONSECUTIVE_FAILURES       14    // ~67 min total retry then stop
 #define SG_MAX_JITTER_SECONDS             5
 #define SG_AUTH_FAILURE_BACKOFF_SECONDS   30
-#define SG_CIRCUIT_OPEN_WAIT_SECONDS      300
+
+typedef NS_ENUM(NSInteger, SGEvent) {
+    // External Triggers
+    SGEventStartRequested,
+    SGEventStopRequested,
+    SGEventConfigReloaded,
+    SGEventNetworkUp,
+    SGEventNetworkDown,
+    
+    // Asynchronous Internal Results
+    SGEventDNSResolved,       // Payload: NSDictionary with IP/Port
+    SGEventDNSFailed,
+    SGEventConnectSuccess,
+    SGEventConnectFailed,
+    SGEventAuthSuccess,
+    SGEventAuthFailed,        // Payload: NSNumber (retryAfter)
+    SGEventReplaced,          // Payload: NSNumber (retryAfter)
+    SGEventDisconnected,      // Socket closed or EOF
+    
+    // Timers
+    SGEventBackoffTimerFired
+};
 
 // --- Darwin Notifications ---
 #define kSGConfigurationDidUpdateNotification "com.skyglow.sgn.reload_config"
 
 @interface SGDaemon : NSObject <SGProtocolDelegate>
 
-/**
- * Starts the primary connection and message processing loop.
- * This method blocks and should be called on a background thread.
- */
-- (void)runPrimaryConnectionLoop;
+- (void)start;
 
 /**
  * Signals the daemon that network reachability has changed.
  */
 - (void)systemNetworkReachabilityDidChangeWithWWANStatus:(BOOL)isWWAN;
+
+/**
+ * Signals the daemon that the network has dropped completely.
+ */
+- (void)systemNetworkDidDrop;
 
 /**
  * Triggers a reload of the configuration and forces a reconnection if needed.
@@ -38,13 +60,6 @@
  * Requests a graceful disconnection and loop termination.
  */
 - (void)requestGracefulDisconnect;
-
-// --- FSM Transitions ---
-
-- (void)transitionToState:(SGState)newState;
-- (void)transitionToState:(SGState)newState 
-           backoffSeconds:(uint32_t)backoff 
-                 serverIP:(const char *)ip;
 
 @end
 

@@ -4,24 +4,28 @@
 #include <openssl/pem.h>
 #include <openssl/evp.h>
 #include <openssl/kdf.h>
+#include <openssl/err.h>
 
 RSA *SG_CryptoGetClientPrivateKey(void) {
-    NSString *plistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist";
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
-    if (!prefs) return NULL;
+    NSString *keyString = [[SGConfiguration sharedConfiguration] privateKeyPEM];
+    if (!keyString || keyString.length == 0) return NULL;
 
-    id keyObj = prefs[@"privateKey"];
-    if (![keyObj isKindOfClass:[NSString class]] || [keyObj length] == 0) {
-        return NULL;
-    }
-    NSString *keyString = (NSString *)keyObj;
-
-    BIO *bio = BIO_new_mem_buf((void *)[keyString UTF8String], -1);
+    const char *utf8Key = [keyString UTF8String];
+    BIO *bio = BIO_new_mem_buf((void *)utf8Key, (int)strlen(utf8Key));
     if (!bio) return NULL;
 
     RSA *key = PEM_read_bio_RSAPrivateKey(bio, NULL, NULL, NULL);
+    if (!key) {
+        NSLog(@"[SGCryptoEngine] OpenSSL Failed to read PEM RSA Private Key!");
+        unsigned long openSslErr;
+        while ((openSslErr = ERR_get_error()) != 0) {
+            char errBuf[256];
+            ERR_error_string_n(openSslErr, errBuf, sizeof(errBuf));
+            NSLog(@"[SGCryptoEngine] OpenSSL Error: %s", errBuf);
+        }
+    }
+    
     BIO_free(bio);
-
     return key;
 }
 

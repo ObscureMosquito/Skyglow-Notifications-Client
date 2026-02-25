@@ -1,5 +1,5 @@
-TARGET := iphone:clang:16.5:16.5
-ARCHS = armv7 arm64 arm64e
+TARGET := iphone:clang:6.0:6.0
+ARCHS = armv7
 
 include $(THEOS)/makefiles/common.mk
 
@@ -33,15 +33,6 @@ SkyglowNotificationsDaemon_LIBRARIES += sqlite3
 include $(THEOS_MAKE_PATH)/tool.mk
 
 SUBPROJECTS += SGNPreferenceBundle
-#SUBPROJECTS += SGNSpringboard
+SUBPROJECTS += SGNSpringboard
 SUBPROJECTS += SGNSettings
 include $(THEOS_MAKE_PATH)/aggregate.mk
-
-TOOL_NAME = sgn_test_token
-
-sgn_test_token_FILES = sgn_test_token.m
-sgn_test_token_FRAMEWORKS = Foundation
-sgn_test_token_INSTALL_PATH = /usr/local/bin
-sgn_test_token_CODESIGN_FLAGS = -S
-
-include $(THEOS_MAKE_PATH)/tool.mk

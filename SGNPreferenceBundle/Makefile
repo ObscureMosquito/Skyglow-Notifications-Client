@@ -1,4 +1,4 @@
-TARGET := iphone:clang:16.5:16.5
+TARGET := iphone:clang:16.5:6.0
 ARCHS = armv7 arm64 arm64e
 
 include $(THEOS)/makefiles/common.mk
@@ -30,7 +30,7 @@ TOOL_NAME = sndrestart
 
 sndrestart_FILES = sndrestart.c
 sndrestart_INSTALL_PATH = /Library/PreferenceBundles/SGNPreferenceBundle.bundle
-sndrestart_CODESIGN_FLAGS = -S
+sndrestart_CODESIGN_FLAGS = -S../entitlements.plist
 
 include $(THEOS_MAKE_PATH)/tool.mk
 

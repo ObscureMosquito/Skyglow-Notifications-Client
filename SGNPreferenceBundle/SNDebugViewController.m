@@ -94,7 +94,7 @@ typedef enum {
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch ((DebugSection)section) {
-        case SectionManualReg:   return 3; // TextField + Register Button + Test Notif Button
+        case SectionManualReg:   return 2; // TextField + Register Button
         case SectionSavedTokens: return _savedApps.count > 0 ? _savedApps.count : 1;
         case SectionStats:       return 2;
         case SectionDaemon:      return 1;
@@ -134,8 +134,13 @@ typedef enum {
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                               reuseIdentifier:inputCellID];
-                UITextField *tf = [[UITextField alloc] initWithFrame:CGRectInset(cell.contentView.bounds, 15, 0)];
+                // Use a fixed height and let autoresizing handle width.
+                // CGRectInset(contentView.bounds) is unreliable on iOS 6
+                // because bounds aren't finalized at cell init time.
+                CGFloat cellH = 44.0;
+                UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(15, 0, 290, cellH)];
                 tf.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+                tf.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
                 tf.placeholder = @"com.example.app";
                 tf.textAlignment = NSTextAlignmentCenter;
                 tf.autocorrectionType = UITextAutocorrectionTypeNo;
@@ -159,7 +164,7 @@ typedef enum {
                 cell.textLabel.text = @"Register Bundle ID";
                 // Standard iOS blue
                 cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
-            } else if (indexPath.row == 2) { 
+            } /*else if (indexPath.row == 2) { 
                 // Only configure visuals here!
                 cell.textLabel.text = @"Send Test Notification";
                 if ([UIColor respondsToSelector:@selector(systemPurpleColor)]) {
@@ -167,7 +172,7 @@ typedef enum {
                 } else {
                     cell.textLabel.textColor = [UIColor purpleColor];
                 }
-            }
+            }*/
             
             return cell;
         }
@@ -275,6 +280,10 @@ typedef enum {
             [self showAlert:@"Request Sent"
                     message:[NSString stringWithFormat:@"Registration request for '%@' sent to SpringBoard.", bundleID]];
             _manualBundleIDParams.text = @"";
+            
+            // Auto-refresh the list so the new entry appears immediately
+            [self loadStats];
+            [self.tableView reloadData];
             
         } else if (indexPath.row == 2) { // Test Notification Button
             

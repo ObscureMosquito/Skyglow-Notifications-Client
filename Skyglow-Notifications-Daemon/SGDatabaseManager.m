@@ -2,6 +2,8 @@
 #import "SGConfiguration.h"
 #import "SGProtocolHandler.h"
 #include <sqlite3.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 @implementation SGDatabaseManager {
     sqlite3 *_database;
@@ -22,15 +24,24 @@
         _databaseQueue = dispatch_queue_create("com.skyglow.database.queue", DISPATCH_QUEUE_SERIAL);
 
         NSString *dbPath = @"/var/mobile/Library/SkyglowNotifications/sqlite.db";
+        NSString *dbDir = [dbPath stringByDeletingLastPathComponent];
         NSFileManager *fm = [NSFileManager defaultManager];
-        [fm createDirectoryAtPath:[dbPath stringByDeletingLastPathComponent]
+        [fm createDirectoryAtPath:dbDir
       withIntermediateDirectories:YES attributes:nil error:NULL];
+
+        // Ensure Settings.app (running as mobile/501) can read the DB
+        chmod([dbDir UTF8String], 0755);
+        chown([dbDir UTF8String], 501, 501);
 
         if (sqlite3_open([dbPath UTF8String], &_database) != SQLITE_OK) {
             NSLog(@"[SGDatabaseManager] Failed to open database at %@", dbPath);
             [self release];
             return nil;
         }
+
+        // Make the DB file readable by mobile
+        chmod([dbPath UTF8String], 0644);
+        chown([dbPath UTF8String], 501, 501);
 
         sqlite3_exec(_database, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
 
@@ -185,6 +196,22 @@
         }
     });
     return results;
+}
+
+- (NSSet *)registeredBundleIdentifiers {
+    __block NSMutableSet *ids = [NSMutableSet set];
+    dispatch_sync(_databaseQueue, ^{
+        const char *sql = "SELECT DISTINCT bundle_id FROM notifications";
+        sqlite3_stmt *stmt;
+        if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                const char *bID = (const char *)sqlite3_column_text(stmt, 0);
+                if (bID) [ids addObject:[NSString stringWithUTF8String:bID]];
+            }
+            sqlite3_finalize(stmt);
+        }
+    });
+    return ids;
 }
 
 // ── DNS & ACK Synchronization ──────────────────────────────────────
