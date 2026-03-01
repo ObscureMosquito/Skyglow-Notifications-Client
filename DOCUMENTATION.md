@@ -1,21 +1,19 @@
 # Skyglow Notifications Protocol Specification
 
-**Version:** 1.0.0  
-**Last Updated:** February 2026
+**Version:** 2 (`SGP_VERSION = 0x02`)  
+**Last Updated:** March 2026
 
 ---
 
 ## 1. Overview
 
-Skyglow Notifications (SGN) is a decentralized push notification protocol designed as an alternative to Apple Push Notification Service (APNS). It enables third-party notification delivery to iOS devices via a persistent TLS connection between a client daemon and a server.
+Skyglow Notifications (SGN) is a decentralized push notification system designed as an alternative to Apple Push Notification Service (APNS). It enables third-party notification delivery to iOS devices via a persistent TLS connection between a client daemon and a server.
 
 The system consists of three layers:
 
 1. **Service Discovery** — DNS TXT record resolution to locate the server
-2. **TCP Protocol** — A persistent TLS connection carrying length-prefixed binary plist messages for authentication, notification delivery, and device token management
-3. **HTTP API** — Used during initial device registration and by notification senders to submit push messages (out of scope for this document)
-
-The protocol is designed to be lightweight, suitable for low-power devices (including iOS 6 era hardware), and supports end-to-end encryption of notification payloads.
+2. **Binary TCP Protocol** — A persistent TLS connection carrying length-prefixed binary frames for authentication, notification delivery, and device token management
+3. **HTTP API** — Used during initial device discovery by notification senders to submit push messages (out of scope for this document)
 
 ---
 
@@ -27,19 +25,15 @@ Each SGN server has a **server address** — a domain string of **at most 16 cha
 
 ### 2.2. DNS TXT Record Resolution
 
-The client resolves the server's IP address and port at startup via DNS TXT records. The resolution tries multiple record names in priority order:
+The client resolves the server's IP address and port at startup via DNS TXT records. The DNS lookup prepends `_sgn.` to the server address:
 
-| Priority | DNS Name                          | Example                       |
-|----------|-----------------------------------|-------------------------------|
-| 1        | `_sgn.sgn.<server_address>`       | `_sgn.sgn.skyglow.es`        |
-| 2        | `_sgn._tcp.<server_address>`      | `_sgn._tcp.skyglow.es`       |
-| 3        | `_sgn.<server_address>`           | `_sgn.skyglow.es`            |
-
-The first record that returns results is used. Resolution stops after the first successful lookup.
+```
+_sgn.<server_address>     e.g. _sgn.skyglow.es
+```
 
 ### 2.3. TXT Record Format
 
-The TXT record contains space-separated key-value pairs:
+The TXT record contains space-separated `key=value` pairs:
 
 ```
 "tcp_addr=143.47.32.233 tcp_port=7373 http_addr=https://sgn.example.com"
@@ -47,15 +41,15 @@ The TXT record contains space-separated key-value pairs:
 
 | Key         | Description                                        | Required |
 |-------------|----------------------------------------------------|----------|
-| `tcp_addr`  | IPv4 address of the TCP protocol server             | Yes      |
-| `tcp_port`  | Port number of the TCP protocol server (TLS)        | Yes      |
-| `http_addr` | Base URL of the HTTP registration/push API          | No       |
+| `tcp_addr`  | IPv4 address of the TCP protocol server            | Yes      |
+| `tcp_port`  | Port number of the TCP protocol server (TLS)       | Yes      |
+| `http_addr` | Base URL of the HTTP registration/push API         | No       |
 
 **Important:** `tcp_port` must point to the TLS-enabled TCP protocol listener, **not** the HTTP API port. These are distinct services running on different ports.
 
 ### 2.4. DNS Caching
 
-Clients SHOULD cache resolved DNS records locally (e.g., in SQLite) and use cached values on subsequent startups. A cache TTL of **1 hour** is recommended. The cache should be refreshed in the background after a successful connection.
+Clients cache resolved DNS records locally (SQLite) and use cached values on subsequent startups. The cache TTL is **1 hour** (3600 seconds). The cache is refreshed asynchronously in the background after a successful connection.
 
 ---
 
@@ -63,187 +57,266 @@ Clients SHOULD cache resolved DNS records locally (e.g., in SQLite) and use cach
 
 ### 3.1. TLS Connection
 
-All TCP protocol communication occurs over a TLS connection. The server uses a **self-signed X.509 certificate**. The client receives the server's public certificate during initial HTTP registration (stored locally) and uses **certificate pinning** — only the pinned certificate is trusted.
+All TCP protocol communication occurs over a TLS connection. The server uses a self-signed X.509 certificate. The client receives the server's public certificate during initial HTTP registration (stored locally) and uses **certificate pinning** — only the pinned certificate is trusted.
 
-- **Protocol:** TLS 1.0+ (SSLv2 and SSLv3 MUST be disabled)
+- **Protocol:** TLS 1.2+ (SSLv2, SSLv3, TLS 1.0, and TLS 1.1 are explicitly disabled)
 - **Certificate validation:** Pinned server certificate only
 - **Connection model:** Single persistent long-lived connection; client reconnects with exponential backoff on failure
+- **TCP_NODELAY:** Enabled on the socket
+- **Socket timeouts:** 10 seconds for both send and receive
+- **SIGPIPE:** Must be ignored (`SIG_IGN`) to prevent process termination
 
-### 3.2. Message Framing
+### 3.2. Frame Format
 
-All messages in both directions use identical framing:
+All messages in both directions use identical binary framing:
 
 ```
-┌──────────────────┬──────────────────────────────┐
-│  Length (4 bytes) │  Payload (N bytes)           │
-│  big-endian u32  │  Binary plist                │
-└──────────────────┴──────────────────────────────┘
+┌────────┬─────────┬──────┬──────────┬──────────────────┬──────────────────────────────┐
+│ Byte 0 │ Byte 1  │ Byte 2│ Byte 3  │ Bytes 4-7        │ Bytes 8+                     │
+│ Magic  │ Version │ Type │ Reserved │ Payload Length   │ Payload                      │
+│ 0x53   │ 0x02    │ u8   │ 0x00     │ big-endian u32   │ N bytes                      │
+└────────┴─────────┴──────┴──────────┴──────────────────┴──────────────────────────────┘
 ```
 
-1. **Length prefix:** 4 bytes, unsigned 32-bit integer in **network byte order** (big-endian), containing the byte length of the payload that follows.
-2. **Payload:** An Apple Binary Property List (`bplist00` format, aka `NSPropertyListBinaryFormat_v1_0`). The root object is always a **dictionary**.
+| Field          | Size    | Description                                               |
+|----------------|---------|-----------------------------------------------------------|
+| Magic          | 1 byte  | Always `0x53` (ASCII `S`)                                 |
+| Version        | 1 byte  | Protocol version, currently `0x02`                        |
+| Type           | 1 byte  | Message type identifier (see Section 4)                   |
+| Reserved       | 1 byte  | Must be `0x00`. Non-zero values cause a protocol error.   |
+| Payload Length | 4 bytes | Unsigned 32-bit integer, **big-endian** (network order)   |
+| Payload        | N bytes | Type-specific binary data. Max `4096` bytes.              |
 
-Every message dictionary MUST contain a `$type` key (integer) indicating the message type. Additional keys depend on the message type.
+**Header size:** 8 bytes fixed.  
+**Maximum payload:** 4096 bytes (`SGP_MAX_PAYLOAD_LEN`).
 
-### 3.3. Plist Serialization
+### 3.3. Byte Order
 
-The wire format uses Apple's Binary Property List format (magic bytes `bplist00`). Implementations on non-Apple platforms must use a compatible binary plist serializer/deserializer. The following plist value types are used in this protocol:
-
-| Plist Type | Usage                                           |
-|------------|-------------------------------------------------|
-| Integer    | `$type` field, status codes, numeric values     |
-| String     | Addresses, nonces, timestamps, bundle IDs       |
-| Data       | Raw bytes (keys, tokens, ciphertext, IVs)       |
-| Boolean    | Flags such as `is_encrypted`                    |
-| Dictionary | Root object of every message, nested payloads   |
+All multi-byte integers in payloads are encoded in **big-endian** (network byte order). This applies to:
+- The 4-byte payload length in the header
+- All `int64_t` timestamps and sequence numbers (8 bytes)
+- All `uint32_t` version numbers and data lengths (4 bytes)
+- All `uint16_t` string lengths (2 bytes)
 
 ---
 
 ## 4. Message Types
 
-### 4.1. Server → Client Messages
+### 4.1. Server → Client Messages (`0x1_`)
 
-| `$type` | Name                       | Description                                  |
-|---------|----------------------------|----------------------------------------------|
-| 0       | Hello                      | Server greeting after TLS handshake          |
-| 1       | LoginChallenge             | RSA-encrypted challenge for authentication   |
-| 2       | ReceiveNotification        | Incoming push notification                   |
-| 3       | AuthenticationSuccessful   | Login completed successfully                 |
-| 4       | ServerDisconnect           | Server is closing the connection             |
-| 5       | DeviceTokenRegisterAck     | Acknowledgment of device token registration  |
+| Type   | Name              | Description                                          |
+|--------|-------------------|------------------------------------------------------|
+| `0x10` | S_HELLO           | Server greeting after TLS handshake                  |
+| `0x11` | S_CHALLENGE       | Authentication challenge nonce                       |
+| `0x12` | S_AUTH_OK         | Authentication successful                            |
+| `0x13` | S_NOTIFY          | Incoming push notification                           |
+| `0x14` | S_DISCONNECT      | Server is closing the connection                     |
+| `0x15` | S_TOKEN_ACK       | Acknowledgment of device token registration          |
+| `0x16` | S_PONG            | Response to client keep-alive ping                   |
+| `0x17` | S_POLL_DONE       | All offline messages have been delivered              |
+| `0x18` | S_REGISTER_OK     | First-time device registration succeeded             |
+| `0x19` | S_REGISTER_FAIL   | First-time device registration failed                |
+| `0x1A` | S_PING            | Server-initiated keep-alive ping                     |
+| `0x1B` | S_TIME_SYNC       | Clock synchronization message                        |
 
-### 4.2. Client → Server Messages
+### 4.2. Client → Server Messages (`0x2_`)
 
-| `$type` | Name                       | Description                                  |
-|---------|----------------------------|----------------------------------------------|
-| 0       | LoginRequest               | Initial login with address and version       |
-| 1       | LoginChallengeResponse     | Response to the server's challenge           |
-| 2       | PollUnackedNotifications   | Request re-delivery of missed notifications  |
-| 3       | AckNotification            | Acknowledge receipt of a notification        |
-| 4       | ClientDisconnect           | Client is closing the connection             |
-| 5       | RegisterDeviceToken        | Register a routing key for an app            |
-| 6       | SendFeedback               | Report a token as invalid / unsubscribe      |
+| Type   | Name              | Description                                          |
+|--------|-------------------|------------------------------------------------------|
+| `0x20` | C_LOGIN           | Login handshake initiation                           |
+| `0x21` | C_LOGIN_RESP      | Response to authentication challenge                 |
+| `0x22` | C_POLL            | Request offline (undelivered) notifications          |
+| `0x23` | C_ACK             | Acknowledge receipt of a notification                |
+| `0x24` | C_DISCONNECT      | Client is closing the connection                     |
+| `0x25` | C_REG_TOKEN       | Register a device token (routing key) for an app     |
+| `0x27` | C_PING            | Client-initiated keep-alive ping                     |
+| `0x28` | C_REGISTER        | First-time device registration request               |
+| `0x29` | C_REGISTER_RESP   | Response to first-time registration challenge        |
+| `0x2A` | C_PONG            | Response to server keep-alive ping                   |
+| `0x2B` | C_FILTER          | Active routing key filter (chunked)                  |
 
 ---
 
-## 5. Authentication Flow
+## 5. First-Time Device Registration
 
-Authentication uses a **challenge-response** scheme with RSA public-key cryptography. The client possesses an RSA private key; the server holds the corresponding public key (exchanged during initial HTTP registration).
+Before a device can authenticate, it must register with the server to obtain an identity. This is a one-time process.
 
-### 5.1. Sequence Diagram
+### 5.1. Sequence
 
 ```
 Client                                              Server
   │                                                    │
-  │◄───────────── [S→C type 0] Hello ─────────────────│
+  │──────────── [C_REGISTER 0x28] ────────────────────►│
+  │  { address, public_key_DER, timestamp, version }   │
   │                                                    │
-  │────────────── [C→S type 0] LoginRequest ──────────►│
-  │  { address, version, lang }                        │
+  │◄───────────── [S_CHALLENGE 0x11] ─────────────────│
+  │  { 32-byte nonce }                                 │
   │                                                    │
-  │◄───────────── [S→C type 1] LoginChallenge ────────│
-  │  { challenge: RSA_OAEP(address,nonce,ts) }         │
+  │──────────── [C_REGISTER_RESP 0x29] ───────────────►│
+  │  { timestamp, RSA-PSS signature }                  │
   │                                                    │
-  │────────────── [C→S type 1] LoginChallengeResponse ►│
-  │  { nonce, timestamp }                              │
+  │◄─────── [S_REGISTER_OK 0x18] or [S_REGISTER_FAIL] │
   │                                                    │
-  │◄───────────── [S→C type 3] AuthenticationSuccessful│
+```
+
+### 5.2. C_REGISTER (0x28) Payload
+
+| Offset | Size         | Field          | Description                                    |
+|--------|--------------|----------------|------------------------------------------------|
+| 0      | 2            | addr_len       | Length of the device address string (BE u16)    |
+| 2      | addr_len     | address        | UUID-formatted device address (UTF-8)          |
+| 2+AL   | 2            | pubkey_len     | Length of DER-encoded public key (BE u16)       |
+| 4+AL   | pubkey_len   | public_key     | RSA-2048 public key in DER format (`i2d_RSA_PUBKEY`) |
+| 4+AL+PL| 8            | timestamp      | Current Unix time, corrected for clock skew (BE i64) |
+| 12+AL+PL| 4           | version        | Protocol version `0x02` (BE u32)               |
+
+The client generates:
+- A **UUID v4** as the device address
+- An **RSA-2048** keypair — the public key is sent to the server, the private key is stored locally
+
+### 5.3. S_REGISTER_OK (0x18) Payload
+
+| Offset | Size | Field          | Description                                |
+|--------|------|----------------|--------------------------------------------|
+| 0      | 4    | server_version | Server's protocol version (BE u32)         |
+
+### 5.4. S_REGISTER_FAIL (0x19) Payload
+
+| Offset | Size       | Field      | Description                         |
+|--------|------------|------------|-------------------------------------|
+| 0      | 1          | code       | Rejection reason code (u8)          |
+| 1      | 2          | reason_len | Length of reason string (BE u16)    |
+| 3      | reason_len | reason     | Human-readable rejection reason (UTF-8) |
+
+---
+
+## 6. Authentication Flow
+
+Authentication uses an **RSA-PSS challenge-response** scheme. The client possesses an RSA-2048 private key; the server holds the corresponding public key (exchanged during registration).
+
+### 6.1. Sequence
+
+```
+Client                                              Server
   │                                                    │
-  │────────────── [C→S type 2] PollUnackedNotifications►
-  │  { }                                               │
+  │◄───────────── [S_HELLO 0x10] ─────────────────────│
+  │  { server_version }                                │
+  │                                                    │
+  │──────────── [C_LOGIN 0x20] ───────────────────────►│
+  │  { address, timestamp, version }                   │
+  │                                                    │
+  │◄───────────── [S_CHALLENGE 0x11] ─────────────────│
+  │  { 32-byte nonce }                                 │
+  │                                                    │
+  │──────────── [C_LOGIN_RESP 0x21] ──────────────────►│
+  │  { timestamp, RSA-PSS signature }                  │
+  │                                                    │
+  │◄───────────── [S_AUTH_OK 0x12] ───────────────────│
+  │                                                    │
+  │──────────── [C_FILTER 0x2B] ──────────────────────►│
+  │──────────── [C_POLL 0x22] ────────────────────────►│
   │                                                    │
   ▼                                                    ▼
        (persistent bidirectional connection)
 ```
 
-### 5.2. Hello (Server → Client, type 0)
+### 6.2. S_HELLO (0x10) Payload
 
-Sent by the server immediately after the TLS handshake completes. Signals that the server is ready to receive a login request.
+| Offset | Size | Field          | Description                    |
+|--------|------|----------------|--------------------------------|
+| 0      | 4    | server_version | Server's protocol version (BE u32) |
 
-**Fields:** Only `$type`.
+Sent by the server immediately after the TLS handshake completes.
 
-### 5.3. LoginRequest (Client → Server, type 0)
+### 6.3. C_LOGIN (0x20) Payload
 
-The client sends its identity and protocol metadata.
+| Offset | Size     | Field     | Description                                     |
+|--------|----------|-----------|-------------------------------------------------|
+| 0      | 2        | addr_len  | Length of address string (BE u16)                |
+| 2      | addr_len | address   | The client's registered UUID address (UTF-8)     |
+| 2+AL   | 8        | timestamp | Current Unix time, corrected for clock skew (BE i64) |
+| 10+AL  | 4        | version   | Protocol version `0x02` (BE u32)                 |
 
-| Key       | Type   | Description                                            |
-|-----------|--------|--------------------------------------------------------|
-| `address` | String | The client's registered address (e.g., `user@sgn.es`) |
-| `version` | String | Protocol version string (currently `"1.0.0"`)          |
-| `lang`    | String | BCP-47 language tag (e.g., `"en"`, `"es"`)             |
+### 6.4. S_CHALLENGE (0x11) Payload
 
-### 5.4. LoginChallenge (Server → Client, type 1)
+| Offset | Size | Field | Description                               |
+|--------|------|-------|-------------------------------------------|
+| 0      | 32   | nonce | Server-generated cryptographic nonce      |
 
-The server encrypts a challenge string with the client's **RSA public key** using **RSA-OAEP** padding and sends the ciphertext.
+The same S_CHALLENGE message type is used for both login and first-time registration flows.
 
-| Key         | Type | Description                        |
-|-------------|------|------------------------------------|
-| `challenge` | Data | RSA-OAEP encrypted challenge blob  |
+### 6.5. C_LOGIN_RESP (0x21) / C_REGISTER_RESP (0x29) Payload
 
-**Challenge plaintext format** — a comma-separated UTF-8 string:
+Both response types use the same payload format:
 
-```
-<address>,<nonce>,<timestamp>
-```
+| Offset | Size    | Field    | Description                                                |
+|--------|---------|----------|------------------------------------------------------------|
+| 0      | 8       | timestamp| The timestamp from the original C_LOGIN/C_REGISTER (BE i64)|
+| 8      | 2       | sig_len  | Length of RSA-PSS signature (BE u16)                       |
+| 10     | sig_len | signature| RSA-PSS-SHA256 signature (see 6.6)                        |
 
-| Field       | Description                                                  |
-|-------------|--------------------------------------------------------------|
-| `address`   | The client's address (MUST match what the client sent)       |
-| `nonce`     | A server-generated random string (opaque to the client)      |
-| `timestamp` | Unix epoch as a decimal string (seconds since 1970-01-01)    |
+### 6.6. RSA-PSS Signature Scheme
 
-### 5.5. LoginChallengeResponse (Client → Server, type 1)
+The client produces the signature as follows:
 
-The client decrypts the challenge using its **RSA private key** and validates:
+1. Compute `digest = SHA-256(nonce || address_utf8 || timestamp_be64)`
+2. Apply RSA-PSS padding with `SHA-256` as both the hash and MGF1 hash, salt length = hash length (32)
+3. Sign with `RSA_private_encrypt(padded_message, RSA_NO_PADDING)`
 
-1. The `address` field matches its own registered address
-2. The `timestamp` is within an acceptable window (RECOMMENDED: -5 minutes to +1 minute from current time)
+The server verifies this signature using the client's stored public key.
 
-If valid, the client echoes back the nonce and timestamp:
+### 6.7. S_AUTH_OK (0x12) Payload
 
-| Key         | Type   | Description                                |
-|-------------|--------|--------------------------------------------|
-| `nonce`     | String | The nonce extracted from the decrypted challenge |
-| `timestamp` | String | The timestamp extracted from the decrypted challenge |
+Empty payload (0 bytes). Confirms the client has authenticated.
 
-### 5.6. AuthenticationSuccessful (Server → Client, type 3)
+### 6.8. Clock Skew Correction
 
-Confirms the client has authenticated. No additional fields beyond `$type`.
-
-Upon receiving this message, the client SHOULD immediately send `PollUnackedNotifications` to retrieve any queued notifications.
+The server may send `S_TIME_SYNC (0x1B)` at any time, containing an 8-byte big-endian Unix timestamp. The client computes `offset = server_time - local_time` and applies this correction to all subsequent timestamps sent in C_LOGIN and C_REGISTER messages. This handles iOS devices with drifted clocks. The server's challenge window is **300 seconds** (`SGP_CHALLENGE_WINDOW_SEC`).
 
 ---
 
-## 6. Notification Delivery
+## 7. Notification Delivery
 
-### 6.1. ReceiveNotification (Server → Client, type 2)
+### 7.1. S_NOTIFY (0x13) Payload Layout
 
-| Key             | Type    | Presence          | Description                                        |
-|-----------------|---------|-------------------|----------------------------------------------------|
-| `routing_key`   | Data    | Always            | 32-byte routing key identifying the target app     |
-| `message_id`    | String  | Always            | Unique notification ID (UUID string)               |
-| `is_encrypted`  | Boolean | Always            | `true` if the payload uses E2EE                    |
-| `data`          | Dict    | When unencrypted  | The notification payload dictionary                |
-| `data_type`     | String  | When encrypted    | `"json"` or `"plist"` — serialization format       |
-| `ciphertext`    | Data    | When encrypted    | AES-256-GCM ciphertext with appended 16-byte tag   |
-| `iv`            | Data    | When encrypted    | AES-256-GCM initialization vector                  |
+```
+┌──────────────┬──────────┬──────┬────────────┬───────┬──────────────┬──────────┬──────────────┬──────────┐
+│ routing_key  │ msg_id   │ seq  │ expires_at │ flags │ content_type │ data_len │ data         │ [iv]     │
+│ 32 bytes     │ 16 bytes │ 8 B  │ 8 B        │ 1 B   │ 1 B          │ 4 B (BE) │ data_len B   │ 12 B     │
+└──────────────┴──────────┴──────┴────────────┴───────┴──────────────┴──────────┴──────────────┴──────────┘
+```
 
-### 6.2. Processing Steps
+| Offset | Size      | Field        | Description                                           |
+|--------|-----------|--------------|-------------------------------------------------------|
+| 0      | 32        | routing_key  | SHA-256 hash of the token secret K                    |
+| 32     | 16        | msg_id       | Unique notification ID (raw 16 bytes, UUID)           |
+| 48     | 8         | seq          | Server-assigned per-device sequence number (BE i64)   |
+| 56     | 8         | expires_at   | Expiration timestamp (BE i64), 0 = no expiry          |
+| 64     | 1         | flags        | Bit 0: `is_encrypted` (1 = E2EE payload)             |
+| 65     | 1         | content_type | Payload format identifier (see 7.4)                   |
+| 66     | 4         | data_len     | Length of the data field in bytes (BE u32)             |
+| 70     | data_len  | data         | Notification payload (plaintext or ciphertext+tag)    |
+| 70+DL  | 12        | iv           | AES-GCM IV (**only present when `is_encrypted = 1`**) |
+
+**Minimum payload size:** 70 bytes (empty data, unencrypted).
+
+### 7.2. Notification Processing
 
 1. Look up `routing_key` in the local database to find the associated **bundle ID** and **E2EE key**.
-2. If `is_encrypted` is `true`:
-   - Decrypt `ciphertext` using AES-256-GCM with the stored E2EE key and the provided `iv`. The last 16 bytes of the `ciphertext` field are the GCM authentication tag.
-   - Deserialize the plaintext according to `data_type` (`"json"` → JSON dictionary, `"plist"` → binary plist dictionary).
-3. If `is_encrypted` is `false`:
-   - Use `data` directly as the notification payload.
+2. If `is_encrypted` is set (flags & 0x01):
+   - The `data` field contains `ciphertext || 16-byte GCM auth tag`.
+   - Decrypt using AES-256-GCM with the stored E2EE key and the provided `iv`.
+   - The last 16 bytes of `data` are the GCM authentication tag.
+3. Parse the decrypted (or plaintext) data according to the content type (see 7.4).
 4. Deliver the payload to the target application (identified by bundle ID).
-5. Send an `AckNotification` message.
+5. Send a `C_ACK` message.
 
-### 6.3. AckNotification (Client → Server, type 3)
+### 7.3. C_ACK (0x23) Payload
 
-| Key            | Type    | Description                                |
-|----------------|---------|--------------------------------------------|
-| `notification` | String  | The `message_id` from the notification     |
-| `status`       | Integer | Processing result code (see below)         |
+| Offset | Size | Field    | Description                                |
+|--------|------|----------|--------------------------------------------|
+| 0      | 16   | msg_id   | The `msg_id` from the notification         |
+| 16     | 1    | status   | Processing result code (see below)         |
 
 **Status codes:**
 
@@ -253,120 +326,211 @@ Upon receiving this message, the client SHOULD immediately send `PollUnackedNoti
 | 1    | Decryption failure                  |
 | 2    | Deserialization failure             |
 
-### 6.4. PollUnackedNotifications (Client → Server, type 2)
+Acknowledgements are sent immediately if connected. If the connection is down, they are persisted to SQLite and flushed when the connection is restored.
 
-Requests the server to re-deliver any notifications not yet acknowledged. Typically sent immediately after authentication. Can be sent at any time.
+### 7.4. Content Type: TLV Payload Format
 
-**Fields:** Only `$type` (empty dictionary otherwise).
+Notification payloads use a **Type-Length-Value** encoding:
+
+```
+┌──────┬────────┬───────────────┐
+│ Type │ Length │ Value          │
+│ 1 B  │ 2 B   │ Length bytes   │  (repeating)
+└──────┴────────┴───────────────┘
+```
+
+| Type | Key           | Value Type | Description                  |
+|------|---------------|------------|------------------------------|
+| 0x01 | title        | UTF-8      | Notification title           |
+| 0x02 | body         | UTF-8      | Notification body text       |
+| 0x03 | sound        | UTF-8      | Sound name                   |
+| 0x04 | custom_data  | Raw bytes  | Application-specific data    |
+
+### 7.5. C_POLL (0x22) Payload
+
+| Offset | Size | Field    | Description                                              |
+|--------|------|----------|----------------------------------------------------------|
+| 0      | 8    | last_seq | Last delivered device sequence number (BE i64)           |
+
+Requests the server to re-deliver any notifications with a sequence number greater than `last_seq`. Typically sent immediately after authentication.
+
+### 7.6. S_POLL_DONE (0x17) Payload
+
+Empty payload (0 bytes). Signals that the server has finished delivering all queued offline messages.
 
 ---
 
-## 7. Device Token Management
+## 8. Device Token Management
 
-### 7.1. Concept
+### 8.1. Concept
 
 Each app that wishes to receive notifications needs a **device token**. This token is generated client-side, registered with the server, and then given to the app. The app passes this token to its backend service, which uses it (along with the SGN HTTP API) to send notifications.
 
-The device token is a 32-byte opaque blob that encodes the server address and a cryptographic secret.
-
-### 7.2. Token Generation Algorithm
+### 8.2. Token Generation Algorithm
 
 ```
-1.  K = SecureRandom(16)                // 16 cryptographically random bytes
+1.  K = SecureRandom(16)                     // 16 cryptographically random bytes
 
-2.  routing_key = SHA-256(K)            // 32 bytes
+2.  routing_key = SHA-256(K)                 // 32 bytes
 
 3.  salt = UTF8(server_address) + "Hello from the Skyglow Notifications developers!"
     e2ee_key = HKDF-SHA256(
-        key_material = K,
-        salt         = salt,
-        info         = <empty>,
+        key_material  = K,
+        salt          = salt,
+        info          = <empty>,
         output_length = 32
-    )                                    // 32 bytes
+    )                                         // 32 bytes
 
 4.  padded_addr = PadRight(UTF8(server_address), 16, 0x00)
-    device_token = padded_addr || K      // 32 bytes total
+    device_token = padded_addr || K           // 32 bytes total
 ```
 
 **Storage:**
 
 | What           | Stored Locally | Sent to Server | Given to App |
 |----------------|----------------|----------------|--------------|
-| `K`            | Indirectly (in token) | No       | Indirectly (in token) |
+| `K`            | Indirectly     | No             | Indirectly   |
 | `routing_key`  | Yes            | Yes            | No           |
 | `e2ee_key`     | Yes            | **No**         | No           |
 | `device_token` | Yes            | No             | **Yes**      |
 
-### 7.3. RegisterDeviceToken (Client → Server, type 5)
+### 8.3. C_REG_TOKEN (0x25) Payload
 
-Registers a routing key with the server for a given application bundle.
+| Offset | Size     | Field       | Description                                |
+|--------|----------|-------------|--------------------------------------------|
+| 0      | 32       | routing_key | SHA-256(K) — the 32-byte routing key       |
+| 32     | 2        | bid_len     | Length of bundle ID string (BE u16)        |
+| 34     | bid_len  | bundle_id   | Application bundle identifier (UTF-8)      |
 
-| Key                    | Type   | Description                                |
-|------------------------|--------|--------------------------------------------|
-| `deviceTokenChecksum`  | Data   | The 32-byte `routing_key` (= SHA-256 of K) |
-| `appBundleId`          | String | The application's bundle identifier        |
+The client blocks for up to **5 seconds** waiting for S_TOKEN_ACK before considering the registration failed.
 
-The client MUST wait for an acknowledgment before storing the token locally. If no ack is received within **5 seconds**, the registration is considered failed.
+### 8.4. S_TOKEN_ACK (0x15) Payload
 
-### 7.4. DeviceTokenRegisterAck (Server → Client, type 5)
+| Offset | Size     | Field       | Description                                |
+|--------|----------|-------------|--------------------------------------------|
+| 0      | 32       | routing_key | Echo of the registered routing key         |
+| 32     | 2        | bid_len     | Length of bundle ID string (BE u16)        |
+| 34     | bid_len  | bundle_id   | The bundle ID that was registered (UTF-8)  |
 
-| Key        | Type   | Description                        |
-|------------|--------|------------------------------------|
-| `bundleId` | String | The bundle ID that was registered  |
+### 8.5. C_FILTER (0x2B) Payload — Active Topic Filter
 
-### 7.5. SendFeedback (Client → Server, type 6)
+Sent after authentication to inform the server which routing keys the client is currently interested in. This allows the server to drop notifications for unsubscribed topics.
 
-Reports that a routing key is no longer valid (e.g., app uninstalled, user opted out).
+The filter is sent in chunks when there are too many keys for a single frame:
 
-| Key             | Type    | Description                          |
-|-----------------|---------|--------------------------------------|
-| `routing_token` | Data    | The 32-byte routing key to invalidate|
-| `type`          | Integer | Feedback type (currently always `0`) |
-| `reason`        | String  | Human-readable reason string         |
+| Offset | Size         | Field     | Description                                    |
+|--------|--------------|-----------|------------------------------------------------|
+| 0      | 1            | flags     | Bit 0: `has_more` (1 = more chunks follow)     |
+| 1      | 2            | count     | Number of routing keys in this chunk (BE u16)  |
+| 3      | count × 32   | keys      | Concatenated 32-byte routing keys              |
+
+Maximum keys per chunk: `(4096 - 3) / 32 = 127`.
 
 ---
 
-## 8. Connection Lifecycle
+## 9. Connection Lifecycle
 
-### 8.1. Disconnect Messages
+### 9.1. Keep-Alive Mechanism
 
-**ServerDisconnect** (Server → Client, type 4): The server is shutting down or evicting the client. The client should tear down the TLS session and reconnect with backoff.
+The protocol supports **bidirectional** keep-alive pings:
 
-**ClientDisconnect** (Client → Server, type 4): The client is intentionally disconnecting. No additional fields.
+**Client → Server (C_PING 0x27):**
 
-### 8.2. Reconnection Strategy
+| Offset | Size | Field | Description                                |
+|--------|------|-------|--------------------------------------------|
+| 0      | 8    | seq   | Monotonically increasing sequence number (BE i64) |
 
-Clients MUST implement **exponential backoff**:
+**Server → Client (S_PONG 0x16):**
+
+| Offset | Size | Field | Description                    |
+|--------|------|-------|--------------------------------|
+| 0      | 8    | seq   | Echo of the ping sequence      |
+
+**Server → Client (S_PING 0x1A):**
+
+| Offset | Size | Field | Description                    |
+|--------|------|-------|--------------------------------|
+| 0      | 8    | seq   | Server's sequence number       |
+
+**Client → Server (C_PONG 0x2A):**
+
+| Offset | Size | Field | Description                    |
+|--------|------|-------|--------------------------------|
+| 0      | 8    | seq   | Echo of the server's sequence  |
+
+The client uses an **adaptive keep-alive algorithm** with three stages:
+
+1. **Growth** — Interval increases until a ping fails
+2. **Steady** — Interval stabilizes at the maximum successful value
+3. **Backoff** — Interval decreases after failures
+
+**Pong timeout:** 15 seconds (`SGP_PONG_TIMEOUT_SEC`). If no S_PONG is received within this window, the connection is considered dead.
+
+### 9.2. Disconnect Messages
+
+**S_DISCONNECT (0x14):**
+
+| Offset | Size | Field       | Description                              |
+|--------|------|-------------|------------------------------------------|
+| 0      | 1    | reason      | Disconnect reason code (see below)       |
+| 1      | 4    | retry_after | Optional: seconds before reconnect (BE u32) |
+
+**C_DISCONNECT (0x24):**
+
+| Offset | Size | Field  | Description                    |
+|--------|------|--------|--------------------------------|
+| 0      | 1    | reason | Always `0x00` (normal)         |
+
+**Disconnect reason codes:**
+
+| Code   | Name            | Description                                      |
+|--------|-----------------|--------------------------------------------------|
+| `0x00` | NORMAL          | Graceful disconnect                              |
+| `0x01` | AUTH_FAIL       | Authentication failure                           |
+| `0x02` | PROTOCOL        | Protocol violation                               |
+| `0x03` | SERVER_ERR      | Internal server error                            |
+| `0x04` | REPLACED        | Another connection replaced this one             |
+
+If `retry_after` is present and non-zero, the client should wait at least that many seconds before reconnecting.
+
+### 9.3. Reconnection Strategy
+
+Clients implement **exponential backoff**:
 
 ```
 backoff = 1 second (initial)
+MAX_BACKOFF = 256 seconds
 
 loop:
     result = connect_and_authenticate()
     if result == success:
+        reset backoff to 1
         while handle_message() == success:
-            backoff = 1    // reset on healthy traffic
-        // message handling returned error
+            continue
     
     disconnect()
-    sleep(backoff)
-    backoff = min(backoff * 2, MAX_BACKOFF)   // MAX_BACKOFF = 256 seconds recommended
+    if server sent retry_after:
+        sleep(retry_after)
+    else:
+        sleep(backoff)
+        backoff = min(backoff * 2, MAX_BACKOFF)
 ```
 
-Additionally, clients SHOULD detect **rapid disconnection loops** (3+ disconnections within 10 seconds) and disable themselves to prevent resource exhaustion and server abuse.
+The client also detects **rapid disconnection loops** and disables itself to prevent resource exhaustion.
 
-### 8.3. Network Awareness
+### 9.4. S_TIME_SYNC (0x1B) Payload
 
-Clients SHOULD monitor network reachability and:
-- Attempt connection only when the network is reachable without requiring user interaction
-- Re-trigger the connection loop when connectivity is restored
-- Guard against multiple concurrent connection loops (e.g., one from initial startup, another from a reachability callback)
+| Offset | Size | Field       | Description                              |
+|--------|------|-------------|------------------------------------------|
+| 0      | 8    | server_time | Server's current Unix timestamp (BE i64) |
+
+The client computes `offset = server_time - local_time` and applies this correction to all timestamps in login/registration messages. This handles devices with unreliable NTP (e.g., iOS 3–5 era hardware).
 
 ---
 
-## 9. End-to-End Encryption
+## 10. End-to-End Encryption
 
-### 9.1. Key Derivation
+### 10.1. Key Derivation
 
 Both the sending service and the receiving client independently derive the same encryption key from the shared secret `K`:
 
@@ -374,47 +538,47 @@ Both the sending service and the receiving client independently derive the same 
 salt = UTF8(server_address) + "Hello from the Skyglow Notifications developers!"
 
 e2ee_key = HKDF-SHA256(
-    key_material  = K,                // 16 bytes
+    key_material  = K,         // 16 bytes, extracted from device_token[16:32]
     salt          = salt,
     info          = <empty>,
     output_length = 32
 )
 ```
 
-The sender extracts `K` from the device token (bytes 16–31) and the server address from bytes 0–15 (trimming trailing zero bytes).
+The sender extracts `K` from the device token (bytes 16–31) and the server address from bytes 0–15 (trimming trailing `0x00` bytes).
 
-### 9.2. Encryption (Sender Side)
+### 10.2. Encryption (Sender Side)
 
 ```
-iv = SecureRandom(12)    // 12-byte nonce
+iv = SecureRandom(12)     // 12-byte nonce
 
 ciphertext, tag = AES-256-GCM-Encrypt(
     key       = e2ee_key,
     iv        = iv,
-    plaintext = serialize(payload),   // JSON or binary plist
+    plaintext = TLV_serialize(payload),
     aad       = <none>
 )
 
-// Send to server:
-//   ciphertext_with_tag = ciphertext || tag    (tag is 16 bytes)
-//   iv                  = iv
-//   data_type           = "json" or "plist"
+// In the S_NOTIFY frame:
+//   data       = ciphertext || tag     (tag is 16 bytes)
+//   iv         = iv                    (12 bytes, appended after data)
+//   flags      = 0x01                  (is_encrypted = true)
 ```
 
-### 9.3. Decryption (Client Side)
+### 10.3. Decryption (Client Side)
 
 ```
-// ciphertext_with_tag has the 16-byte GCM auth tag appended
+// data field contains ciphertext || 16-byte GCM auth tag
 
-ciphertext = ciphertext_with_tag[0 .. len-16]
-tag        = ciphertext_with_tag[len-16 .. len]
+ciphertext = data[0 .. len-16]
+tag        = data[len-16 .. len]
 
 plaintext = AES-256-GCM-Decrypt(
-    key  = e2ee_key,       // looked up locally by routing_key
-    iv   = iv,             // from the message
+    key        = e2ee_key,      // looked up locally by routing_key
+    iv         = iv,            // from the S_NOTIFY frame (12 bytes after data)
     ciphertext = ciphertext,
-    tag  = tag,
-    aad  = <none>
+    tag        = tag,
+    aad        = <none>
 )
 ```
 
@@ -422,19 +586,19 @@ If decryption or tag verification fails, the client acknowledges with status cod
 
 ---
 
-## 10. Server Infrastructure
+## 11. Server Implementation Requirements
 
-### 10.1. Components
+### 11.1. Components
 
 | Component   | Default Port | Protocol | Purpose                              |
 |-------------|-------------|----------|--------------------------------------|
-| TCP Server  | 7373        | TLS      | Persistent client connections        |
+| TCP Server  | 7373        | TLS 1.2+ | Persistent client connections        |
 | HTTP Server | 7878        | HTTP(S)  | Registration API, push submission    |
-| PostgreSQL  | 5432        | —        | Server-side storage                  |
+| Database    | —           | —        | Device records, queued notifications |
 
-### 10.2. Server Cryptographic Material
+### 11.2. Server Cryptographic Material
 
-The server requires an RSA-4096 keypair:
+The server requires an RSA keypair for TLS and a self-signed X.509 certificate:
 
 ```bash
 openssl req -x509 -newkey rsa:4096 \
@@ -443,30 +607,85 @@ openssl req -x509 -newkey rsa:4096 \
     -days 7300 -nodes
 ```
 
-- `server_public_key.pem` is distributed to clients during registration (used for TLS certificate pinning)
-- `server_private_key.pem` is used by the server for TLS and for encrypting login challenges with the client's public key
+- `server_public_key.pem` is distributed to clients during HTTP registration (used for TLS certificate pinning)
+- `server_private_key.pem` is used by the server for TLS
 
-### 10.3. DNS Configuration
+### 11.3. DNS Configuration
 
 Create a TXT record:
 
 ```
-_sgn.sgn.example.com  IN  TXT  "tcp_addr=<IP> tcp_port=<TCP_PORT> http_addr=<HTTP_URL>"
+_sgn.example.com  IN  TXT  "tcp_addr=<IP> tcp_port=<TCP_PORT> http_addr=<HTTP_URL>"
 ```
 
-- `<IP>` — the server's public IPv4 address
-- `<TCP_PORT>` — the TLS TCP protocol port (**must not** be the HTTP port)
-- `<HTTP_URL>` — the base URL of the HTTP API
+### 11.4. Server State Per Device
+
+The server must store:
+
+| Field                | Description                                                    |
+|----------------------|----------------------------------------------------------------|
+| address              | UUID device identifier                                         |
+| public_key           | RSA-2048 public key (DER format, from C_REGISTER)              |
+| routing_keys         | Set of 32-byte routing keys → bundle ID mappings               |
+| active_filter        | Current set of routing keys the client is interested in        |
+| last_delivered_seq   | Per-device notification sequence counter                       |
+| unacked_notifications| Queue of notifications not yet acknowledged                    |
+
+### 11.5. Server Message Processing Summary
+
+| When...                              | Server sends...                              |
+|--------------------------------------|----------------------------------------------|
+| Client connects (TLS handshake done) | S_HELLO (with server version)                |
+| Client sends C_LOGIN or C_REGISTER   | S_CHALLENGE (32-byte random nonce)           |
+| Client sends valid C_LOGIN_RESP      | S_AUTH_OK                                    |
+| Client sends valid C_REGISTER_RESP   | S_REGISTER_OK (with server version)          |
+| Client sends invalid challenge resp  | S_DISCONNECT (reason: AUTH_FAIL)             |
+| Push notification arrives for device | S_NOTIFY (with routing_key, data, etc.)      |
+| Client sends C_REG_TOKEN             | S_TOKEN_ACK (echo routing_key + bundle_id)   |
+| Client sends C_POLL                  | Re-deliver unacked notifs, then S_POLL_DONE  |
+| Client sends C_PING                  | S_PONG (echo sequence)                       |
+| Server wants to keep-alive           | S_PING (with sequence)                       |
+| Server needs to disconnect           | S_DISCONNECT (with reason + optional retry)  |
+| Clock drift detected                 | S_TIME_SYNC (server's Unix timestamp)        |
+| Another client connects with same addr| S_DISCONNECT (reason: REPLACED) to old conn |
+
+### 11.6. Challenge Verification
+
+When verifying C_LOGIN_RESP or C_REGISTER_RESP:
+
+1. Reconstruct `digest = SHA-256(nonce || address_utf8 || timestamp_be64)`
+2. Verify the RSA-PSS signature using the client's stored public key
+3. Verify that `timestamp` is within ±300 seconds of the server's current time
+4. If `address` is unknown (for C_LOGIN), reject with S_DISCONNECT
+
+### 11.7. Payload Bounds Validation
+
+The server should enforce the same payload bounds the client expects:
+
+| Message Type     | Min Size | Max Size |
+|------------------|----------|----------|
+| S_HELLO          | 4        | 4        |
+| S_CHALLENGE      | 32       | 32       |
+| S_AUTH_OK        | 0        | 0        |
+| S_NOTIFY         | 70       | 4096     |
+| S_DISCONNECT     | 1        | 5        |
+| S_TOKEN_ACK      | 35       | 289      |
+| S_PONG           | 8        | 8        |
+| S_POLL_DONE      | 0        | 0        |
+| S_REGISTER_OK    | 4        | 4        |
+| S_REGISTER_FAIL  | 1        | 258      |
+| S_PING           | 8        | 8        |
+| S_TIME_SYNC      | 8        | 8        |
 
 ---
 
-## 11. Security Considerations
+## 12. Security Considerations
 
 1. **TLS with certificate pinning** prevents man-in-the-middle attacks. The client trusts only the specific server certificate obtained during registration.
 
-2. **RSA challenge-response authentication** ensures mutual verification. The server proves knowledge of the client's public key; the client proves possession of the private key.
+2. **RSA-PSS challenge-response authentication** provides strong mutual verification. The client proves possession of the private key corresponding to the public key registered with the server.
 
-3. **Timestamp validation** on challenges prevents replay attacks (5-minute tolerance window).
+3. **Timestamp validation** on challenges prevents replay attacks (300-second tolerance window).
 
 4. **End-to-end encryption** ensures the server operator cannot read notification payloads. The server only sees opaque routing keys and ciphertext.
 
@@ -476,130 +695,33 @@ _sgn.sgn.example.com  IN  TXT  "tcp_addr=<IP> tcp_port=<TCP_PORT> http_addr=<HTT
 
 7. **SIGPIPE handling** — clients MUST ignore SIGPIPE to prevent process termination when the server drops the connection unexpectedly.
 
----
+8. **Key material zeroing** — the client zeros all private key material in memory before freeing, using volatile writes to prevent compiler dead-store elimination.
 
-## 12. Implementation Checklist
-
-For implementors targeting a new platform:
-
-- [ ] Binary plist serializer/deserializer (Apple `bplist00` format)
-- [ ] TLS 1.0+ client with certificate pinning
-- [ ] RSA-OAEP private key decryption (for login challenge)
-- [ ] SHA-256 (for routing key derivation)
-- [ ] HKDF-SHA256 (for E2EE key derivation)
-- [ ] AES-256-GCM decryption (for encrypted notifications)
-- [ ] DNS TXT record query
-- [ ] Exponential backoff with jitter for reconnection
-- [ ] Network reachability monitoring
-- [ ] Persistent local storage (for tokens, E2EE keys, and DNS cache)
-- [ ] Cryptographically secure random number generator (for K)
+9. **Clock skew correction** via S_TIME_SYNC prevents authentication failures on devices with drifted system clocks.
 
 ---
 
-## Appendix A: Wire Examples
+## 13. Implementation Checklist
 
-### A.1. LoginRequest
+For implementors building a compatible **server**:
 
-```
-Plist dictionary:
-{
-    "$type":   0,
-    "address": "user@skyglow.es",
-    "version": "1.0.0",
-    "lang":    "en"
-}
-```
-
-### A.2. LoginChallenge
-
-```
-{
-    "$type":    1,
-    "challenge": <458 bytes: RSA-OAEP encrypted blob>
-}
-```
-
-Decrypted challenge plaintext (UTF-8):
-```
-user@skyglow.es,a1b2c3d4e5f6,1708185600.000000
-```
-
-### A.3. LoginChallengeResponse
-
-```
-{
-    "$type":     1,
-    "nonce":     "a1b2c3d4e5f6",
-    "timestamp": "1708185600.000000"
-}
-```
-
-### A.4. ReceiveNotification (Encrypted)
-
-```
-{
-    "$type":        2,
-    "routing_key":  <32 bytes>,
-    "message_id":   "550e8400-e29b-41d4-a716-446655440000",
-    "is_encrypted": true,
-    "data_type":    "json",
-    "ciphertext":   <N+16 bytes: AES-GCM ciphertext || 16-byte auth tag>,
-    "iv":           <12 bytes>
-}
-```
-
-### A.5. ReceiveNotification (Unencrypted)
-
-```
-{
-    "$type":        2,
-    "routing_key":  <32 bytes>,
-    "message_id":   "661f9500-f30c-52e5-b827-557766551111",
-    "is_encrypted": false,
-    "data": {
-        "aps": {
-            "alert": "You have a new message",
-            "badge": 3,
-            "sound": "default"
-        }
-    }
-}
-```
-
-### A.6. AckNotification
-
-```
-{
-    "$type":        3,
-    "notification": "550e8400-e29b-41d4-a716-446655440000",
-    "status":       0
-}
-```
-
-### A.7. RegisterDeviceToken
-
-```
-{
-    "$type":               5,
-    "deviceTokenChecksum": <32 bytes: SHA-256(K)>,
-    "appBundleId":         "com.example.myapp"
-}
-```
-
-### A.8. SendFeedback
-
-```
-{
-    "$type":         6,
-    "routing_token": <32 bytes>,
-    "type":          0,
-    "reason":        "App uninstalled"
-}
-```
+- [ ] TLS 1.2+ server with configurable certificate
+- [ ] Binary frame parser (8-byte header + payload)
+- [ ] RSA-PSS-SHA256 signature verification
+- [ ] SHA-256 for routing key verification
+- [ ] AES-256-GCM encryption for E2EE payloads (optional, for server-originated notifications)
+- [ ] TLV serializer for notification payloads
+- [ ] Persistent storage for device records, routing keys, and notification queues
+- [ ] Per-device sequence counter for notifications
+- [ ] Challenge nonce generation (32 bytes, cryptographically random)
+- [ ] Bidirectional keep-alive (S_PING/C_PONG and C_PING/S_PONG)
+- [ ] Connection replacement detection (S_DISCONNECT with REPLACED reason)
+- [ ] DNS TXT record configuration
+- [ ] HTTP API for registration and push submission (separate service)
 
 ---
 
-## Appendix B: Device Token Binary Layout
+## Appendix A: Device Token Binary Layout
 
 ```
 Byte Offset   Length   Content
@@ -615,5 +737,44 @@ The token is opaque to the receiving application. A sending service parses it as
 1. Read bytes 0–15 and trim trailing `0x00` bytes → server address
 2. Use the server address to resolve the SGN server endpoint via DNS TXT records
 3. Read bytes 16–31 → secret `K`
-4. Derive `e2ee_key` using HKDF-SHA256 (see Section 9.1)
-5. Derive `routing_key = SHA-256(K)` to include when submitting notifications via the HTTP API
+4. Derive `routing_key = SHA-256(K)` to identify the device when submitting notifications
+5. Derive `e2ee_key` using HKDF-SHA256 (see Section 10.1) if sending encrypted payloads
+
+## Appendix B: Wire Examples
+
+### B.1. Frame Header
+
+```
+53 02 20 00 00 00 00 0E       Magic=0x53, Version=0x02, Type=C_LOGIN(0x20),
+                               Reserved=0x00, PayloadLen=14
+```
+
+### B.2. C_LOGIN Payload
+
+```
+00 24                          addr_len = 36
+61 62 63 64 65 66 ... (36 B)   address = "abcdefgh-1234-5678-9abc-def012345678"
+00 00 01 8E 2A 3B 4C 5D        timestamp (BE i64)
+00 00 00 02                    version = 2 (BE u32)
+```
+
+### B.3. S_NOTIFY Payload (Encrypted)
+
+```
+[32 bytes routing_key]
+[16 bytes msg_id]
+[8 bytes seq (BE i64)]
+[8 bytes expires_at (BE i64)]
+01                             flags: is_encrypted = 1
+00                             content_type
+00 00 00 40                    data_len = 64 (BE u32)
+[64 bytes: ciphertext(48) || GCM tag(16)]
+[12 bytes: IV]
+```
+
+### B.4. C_ACK Payload
+
+```
+[16 bytes msg_id]
+00                             status = 0 (success)
+```

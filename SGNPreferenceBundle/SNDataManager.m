@@ -40,7 +40,6 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
 - (NSString *)profilePath   { return SGProfilePath(); }
 - (NSString *)dbPath        { return SGDBPath(); }
 
-// --- Main Preferences ---
 - (NSDictionary *)mainPrefs { return [NSDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()] ?: @{}; }
 - (BOOL)isEnabled { return [[[self mainPrefs] objectForKey:@"enabled"] boolValue]; }
 
@@ -65,7 +64,6 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
 }
 
 - (NSString *)serverAddressInput {
-    // Returns the raw text the user typed into the preferences bundle
     return [[self mainPrefs] objectForKey:@"notificationServerAddress"];
 }
 
@@ -92,14 +90,12 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
     [prefs writeToFile:SGMainPrefsPath() atomically:YES];
 }
 
-// --- Profile ---
 - (NSDictionary *)profile { return [NSDictionary dictionaryWithContentsOfFile:SGProfilePath()] ?: @{}; }
 - (NSString *)serverAddress   { return [[self profile] objectForKey:@"server_address"]; }
 - (NSString *)deviceAddress   { return [[self profile] objectForKey:@"device_address"]; }
 - (NSString *)serverPubKeyPEM { return [[self profile] objectForKey:@"server_pub_key"]; }
 - (BOOL)isRegistered { return ([self serverAddress] != nil && [[self serverAddress] length] > 0); }
 
-// --- Daemon Status via Unix Socket ---
 - (SGStatusPayload)queryDaemonStatus {
     SGStatusPayload empty;
     memset(&empty, 0, sizeof(empty));
@@ -109,7 +105,6 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
     if (pidFile) {
         int pid = 0;
         if (fscanf(pidFile, "%d", &pid) == 1 && pid > 0) {
-            // kill with signal 0 checks if the process exists without sending a signal
             if (kill(pid, 0) == 0) isEnabled = YES;
         }
         fclose(pidFile);
@@ -125,7 +120,7 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
     addr.sun_family = AF_UNIX;
     strlcpy(addr.sun_path, SGPocketPath(), sizeof(addr.sun_path));
 
-    struct timeval tv = {0, 300000}; // 300ms timeout so the UI never freezes
+    struct timeval tv = {0, 300000};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
@@ -145,7 +140,6 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
     ssize_t total = 0, remaining = (ssize_t)sizeof(payload);
     uint8_t *buf = (uint8_t *)&payload;
 
-    // Read the exact size of the packed struct
     while (remaining > 0) {
         ssize_t n = read(fd, buf + total, (size_t)remaining);
         if (n <= 0) break;
@@ -154,7 +148,6 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
     }
     close(fd);
 
-    // If we read the exact expected bytes, the payload is valid
     if (total == (ssize_t)sizeof(payload)) {
         return payload;
     }
@@ -163,17 +156,15 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
 }
 
 - (void)startWatchingDaemonStatus {
-    // Tear down any existing watcher first to prevent stacking
     [self stopWatchingDaemonStatus];
     
-    // Always give the subscriber a fresh status immediately
     self.latestPayload = [self queryDaemonStatus];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
     
     self.isWatching = YES;
     self.watchSocketFD = -1;
     self.watchGeneration++;
-    uint32_t myGen = self.watchGeneration; // Capture for this invocation
+    uint32_t myGen = self.watchGeneration;
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         while (self.isWatching && self.watchGeneration == myGen) {
@@ -186,7 +177,6 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
             addr.sun_family = AF_UNIX;
             strlcpy(addr.sun_path, SGPocketPath(), sizeof(addr.sun_path));
             
-            // Connect timeout: 1s
             struct timeval connectTv = {1, 0};
             setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &connectTv, sizeof(connectTv));
             
@@ -194,7 +184,6 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
                 close(fd);
                 self.watchSocketFD = -1;
                 
-                // Post fallback status (disabled/starting based on PID)
                 if (self.watchGeneration == myGen) {
                     dispatch_async(dispatch_get_main_queue(), ^{
                         SGStatusPayload empty;
@@ -218,11 +207,10 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
                 continue;
             }
             
-            // Set read timeout AFTER connect so we don't block forever
             struct timeval readTv = {5, 0};
             setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &readTv, sizeof(readTv));
             
-            uint8_t mode = 0x57; // SS_MODE_WATCH
+            uint8_t mode = 0x57;
             if (write(fd, &mode, 1) != 1) {
                 close(fd);
                 self.watchSocketFD = -1;
@@ -230,7 +218,6 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
                 continue;
             }
             
-            // Inner read loop: blocks until daemon pushes a status update
             while (self.isWatching && self.watchGeneration == myGen) {
                 SGStatusPayload payload;
                 memset(&payload, 0, sizeof(payload));
@@ -279,7 +266,6 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
             
             close(fd);
             self.watchSocketFD = -1;
-            // Brief pause before reconnecting to avoid tight loop
             if (self.isWatching && self.watchGeneration == myGen) usleep(500000);
         }
     });
@@ -288,14 +274,12 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
 - (void)stopWatchingDaemonStatus {
     self.isWatching = NO;
     if (self.watchSocketFD >= 0) {
-        // Shutdown + close unblocks the background read() immediately
         shutdown(self.watchSocketFD, SHUT_RDWR);
         close(self.watchSocketFD);
         self.watchSocketFD = -1;
     }
 }
 
-// --- SQLite ---
 static sqlite3 *openDBReadOnly(void) {
     sqlite3 *db = NULL;
     if (![[NSFileManager defaultManager] fileExistsAtPath:SGDBPath()]) return NULL;
@@ -399,7 +383,6 @@ static sqlite3 *openDBReadOnly(void) {
     return result;
 }
 
-// --- Certificate Parsing ---
 - (NSDictionary *)parseCertificatePEM:(NSString *)pem {
     if (!pem || [pem length] == 0) return nil;
     BIO *bio = BIO_new_mem_buf((void *)[pem UTF8String], -1);
@@ -440,12 +423,9 @@ static sqlite3 *openDBReadOnly(void) {
     return info;
 }
 
-// --- Unregistration ---
 - (void)unregisterDevice {
-    // 1. Delete Profile Plist (Removes Device Address & Server Keys)
     [[NSFileManager defaultManager] removeItemAtPath:SGProfilePath() error:nil];
 
-    // 2. Wipe cryptographic tokens and DNS, but KEEP appStatus in the main plist!
     sqlite3 *db = NULL;
     if (sqlite3_open([SGDBPath() UTF8String], &db) == SQLITE_OK) {
         sqlite3_exec(db, "DELETE FROM notifications;", NULL, NULL, NULL);
@@ -453,11 +433,9 @@ static sqlite3 *openDBReadOnly(void) {
     }
     if (db) sqlite3_close(db);
 
-    // 3. Inform the daemon to disconnect and reload config
     CFNotificationCenterPostNotificationWithOptions(CFNotificationCenterGetDarwinNotifyCenter(), CFSTR("com.skyglow.sgn.reload_config"), NULL, NULL, kCFNotificationDeliverImmediately);
 }
 
-// --- Utilities ---
 - (NSString *)hexStringFromData:(NSData *)data {
     if (!data || [data length] == 0) return @"";
     const unsigned char *bytes = (const unsigned char *)[data bytes];

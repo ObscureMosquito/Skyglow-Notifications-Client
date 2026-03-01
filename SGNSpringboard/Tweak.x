@@ -1,7 +1,6 @@
 /*
  * Tweak.x — Skyglow Notifications SpringBoard Hook
  *
- * Responsibilities:
  * 1. Run a Mach server to receive push messages from the daemon.
  * 2. Intercept remote-notification registration to route through Skyglow.
  * 3. Send uninstall feedback to the daemon when apps are removed.
@@ -58,7 +57,6 @@ static id GetIvar(id obj, const char *name) {
 
 static id SBApp_LookupByIdentifier(NSString *bundleId) {
     SBApplicationController *ctrl = [%c(SBApplicationController) sharedInstance];
-    // iOS 8+ uses bundleIdentifier, iOS 3-7 uses displayIdentifier
     if ([ctrl respondsToSelector:@selector(applicationWithBundleIdentifier:)]) {
         return [ctrl applicationWithBundleIdentifier:bundleId];
     }
@@ -85,8 +83,10 @@ static BOOL ShouldUseSkyglowForApp(NSString *bundleId) {
     return [[appStatus objectForKey:bundleId] boolValue];
 }
 
-/// Lightweight probe: check if the daemon's Mach service is registered.
-/// Does NOT send a message — only checks bootstrap namespace.
+/**
+ * Lightweight probe: check if the daemon's Mach service is registered.
+ * Does NOT send a message — only checks bootstrap namespace.
+ */
 static BOOL IsDaemonReachable(void) {
     mach_port_t port = MACH_PORT_NULL;
     kern_return_t kr = bootstrap_look_up(bootstrap_port, SKYGLOW_MACH_SERVICE_NAME_TOKEN, &port);
@@ -172,28 +172,27 @@ static void SendFeedbackToDaemon(NSString *bundleId, NSString *reason) {
     mach_port_deallocate(mach_task_self(), daemonPort);
 }
 
-/// Shared token delivery logic: requests a token from the daemon and delivers
-/// it back to the app via its remoteApplication proxy. Safe across all iOS versions.
+/**
+ * Shared token delivery logic: requests a token from the daemon and delivers
+ * it back to the app via its remoteApplication proxy.
+ */
 static void DeliverSkyglowToken(NSString *bundleId) {
     NSString *safeBundleId = [bundleId copy];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSData *token = RequestTokenFromDaemon(safeBundleId);
         if (!token || [token length] == 0) {
-            // Daemon is not running or failed to respond — warn the user
             NSLog(@"[SGN] Token request failed for %@ — daemon may not be running", safeBundleId);
             dispatch_async(dispatch_get_main_queue(), ^{
                 NSString *msg = [NSString stringWithFormat:
                     @"Skyglow: Failed to register %@. The notification daemon may not be running.",
                     safeBundleId];
                 if (NSClassFromString(@"UILocalNotification")) {
-                    // iOS 4+: Local notification banner
                     UILocalNotification *note = [[NSClassFromString(@"UILocalNotification") alloc] init];
                     [note setAlertBody:msg];
                     [note setSoundName:@"UILocalNotificationDefaultSoundName"];
                     [[UIApplication sharedApplication] presentLocalNotificationNow:note];
                     [note release];
                 } else {
-                    // iOS 3: UIAlertView fallback
                     id alert = [[NSClassFromString(@"UIAlertView") alloc]
                         initWithTitle:@"Skyglow" message:msg delegate:nil
                         cancelButtonTitle:@"OK" otherButtonTitles:nil];
@@ -246,7 +245,6 @@ static void DeliverNotification(NSString *topic, NSDictionary *userInfo) {
 
     @try {
         if (cfVersion < 700.0) {
-            // iOS 3–5: connection:didReceiveMessageForTopic:userInfo: (3-arg, needs objc_msgSend)
             id server = [NSClassFromString(@"SBRemoteNotificationServer") performSelector:@selector(sharedInstance)];
             if (server) {
                 SEL sel = @selector(connection:didReceiveMessageForTopic:userInfo:);
@@ -254,13 +252,11 @@ static void DeliverNotification(NSString *topic, NSDictionary *userInfo) {
                 send(server, sel, nil, topic, apnsPayload);
             }
         } else if (cfVersion < 1200.0) {
-            // iOS 6–8: connection:didReceiveIncomingMessage: with APSIncomingMessage
             APSIncomingMessage *msg = [[NSClassFromString(@"APSIncomingMessage") alloc] initWithTopic:topic userInfo:apnsPayload];
             [[NSClassFromString(@"SBRemoteNotificationServer") performSelector:@selector(sharedInstance)]
                 performSelector:@selector(connection:didReceiveIncomingMessage:) withObject:nil withObject:msg];
             [msg release];
         } else {
-            // iOS 9: UNUserNotificationServer chain
             APSIncomingMessage *msg = [[NSClassFromString(@"APSIncomingMessage") alloc] initWithTopic:topic userInfo:apnsPayload];
             id userNS = [NSClassFromString(@"UNUserNotificationServer") performSelector:@selector(sharedInstance)];
             id registrar = GetIvar(userNS, "_registrarConnectionListener");
@@ -308,11 +304,8 @@ static BOOL StartPushReceiver(void) {
     return YES;
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-#pragma mark - Versioned Hooks: Uninstall Detection
-// ═══════════════════════════════════════════════════════════════════════
+#pragma mark - Uninstall Detection
 
-// iOS 3–7: SBApplicationUninstallationOperation exists
 %group HookUninstall_Classic
 %hook SBApplicationUninstallationOperation
 - (void)main {
@@ -327,7 +320,6 @@ static BOOL StartPushReceiver(void) {
 %end
 %end
 
-// iOS 8–9: SBApplicationController -uninstallApplication:
 %group HookUninstall_Modern
 %hook SBApplicationController
 - (void)uninstallApplication:(id)application {
@@ -345,22 +337,17 @@ static BOOL StartPushReceiver(void) {
 %end
 %end
 
-// ═══════════════════════════════════════════════════════════════════════
-#pragma mark - Versioned Hooks: Token Registration (Choice Dialog)
-// ═══════════════════════════════════════════════════════════════════════
+#pragma mark - Token Registration
 
-// --- Pending Registration Context (single-process, only one dialog at a time) ---
-static id sPendingServer      = nil;   // SBRemoteNotificationServer or UNNotificationRegistrarConnectionListener
-static id sPendingApp         = nil;   // SBApplication (iOS 3-8 only)
-static id sPendingEnv         = nil;   // environment string (iOS 3-8 only)
-static int sPendingTypes      = 0;     // notification types (iOS 3-8 only)
+static id sPendingServer      = nil;
+static id sPendingApp         = nil;
+static id sPendingEnv         = nil;
+static int sPendingTypes      = 0;
 static NSString *sPendingBundleId = nil;
-static id sPendingResultBlock = nil;   // result block (iOS 9 only)
-static BOOL sPendingIsModern  = NO;    // YES = iOS 9 path
-static BOOL sPassThrough      = NO;    // Flag to let %orig pass on re-entry
+static id sPendingResultBlock = nil;
+static BOOL sPendingIsModern  = NO;
+static BOOL sPassThrough      = NO;
 
-// --- Alert Delegate ---
-// Button indices: 0 = "Use Apple Push" (cancel), 1 = "Use Skyglow"
 @interface SGRegistrationAlertDelegate : NSObject
 @end
 
@@ -368,12 +355,9 @@ static BOOL sPassThrough      = NO;    // Flag to let %orig pass on re-entry
 
 - (void)alertView:(id)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
     if (buttonIndex == 1) {
-        // ── "Use Skyglow" ──
         if (!IsDaemonReachable()) {
             ShowDaemonOfflineAlert(sPendingBundleId);
-            // Don't register anything — dialog will re-appear on next app launch
         } else {
-            // Remember the choice so the dialog doesn't reappear
             NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath] mutableCopy] ?: [NSMutableDictionary dictionary];
             NSMutableDictionary *appStatus = [[prefs objectForKey:@"appStatus"] mutableCopy] ?: [NSMutableDictionary dictionary];
             [appStatus setObject:@YES forKey:sPendingBundleId];
@@ -382,7 +366,6 @@ static BOOL sPassThrough      = NO;    // Flag to let %orig pass on re-entry
             [appStatus release];
             [prefs release];
 
-            // Daemon is running: register through the system, then deliver our token
             if (sPendingIsModern) {
                 sPassThrough = YES;
                 [sPendingServer requestTokenForRemoteNotificationsForBundleIdentifier:sPendingBundleId withResult:sPendingResultBlock];
@@ -393,8 +376,6 @@ static BOOL sPassThrough      = NO;    // Flag to let %orig pass on re-entry
             DeliverSkyglowToken(sPendingBundleId);
         }
     } else {
-        // ── "Use Apple Push" ──
-        // Remove from Skyglow plist so future registrations go straight through
         NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath] mutableCopy] ?: [NSMutableDictionary dictionary];
         NSMutableDictionary *appStatus = [[prefs objectForKey:@"appStatus"] mutableCopy] ?: [NSMutableDictionary dictionary];
         [appStatus setObject:@NO forKey:sPendingBundleId];
@@ -403,7 +384,6 @@ static BOOL sPassThrough      = NO;    // Flag to let %orig pass on re-entry
         [appStatus release];
         [prefs release];
 
-        // Re-invoke with pass-through so %orig runs normally
         if (sPendingIsModern) {
             sPassThrough = YES;
             [sPendingServer requestTokenForRemoteNotificationsForBundleIdentifier:sPendingBundleId withResult:sPendingResultBlock];
@@ -413,7 +393,6 @@ static BOOL sPassThrough      = NO;    // Flag to let %orig pass on re-entry
         }
     }
 
-    // Cleanup
     [sPendingServer release];      sPendingServer = nil;
     [sPendingApp release];         sPendingApp = nil;
     [sPendingEnv release];         sPendingEnv = nil;
@@ -443,11 +422,9 @@ static void ShowRegistrationChoiceAlert(NSString *bundleId) {
     [alert release];
 }
 
-// --- iOS 3–8: SBRemoteNotificationServer ---
 %group HookRegistration_Classic
 %hook SBRemoteNotificationServer
 - (int)registerApplication:(id)application forEnvironment:(id)environment withTypes:(int)notificationTypes {
-    // Pass-through: called from alert delegate to complete registration
     if (sPassThrough) {
         sPassThrough = NO;
         return %orig;
@@ -455,15 +432,13 @@ static void ShowRegistrationChoiceAlert(NSString *bundleId) {
 
     NSString *bundleId = [application performSelector:@selector(bundleIdentifier)];
 
-    // Apps manually disabled in Settings → pass through to Apple Push directly
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath];
     NSDictionary *appStatus = [prefs objectForKey:@"appStatus"];
     id existing = [appStatus objectForKey:bundleId];
     if (existing && ![existing boolValue]) {
-        return %orig; // User previously chose "Use Apple Push"
+        return %orig;
     }
 
-    // First-time or Skyglow-enabled: show the choice dialog
     [sPendingServer release];   sPendingServer = [self retain];
     [sPendingApp release];      sPendingApp = [application retain];
     [sPendingEnv release];      sPendingEnv = [environment retain];
@@ -472,23 +447,20 @@ static void ShowRegistrationChoiceAlert(NSString *bundleId) {
     sPendingIsModern = NO;
 
     ShowRegistrationChoiceAlert(bundleId);
-    return 0; // Block registration until user decides
+    return 0;
 }
 %end
 %end
 
-// --- iOS 9: UNNotificationRegistrarConnectionListener ---
 %group HookRegistration_iOS9
 %hook UNNotificationRegistrarConnectionListener
 - (void)requestTokenForRemoteNotificationsForBundleIdentifier:(NSString *)bundleIdentifier withResult:(id)resultBlock {
-    // Pass-through: called from alert delegate to complete registration
     if (sPassThrough) {
         sPassThrough = NO;
         %orig;
         return;
     }
 
-    // Apps manually disabled in Settings → pass through to Apple Push directly
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath];
     NSDictionary *appStatus = [prefs objectForKey:@"appStatus"];
     id existing = [appStatus objectForKey:bundleIdentifier];
@@ -497,21 +469,17 @@ static void ShowRegistrationChoiceAlert(NSString *bundleId) {
         return;
     }
 
-    // First-time or Skyglow-enabled: show the choice dialog
     [sPendingServer release];      sPendingServer = [self retain];
     [sPendingBundleId release];    sPendingBundleId = [bundleIdentifier copy];
     [sPendingResultBlock release]; sPendingResultBlock = [resultBlock copy];
     sPendingIsModern = YES;
 
     ShowRegistrationChoiceAlert(bundleIdentifier);
-    // Block registration — do NOT call %orig
 }
 %end
 %end
 
-// ═══════════════════════════════════════════════════════════════════════
-#pragma mark - Settings Integration (All iOS Versions)
-// ═══════════════════════════════════════════════════════════════════════
+#pragma mark - Settings Integration
 
 static void handleSettingsAppRegistration(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     CFPreferencesAppSynchronize(CFSTR("com.skyglow.sndp"));
@@ -519,10 +487,6 @@ static void handleSettingsAppRegistration(CFNotificationCenterRef center, void *
     NSString *bundleId = [prefs objectForKey:@"lastRegisteredApp"];
 
     if (bundleId.length) {
-        // On all iOS versions, request token through the daemon directly.
-        // On iOS 3–8, this triggers our SBRemoteNotificationServer hook.
-        // On iOS 9, we call DeliverSkyglowToken directly since Settings
-        // may be used as an additional manual trigger.
         if (kCFCoreFoundationVersionNumber < 1200.0) {
             id app = SBApp_LookupByIdentifier(bundleId);
             SBRemoteNotificationServer *server = [%c(SBRemoteNotificationServer) sharedInstance];
@@ -546,31 +510,25 @@ static void handleSettingsAppUnregistration(CFNotificationCenterRef center, void
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-#pragma mark - Constructor: Runtime Version Selection
-// ═══════════════════════════════════════════════════════════════════════
+#pragma mark - Constructor
 
 %ctor {
-    // Push receiver (all iOS versions)
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         if (StartPushReceiver()) PushReceiverLoop();
     });
 
-    // Uninstall hooks: version-select at runtime
     if (kCFCoreFoundationVersionNumber < 1140.0) {
-        %init(HookUninstall_Classic);    // iOS 3–7
+        %init(HookUninstall_Classic);
     } else {
-        %init(HookUninstall_Modern);     // iOS 8–9
+        %init(HookUninstall_Modern);
     }
 
-    // Registration hooks: version-select at runtime
     if (kCFCoreFoundationVersionNumber < 1200.0) {
-        %init(HookRegistration_Classic); // iOS 3–8
+        %init(HookRegistration_Classic);
     } else {
-        %init(HookRegistration_iOS9);    // iOS 9
+        %init(HookRegistration_iOS9);
     }
 
-    // Settings integration (all iOS versions)
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, handleSettingsAppRegistration, CFSTR("com.skyglow.sgn.registerInputApp"), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, handleSettingsAppUnregistration, CFSTR("com.skyglow.sgn.unregisterInputApp"), NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
 }

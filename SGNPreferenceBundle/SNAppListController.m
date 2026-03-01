@@ -10,7 +10,6 @@
     if (!_specifiers) {
         NSMutableArray *specs = [NSMutableArray array];
         
-        // Header
         PSSpecifier *groupSpec = [PSSpecifier preferenceSpecifierNamed:@"Toggle Notifications per app"
                                                                 target:self
                                                                    set:NULL
@@ -18,13 +17,10 @@
                                                                   detail:Nil
                                                                     cell:PSGroupCell
                                                                     edit:Nil];
-        [groupSpec setProperty:@YES forKey:@"isDeletionGroup"]; // Hint for commitEditingStyle
+        [groupSpec setProperty:@YES forKey:@"isDeletionGroup"];
         
         [specs addObject:groupSpec];
         
-        // ── Merge bundle IDs from both sources ──
-        //  1) plist appStatus (set by tweak hook)
-        //  2) SQLite notifications table (set by daemon token generation)
         SNDataManager *dm = [SNDataManager shared];
         NSDictionary *appStatus    = [dm appStatus];
         NSSet        *dbBundleIDs  = [dm registeredBundleIDs];
@@ -75,8 +71,6 @@
     NSDictionary *appStatus = [[SNDataManager shared] appStatus];
     id val = [appStatus objectForKey:bundleId];
     
-    // If the app has a token but no explicit toggle yet, default to YES
-    // (it registered via Mach IPC, so the user presumably wants it on)
     if (val == nil) {
         NSSet *dbIDs = [[SNDataManager shared] registeredBundleIDs];
         if ([dbIDs containsObject:bundleId]) {
@@ -94,14 +88,8 @@
     [self reloadSpecifier:specifier animated:YES];
 }
 
-// ──────────────────────────────────────────────
-// Deletion Support
-// ──────────────────────────────────────────────
-
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
-    // Check if the section is the one with the apps
     if (indexPath.section < _specifiers.count) {
-        // Find the group specifier for this section
         PSSpecifier *spec = [self specifierAtIndex:[self indexForIndexPath:indexPath]];
         if ([spec propertyForKey:@"bundleId"]) {
             return YES;
@@ -116,23 +104,19 @@
         NSString *bundleId = [spec propertyForKey:@"bundleId"];
         
         if (bundleId) {
-            // 1. Write to persistent domain for SpringBoard
             NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.skyglow.sndp"] ?: @{};
             NSMutableDictionary *mutablePrefs = [prefs mutableCopy];
             [mutablePrefs setObject:bundleId forKey:@"lastUnregisteredApp"];
             [[NSUserDefaults standardUserDefaults] setPersistentDomain:mutablePrefs forName:@"com.skyglow.sndp"];
             [[NSUserDefaults standardUserDefaults] synchronize];
 
-            // 2. Notify SpringBoard to unregister
             CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                                  CFSTR("com.skyglow.sgn.unregisterInputApp"),
                                                  NULL, NULL, TRUE);
             
-            // 3. Update local appStatus (remove key entirely) & DB
             [[SNDataManager shared] removeAppStatusForBundleId:bundleId];
             [[SNDataManager shared] removeAppFromDatabase:bundleId];
             
-            // 4. Remove specifier
             [self removeSpecifier:spec animated:YES];
         }
     }

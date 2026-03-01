@@ -15,9 +15,16 @@ typedef void (^SGReachabilityChangeHandler)(BOOL isReachable, BOOL isWWAN);
  */
 - (instancetype)initWithChangeHandler:(SGReachabilityChangeHandler)handler;
 
+/**
+ * Begins observing system network reachability changes via SystemConfiguration.
+ */
 - (void)startMonitoringSystemNetworkChanges;
+
+/**
+ * Stops observing system network reachability changes and releases the SCNetworkReachabilityRef.
+ */
 - (void)stopMonitoringSystemNetworkChanges;
 
 @end
 
-#endif /* SKYGLOW_SG_REACHABILITY_MONITOR_H */
+#endif

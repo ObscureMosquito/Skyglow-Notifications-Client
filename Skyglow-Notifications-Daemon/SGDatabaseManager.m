@@ -29,7 +29,6 @@
         [fm createDirectoryAtPath:dbDir
       withIntermediateDirectories:YES attributes:nil error:NULL];
 
-        // Ensure Settings.app (running as mobile/501) can read the DB
         chmod([dbDir UTF8String], 0755);
         chown([dbDir UTF8String], 501, 501);
 
@@ -39,7 +38,6 @@
             return nil;
         }
 
-        // Make the DB file readable by mobile
         chmod([dbPath UTF8String], 0644);
         chown([dbPath UTF8String], 501, 501);
 
@@ -67,6 +65,15 @@
         const char *settingsTable = "CREATE TABLE IF NOT EXISTS settings "
                                     "(key TEXT PRIMARY KEY, value REAL NOT NULL)";
         sqlite3_exec(_database, settingsTable, NULL, NULL, NULL);
+
+        /**
+         * last_delivered_seq: highest device_seq the client has successfully ACK'd.
+         * Stored as REAL because SQLite has no native INT64 binding that survives
+         * the settings schema — cast to/from int64_t explicitly.
+         */
+        sqlite3_exec(_database,
+            "INSERT OR IGNORE INTO settings (key, value) VALUES ('last_delivered_seq', 0)",
+            NULL, NULL, NULL);
     }
     return self;
 }
@@ -85,8 +92,6 @@
         }
     });
 }
-
-// ── Token & Identity Management ────────────────────────────────────
 
 - (BOOL)storeDeviceTokenData:(NSData *)routingKey e2eeKey:(NSData *)e2eeKey bundleID:(NSString *)bundleID token:(NSData *)token isUploaded:(BOOL)isUploaded {
     if (!routingKey || !e2eeKey || !bundleID || !token) return NO;
@@ -214,8 +219,6 @@
     return ids;
 }
 
-// ── DNS & ACK Synchronization ──────────────────────────────────────
-
 - (NSDictionary *)cachedDNSForDomain:(NSString *)domain maxAge:(NSTimeInterval)maxAge {
     __block NSDictionary *result = nil;
     dispatch_sync(_databaseQueue, ^{
@@ -323,8 +326,6 @@
     return ok;
 }
 
-// ── Daemon Settings ────────────────────────────────────────────────
-
 - (void)saveKeepAliveInterval:(double)interval forWiFi:(BOOL)isWiFi {
     dispatch_async(_databaseQueue, ^{
         const char *sql = "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)";
@@ -352,6 +353,34 @@
         }
     });
     return result;
+}
+
+- (int64_t)lastDeliveredSeq {
+    __block int64_t seq = 0;
+    dispatch_sync(_databaseQueue, ^{
+        const char *sql = "SELECT value FROM settings WHERE key = 'last_delivered_seq'";
+        sqlite3_stmt *stmt;
+        if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                // Stored as double to fit the settings schema; cast back to int64.
+                seq = (int64_t)sqlite3_column_double(stmt, 0);
+            }
+            sqlite3_finalize(stmt);
+        }
+    });
+    return seq;
+}
+
+- (void)updateLastDeliveredSeq:(int64_t)seq {
+    dispatch_async(_databaseQueue, ^{
+        const char *sql = "INSERT OR REPLACE INTO settings (key, value) VALUES ('last_delivered_seq', ?)";
+        sqlite3_stmt *stmt;
+        if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_double(stmt, 1, (double)seq);
+            sqlite3_step(stmt);
+            sqlite3_finalize(stmt);
+        }
+    });
 }
 
 @end

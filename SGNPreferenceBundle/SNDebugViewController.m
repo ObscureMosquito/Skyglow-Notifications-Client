@@ -65,10 +65,6 @@ typedef enum {
     [_savedApps addObjectsFromArray:[dm allRegisteredTokens]];
 }
 
-// ──────────────────────────────────────────────
-// Daemon restart helper
-// ──────────────────────────────────────────────
-
 - (void)reloadDaemon {
     NSString *path = [[NSBundle bundleForClass:[self class]]
                       pathForResource:@"sndrestart" ofType:nil];
@@ -84,21 +80,17 @@ typedef enum {
     }
 }
 
-// ──────────────────────────────────────────────
-// TableView DataSource
-// ──────────────────────────────────────────────
-
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     return SectionCount;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     switch ((DebugSection)section) {
-        case SectionManualReg:   return 2; // TextField + Register Button
+        case SectionManualReg:   return 2;
         case SectionSavedTokens: return _savedApps.count > 0 ? _savedApps.count : 1;
         case SectionStats:       return 2;
         case SectionDaemon:      return 1;
-        case SectionMaintenance: return 2; // Clear DNS + Clear All Tokens
+        case SectionMaintenance: return 2;
         default: return 0;
     }
 }
@@ -134,9 +126,6 @@ typedef enum {
             if (!cell) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                               reuseIdentifier:inputCellID];
-                // Use a fixed height and let autoresizing handle width.
-                // CGRectInset(contentView.bounds) is unreliable on iOS 6
-                // because bounds aren't finalized at cell init time.
                 CGFloat cellH = 44.0;
                 UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(15, 0, 290, cellH)];
                 tf.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -158,11 +147,10 @@ typedef enum {
                                               reuseIdentifier:buttonCellID];
                 cell.textLabel.textAlignment = NSTextAlignmentCenter;
             }
-            cell.selectionStyle = UITableViewCellSelectionStyleBlue; // Changed from Default to Blue
+            cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             
             if (indexPath.row == 1) {
                 cell.textLabel.text = @"Register Bundle ID";
-                // Standard iOS blue
                 cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
             } /*else if (indexPath.row == 2) { 
                 // Only configure visuals here!
@@ -198,7 +186,7 @@ typedef enum {
             cell.detailTextLabel.text = [NSString stringWithFormat:@"Token: %@...",
                                          [hex substringToIndex:truncLen]];
             cell.detailTextLabel.textColor = [UIColor grayColor];
-            cell.selectionStyle = UITableViewCellSelectionStyleBlue; // Changed from Default to Blue
+            cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             cell.accessoryType  = UITableViewCellAccessoryDisclosureIndicator;
         }
         return cell;
@@ -222,7 +210,6 @@ typedef enum {
         return cell;
     }
     
-    // Daemon + Maintenance sections use button-style cells
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:buttonCellID];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
@@ -230,7 +217,7 @@ typedef enum {
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
     }
     
-    cell.selectionStyle = UITableViewCellSelectionStyleBlue; // Changed from Default to Blue
+    cell.selectionStyle = UITableViewCellSelectionStyleBlue;
     cell.accessoryType  = UITableViewCellAccessoryNone;
     
     if (indexPath.section == SectionDaemon) {
@@ -248,17 +235,13 @@ typedef enum {
     return cell;
 }
 
-// ──────────────────────────────────────────────
-// TableView Delegate
-// ──────────────────────────────────────────────
-
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
     if (indexPath.section == SectionManualReg) {
-        [_manualBundleIDParams resignFirstResponder]; // Dismiss keyboard if open
+        [_manualBundleIDParams resignFirstResponder];
         
-        if (indexPath.row == 1) { // Register Button
+        if (indexPath.row == 1) {
             NSString *bundleID = _manualBundleIDParams.text;
             if (bundleID.length == 0) {
                 [self showAlert:@"Error" message:@"Please enter a valid Bundle ID."];
@@ -281,15 +264,13 @@ typedef enum {
                     message:[NSString stringWithFormat:@"Registration request for '%@' sent to SpringBoard.", bundleID]];
             _manualBundleIDParams.text = @"";
             
-            // Auto-refresh the list so the new entry appears immediately
             [self loadStats];
             [self.tableView reloadData];
             
-        } else if (indexPath.row == 2) { // Test Notification Button
+        } else if (indexPath.row == 2) {
             
             NSLog(@"[SGN-Settings] Sending Darwin signal: com.skyglow.test-inject");
             
-            // Fire the test notification Darwin event we catch in SpringBoard
             CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
                                                  CFSTR("com.skyglow.test-inject"),
                                                  NULL, NULL, TRUE);
@@ -323,10 +304,6 @@ typedef enum {
     }
 }
 
-// ──────────────────────────────────────────────
-// Swipe-to-delete tokens
-// ──────────────────────────────────────────────
-
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
     return (indexPath.section == SectionSavedTokens && _savedApps.count > 0);
 }
@@ -344,7 +321,6 @@ typedef enum {
     [_savedApps removeObjectAtIndex:indexPath.row];
     
     if (_savedApps.count == 0) {
-        // Reload section to show "No tokens found" placeholder
         [tableView reloadSections:[NSIndexSet indexSetWithIndex:SectionSavedTokens]
                  withRowAnimation:UITableViewRowAnimationAutomatic];
     } else {
@@ -352,45 +328,33 @@ typedef enum {
                          withRowAnimation:UITableViewRowAnimationAutomatic];
     }
     
-    // Refresh stats
     _appCount = [NSString stringWithFormat:@"%lu", (unsigned long)_savedApps.count];
     [tableView reloadSections:[NSIndexSet indexSetWithIndex:SectionStats]
              withRowAnimation:UITableViewRowAnimationNone];
 }
 
-// ──────────────────────────────────────────────
-// Helpers
-// ──────────────────────────────────────────────
-
 - (void)showAlert:(NSString *)title message:(NSString *)msg {
     Class alertControllerClass = NSClassFromString(@"UIAlertController");
     
     if (alertControllerClass) {
-        // ── iOS 8+ Modern UIAlertController via Runtime ──
-        
-        // UIAlertControllerStyleAlert = 1
         SEL alertCreateSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
         id (*createAlert)(Class, SEL, id, id, NSInteger) = (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
         id alert = createAlert(alertControllerClass, alertCreateSel, title, msg, 1);
         
-        // UIAlertActionStyleDefault = 0
         Class alertActionClass = NSClassFromString(@"UIAlertAction");
         SEL actionCreateSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
         id (*createAction)(Class, SEL, id, NSInteger, id) = (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
         id action = createAction(alertActionClass, actionCreateSel, @"OK", 0, nil);
         
-        // [alert addAction:action]
         SEL addActionSel = NSSelectorFromString(@"addAction:");
         void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
         addAction(alert, addActionSel, action);
         
-        // [self presentViewController:alert animated:YES completion:nil]
         SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
         void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
         present(self, presentSel, alert, YES, nil);
         
     } else {
-        // ── Pre-iOS 8 Fallback (UIAlertView) ──
         UIAlertView *av = [[UIAlertView alloc] initWithTitle:title
                                                      message:msg
                                                     delegate:nil

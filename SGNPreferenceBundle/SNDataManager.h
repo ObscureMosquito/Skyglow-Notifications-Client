@@ -14,7 +14,7 @@
 @property (nonatomic, readonly) NSString *profilePath;
 @property (nonatomic, readonly) NSString *dbPath;
 
-// --- Main Preferences ---
+/** Main Preferences */
 - (NSDictionary *)mainPrefs;
 - (BOOL)isEnabled;
 - (NSDictionary *)appStatus;
@@ -23,20 +23,20 @@
 - (void)setMainPrefValue:(id)value forKey:(NSString *)key;
 - (NSString *)serverAddressInput;
 
-// --- Profile ---
+/** Profile */
 - (NSDictionary *)profile;
 - (NSString *)serverAddress;
 - (NSString *)deviceAddress;
 - (NSString *)serverPubKeyPEM;
 - (BOOL)isRegistered;
 
-// --- Daemon Status ---
+/** Daemon Status */
 - (SGStatusPayload)queryDaemonStatus;
 @property (nonatomic, assign) SGStatusPayload latestPayload;
 - (void)startWatchingDaemonStatus;
 - (void)stopWatchingDaemonStatus;
 
-// --- SQLite ---
+/** SQLite */
 - (NSArray *)allRegisteredTokens;
 - (NSSet *)registeredBundleIDs;
 - (NSInteger)registeredTokenCount;
@@ -46,13 +46,13 @@
 - (void)clearAllTokens;
 - (void)removeAppFromDatabase:(NSString *)bundleId;
 
-// --- Certificate Parsing ---
+/** Certificate Parsing */
 - (NSDictionary *)parseCertificatePEM:(NSString *)pem;
 
-// --- Unregistration ---
+/** Unregistration */
 - (void)unregisterDevice;
 
-// --- Utilities ---
+/** Utilities */
 - (NSString *)hexStringFromData:(NSData *)data;
 - (NSString *)friendlyStringForState:(SGState)state;
 - (UIColor *)colorForState:(SGState)state;

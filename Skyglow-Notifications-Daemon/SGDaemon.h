@@ -5,7 +5,7 @@
 #import "SGProtocolHandler.h"
 #import "SGStatusServer.h"
 
-// --- State Machine Timing Constants ---
+/** State Machine Timing Constants */
 #define SG_INITIAL_BACKOFF_SECONDS        2
 #define SG_MAX_BACKOFF_SECONDS            600
 #define SG_MAX_CONSECUTIVE_FAILURES       14    // ~67 min total retry then stop
@@ -21,24 +21,27 @@ typedef NS_ENUM(NSInteger, SGEvent) {
     SGEventNetworkDown,
     
     // Asynchronous Internal Results
-    SGEventDNSResolved,       // Payload: NSDictionary with IP/Port
+    SGEventDNSResolved,
     SGEventDNSFailed,
     SGEventConnectSuccess,
     SGEventConnectFailed,
     SGEventAuthSuccess,
-    SGEventAuthFailed,        // Payload: NSNumber (retryAfter)
-    SGEventReplaced,          // Payload: NSNumber (retryAfter)
-    SGEventDisconnected,      // Socket closed or EOF
+    SGEventAuthFailed,
+    SGEventReplaced,
+    SGEventDisconnected,
     
     // Timers
     SGEventBackoffTimerFired
 };
 
-// --- Darwin Notifications ---
+/** Darwin Notifications */
 #define kSGConfigurationDidUpdateNotification "com.skyglow.sgn.reload_config"
 
 @interface SGDaemon : NSObject <SGProtocolDelegate>
 
+/**
+ * Starts the daemon's connection state machine.
+ */
 - (void)start;
 
 /**
@@ -63,4 +66,4 @@ typedef NS_ENUM(NSInteger, SGEvent) {
 
 @end
 
-#endif /* SKYGLOW_SG_DAEMON_H */
+#endif

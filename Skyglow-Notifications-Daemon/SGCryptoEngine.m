@@ -63,7 +63,7 @@ NSData *SG_CryptoDeriveE2EEKey(NSData *keyMaterial, NSString *salt, NSUInteger o
 
 NSData *SG_CryptoDecryptAESGCM(NSData *ciphertextWithTag, NSData *key, NSData *iv, NSData *aad) {
     if (!ciphertextWithTag || !key || !iv) return nil;
-    if (key.length != 32) return nil; // Fix: Guarantee keys strictly match AES-256 limits to prevent OOB context reads.
+    if (key.length != 32) return nil;
 
     const NSUInteger tagLength = 16;
     if (ciphertextWithTag.length < tagLength) return nil;

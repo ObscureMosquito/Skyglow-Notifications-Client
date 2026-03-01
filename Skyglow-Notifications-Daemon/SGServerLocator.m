@@ -35,8 +35,6 @@
     });
 }
 
-// ── Internal GCD Async Logic ────────────────────────────────────────
-
 static void DNSSD_API query_callback(DNSServiceRef sdRef, DNSServiceFlags flags, uint32_t interfaceIndex,
                                      DNSServiceErrorType errorCode, const char *fullname, uint16_t rrtype,
                                      uint16_t rrclass, uint16_t rdlen, const void *rdata, uint32_t ttl, void *context) {
@@ -54,7 +52,6 @@ static void DNSSD_API query_callback(DNSServiceRef sdRef, DNSServiceFlags flags,
             
             NSString *entry = [[[NSString alloc] initWithBytes:ptr length:len encoding:NSUTF8StringEncoding] autorelease];
             if (entry) {
-                // NEW: Split the entry by spaces to handle flat DNS records
                 NSArray *components = [entry componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
                 
                 for (NSString *comp in components) {

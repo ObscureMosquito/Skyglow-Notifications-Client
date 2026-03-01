@@ -1,4 +1,3 @@
-// SNCustomViewCell.h
 #import <Preferences/PSTableCell.h>
 
 @interface SNCustomViewCell : PSTableCell

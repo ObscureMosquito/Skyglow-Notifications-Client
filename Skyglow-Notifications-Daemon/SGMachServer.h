@@ -19,4 +19,4 @@
  */
 kern_return_t SGMach_SendPushToAppTopic(NSString *topic, NSDictionary *payload);
 
-#endif /* SKYGLOW_SG_MACH_SERVER_H */
+#endif

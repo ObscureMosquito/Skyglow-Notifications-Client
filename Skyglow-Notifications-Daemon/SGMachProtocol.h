@@ -65,4 +65,4 @@ typedef struct {
 
 #pragma pack()
 
-#endif /* SKYGLOW_SG_MACH_PROTOCOL_H */
+#endif

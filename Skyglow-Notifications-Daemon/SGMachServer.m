@@ -44,10 +44,8 @@ kern_return_t SGMach_SendPushToAppTopic(NSString *topic, NSDictionary *payload) 
     size = (size + 3) & ~3;
     msg.header.msgh_size = (mach_msg_size_t)size;
 
-    // Fix: Timeout after 500ms to prevent synchronous daemon gridlock if SpringBoard drops IPC queue
     kr = mach_msg(&msg.header, MACH_SEND_MSG | MACH_SEND_TIMEOUT, msg.header.msgh_size, 0, MACH_PORT_NULL, 500, MACH_PORT_NULL);
     
-    // Fix: Release the send right to avoid an unbounded kernel Mach port leak
     mach_port_deallocate(mach_task_self(), servicePort);
     
     return kr;
@@ -112,7 +110,6 @@ kern_return_t SGMach_SendPushToAppTopic(NSString *topic, NSDictionary *payload) 
     NSData *token = nil;
     NSError *error = nil;
     
-    // Explicitly reject requests if the daemon is disabled in Settings
     if (![[SGConfiguration sharedConfiguration] isEnabled]) {
         error = [NSError errorWithDomain:@"com.skyglow.mach" code:503 userInfo:@{NSLocalizedDescriptionKey: @"Daemon is explicitly disabled in Settings"}];
     } else {

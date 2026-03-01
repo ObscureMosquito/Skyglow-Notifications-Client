@@ -16,7 +16,6 @@ void SGKeepAlive_Initialize(SGKeepAliveAlgorithm *algo, bool isWiFi, double init
     double minLimit = isWiFi ? MIN_WIFI : MIN_WWAN;
     double maxLimit = isWiFi ? MAX_WIFI : MAX_WWAN;
     
-    // Safely load the persisted checkpoint, or default to the baseline
     if (initialInterval >= minLimit && initialInterval <= maxLimit) {
         algo->currentInterval = initialInterval;
     } else {

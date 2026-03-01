@@ -24,7 +24,6 @@
     
     [self.view addSubview:self.statusLabel];
     
-    // Add a simple dark gradient/overlay purely via CoreGraphics to avoid missing image assets
     self.gradientLayer = [CAGradientLayer layer];
     self.gradientLayer.frame = self.view.bounds;
     self.gradientLayer.colors = @[(id)[[UIColor colorWithWhite:1.0 alpha:0.15] CGColor],
@@ -51,22 +50,21 @@
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
-    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"SNDaemonStatusUpdated" object:nil];
-    [[SNDataManager shared] stopWatchingDaemonStatus];
+    if ([self isMovingFromParentViewController] || [self isBeingDismissed]) {
+        [[NSNotificationCenter defaultCenter] removeObserver:self name:@"SNDaemonStatusUpdated" object:nil];
+        [[SNDataManager shared] stopWatchingDaemonStatus];
+    }
 }
 
 - (void)refreshDaemonStatus {
     SGStatusPayload payload = [[SNDataManager shared] latestPayload];
     
-    // UI Update (only animate if state fundamentally changes to prevent blinking)
     BOOL animate = (self.lastKnownState != payload.state);
     self.lastKnownState = payload.state;
     
-    // Grab UI properties from the centralized data manager
     UIColor *bgColor = [[SNDataManager shared] colorForState:self.lastKnownState];
     NSString *labelText = [[SNDataManager shared] friendlyStringForState:self.lastKnownState];
     
-    // Provide dynamic backoff and connectivity counters
     if (payload.state == SGStateBackingOff && payload.currentBackoffSec > 0) {
         labelText = [NSString stringWithFormat:@"%@ (Retry in %us)", labelText, payload.currentBackoffSec];
     } else if (payload.state == SGStateConnecting && payload.consecutiveFailures > 0) {

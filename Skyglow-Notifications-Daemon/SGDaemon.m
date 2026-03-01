@@ -11,11 +11,12 @@
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <stdatomic.h>
 #include <openssl/pem.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 typedef struct { SGState from; SGState to; } SGTransition;
 
 static const SGTransition kLegalTransitions[] = {
-    // Starting
     { SGStateStarting,          SGStateDisabled            },
     { SGStateStarting,          SGStateIdleUnregistered    },
     { SGStateStarting,          SGStateResolvingDNS        },
@@ -24,28 +25,23 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateStarting,          SGStateError               },
     { SGStateStarting,          SGStateErrorBadConfig      },
 
-    // Resolving DNS
     { SGStateResolvingDNS,      SGStateConnecting          },
     { SGStateResolvingDNS,      SGStateIdleDNSFailed       },
     { SGStateResolvingDNS,      SGStateErrorBadConfig      },
     { SGStateResolvingDNS,      SGStateIdleNoNetwork       },
     { SGStateResolvingDNS,      SGStateDisabled            },
 
-    // DNS Failed
     { SGStateIdleDNSFailed,     SGStateResolvingDNS        },
     { SGStateIdleDNSFailed,     SGStateDisabled            },
     { SGStateIdleDNSFailed,     SGStateIdleNoNetwork       },
 
-    // Idle No Network
     { SGStateIdleNoNetwork,     SGStateConnecting          },
     { SGStateIdleNoNetwork,     SGStateDisabled            },
     { SGStateIdleNoNetwork,     SGStateResolvingDNS        },
 
-    // Unregistered
     { SGStateIdleUnregistered,  SGStateResolvingDNS        },
     { SGStateIdleUnregistered,  SGStateDisabled            },
 
-    // Connecting
     { SGStateConnecting,        SGStateAuthenticating      },
     { SGStateConnecting,        SGStateRegistering         }, 
     { SGStateConnecting,        SGStateBackingOff          },
@@ -53,14 +49,12 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateConnecting,        SGStateIdleCircuitOpen     },
     { SGStateConnecting,        SGStateErrorBadConfig      },
 
-    // Registering
     { SGStateRegistering,       SGStateAuthenticating      }, 
     { SGStateRegistering,       SGStateBackingOff          }, 
     { SGStateRegistering,       SGStateError               }, 
     { SGStateRegistering,       SGStateIdleNoNetwork       },
     { SGStateRegistering,       SGStateDisabled            },
 
-    // Authenticating
     { SGStateAuthenticating,    SGStateRegistering         }, 
     { SGStateAuthenticating,    SGStateConnected           },
     { SGStateAuthenticating,    SGStateBackingOff          },
@@ -70,39 +64,32 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateAuthenticating,    SGStateIdleUnregistered    },
     { SGStateAuthenticating,    SGStateErrorBadConfig      },
 
-    // Connected
     { SGStateConnected,         SGStateConnecting          }, 
     { SGStateConnected,         SGStateBackingOff          },
     { SGStateConnected,         SGStateIdleNoNetwork       },
     { SGStateConnected,         SGStateDisabled            },
     { SGStateConnected,         SGStateResolvingDNS        },
 
-    // Backing Off
     { SGStateBackingOff,        SGStateConnecting          },
     { SGStateBackingOff,        SGStateResolvingDNS        },
     { SGStateBackingOff,        SGStateIdleNoNetwork       },
     { SGStateBackingOff,        SGStateIdleCircuitOpen     },
     { SGStateBackingOff,        SGStateDisabled            },
 
-    // Circuit Open
     { SGStateIdleCircuitOpen,   SGStateConnecting          },
     { SGStateIdleCircuitOpen,   SGStateIdleNoNetwork       },
     { SGStateIdleCircuitOpen,   SGStateDisabled            },
     { SGStateIdleCircuitOpen,   SGStateResolvingDNS        },
 
-    // Error Auth
     { SGStateErrorAuth,         SGStateDisabled            },
     { SGStateErrorAuth,         SGStateResolvingDNS        },
 
-    // Error Bad Config
     { SGStateErrorBadConfig,    SGStateDisabled            },
     { SGStateErrorBadConfig,    SGStateResolvingDNS        },
 
-    // Generic Error
     { SGStateError,             SGStateDisabled            },
     { SGStateError,             SGStateResolvingDNS        },
 
-    // Disabled
     { SGStateDisabled,          SGStateResolvingDNS        },
     { SGStateDisabled,          SGStateIdleUnregistered    },
     { SGStateDisabled,          SGStateErrorBadConfig      },
@@ -132,15 +119,8 @@ static BOOL isValidPort(NSString *port) {
     int                    _consecutiveFailures;
     SGKeepAliveAlgorithm   _keepAliveAlgo;
     NSMutableOrderedSet   *_seenMessageIDs;
-    
-    // FSM generation counter: incremented on every state transition.
-    // Used only for timer cancellation (stale timers become no-ops).
     uint32_t               _fsmGeneration;
-    
-    // Connection-scoped worker guard: prevents duplicate workers.
     BOOL                   _workerActive;
-    
-    // Dedicated serial queue for state entry actions to prevent races.
     dispatch_queue_t       _entryActionQueue;
 }
 
@@ -163,7 +143,6 @@ static BOOL isValidPort(NSString *port) {
 }
 
 - (void)start {
-    // Purge orphaned tokens and generate missing ones before connecting
     [self reconcileTokensWithPlist];
     
     [_stateLock lock];
@@ -174,15 +153,11 @@ static BOOL isValidPort(NSString *port) {
     [self handleEvent:SGEventStartRequested payload:nil];
 }
 
-/// Compares the appStatus plist (source of truth for which apps use Skyglow)
-/// against the token database. Removes orphaned DB entries and flags missing tokens
-/// for generation on next connect.
 - (void)reconcileTokensWithPlist {
     NSString *plistPath = SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp.plist");
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
     NSDictionary *appStatus = [prefs objectForKey:@"appStatus"] ?: @{};
     
-    // Collect enabled bundle IDs from the plist
     NSMutableSet *plistBundles = [NSMutableSet set];
     for (NSString *bundleID in appStatus) {
         if ([[appStatus objectForKey:bundleID] boolValue]) {
@@ -193,7 +168,6 @@ static BOOL isValidPort(NSString *port) {
     SGDatabaseManager *db = [SGDatabaseManager sharedManager];
     NSSet *dbBundles = [db registeredBundleIdentifiers];
     
-    // 1. Remove orphaned tokens (in DB but not in plist)
     for (NSString *bundleID in dbBundles) {
         if (![plistBundles containsObject:bundleID]) {
             [db removeTokenForBundleIdentifier:bundleID];
@@ -201,9 +175,6 @@ static BOOL isValidPort(NSString *port) {
         }
     }
     
-    // 2. Generate tokens for apps in plist but missing from DB
-    //    Only if the device is registered (has a server address) — otherwise
-    //    token generation will fail because there's no server to derive keys from.
     NSString *serverAddr = [[SGConfiguration sharedConfiguration] serverAddress];
     if (serverAddr && [serverAddr length] > 0) {
         SGTokenManager *tokenMgr = [[SGTokenManager alloc] init];
@@ -228,8 +199,6 @@ static BOOL isValidPort(NSString *port) {
     }
 }
 
-// FSM
-
 - (void)handleEvent:(SGEvent)event payload:(id)payload {
     [_stateLock lock];
     
@@ -239,10 +208,9 @@ static BOOL isValidPort(NSString *port) {
     
     NSLog(@"[SGDaemon] FSM Rx Event: %ld in State: %s", (long)event, SGState_GetName(currentState));
 
-    // Global Overrides
     if (event == SGEventStopRequested || 
        (event == SGEventConfigReloaded && ![[SGConfiguration sharedConfiguration] isEnabled])) {
-        _consecutiveFailures = 0; // Explicitly reset error count on disable
+        _consecutiveFailures = 0;
         [self executeTransitionToState:SGStateDisabled backoff:0 ip:NULL];
         [_stateLock unlock];
         return;
@@ -256,14 +224,13 @@ static BOOL isValidPort(NSString *port) {
         return;
     }
 
-    // State-Specific Routing (all transitions go through the FSM — no exceptions)
     switch (currentState) {
         case SGStateStarting:
         case SGStateDisabled:
         case SGStateErrorBadConfig:
         case SGStateIdleUnregistered:
             if (event == SGEventStartRequested || event == SGEventConfigReloaded) {
-                _consecutiveFailures = 0; // Start with a fresh retry count
+                _consecutiveFailures = 0;
                 if ([[SGConfiguration sharedConfiguration] isValid]) {
                     [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
                 } else {
@@ -348,7 +315,6 @@ static BOOL isValidPort(NSString *port) {
         return;
     }
 
-    // Increment generation: invalidates all stale timers and worker threads
     _fsmGeneration++;
     uint32_t capturedGen = _fsmGeneration;
 
@@ -358,10 +324,7 @@ static BOOL isValidPort(NSString *port) {
     SGStatusServer_Post(newState, (uint32_t)_consecutiveFailures, backoff, resolvedIP);
     NSLog(@"[SGDaemon] Transitioned to %s (gen=%u)", SGState_GetName(newState), capturedGen);
 
-    // Execute State Entry Actions on a dedicated serial queue.
-    // Capturing `capturedGen` ensures stale entry actions are no-ops.
     dispatch_async(_entryActionQueue, ^{
-        // Verify this entry action is still relevant
         [self->_stateLock lock];
         BOOL isStale = (self->_fsmGeneration != capturedGen);
         [self->_stateLock unlock];
@@ -403,20 +366,13 @@ static BOOL isValidPort(NSString *port) {
 - (void)executeFailureBackoff {
     _consecutiveFailures++;
     
-    // 1. Give up entirely if max failures reached — wait for network change
     if (_consecutiveFailures >= SG_MAX_CONSECUTIVE_FAILURES) {
         NSLog(@"[SGDaemon] Max failures (%d) reached after ~1h. Idling until network change.", SG_MAX_CONSECUTIVE_FAILURES);
         [self executeTransitionToState:SGStateIdleCircuitOpen backoff:0 ip:NULL];
     } 
     else {
-        // 2. Exponential growth (2, 4, 8, 16, 32...)
-        // (1 << x) is highly efficient bit-shifting math for 2^x
         uint32_t baseDelay = SG_INITIAL_BACKOFF_SECONDS * (1 << (_consecutiveFailures - 1));
-        
-        // 3. Add Jitter (0 to 5 seconds) to desynchronize mass reconnections
         uint32_t jitter = arc4random_uniform(SG_MAX_JITTER_SECONDS + 1);
-        
-        // 4. Cap it at the maximum allowed backoff (10 minutes)
         uint32_t finalDelay = baseDelay + jitter;
         if (finalDelay > SG_MAX_BACKOFF_SECONDS) {
             finalDelay = SG_MAX_BACKOFF_SECONDS;
@@ -427,16 +383,10 @@ static BOOL isValidPort(NSString *port) {
     }
 }
 
-// ── SGProtocolDelegate Implementation ───────────────────────────────
-
 - (void)protocolDidReceiveWelcomeChallenge {
-    // Called from the message processing worker thread.
-    // Route all state changes through the FSM.
     NSString *clientAddress = [[SGConfiguration sharedConfiguration] deviceAddress];
 
     if (!clientAddress || [clientAddress length] == 0) {
-        // No device address — need first-time registration.
-        // Transition Authenticating → Registering is legal in the FSM table.
         [_stateLock lock];
         [self executeTransitionToState:SGStateRegistering backoff:0 ip:NULL];
         [_stateLock unlock];
@@ -487,10 +437,20 @@ static BOOL isValidPort(NSString *port) {
                 NSData   *routingKey = entry[@"routingKey"];
                 NSString *bundleID   = entry[@"bundleID"];
 
-                if (!SGP_IsConnected()) break;
+                if (!SGP_IsConnected()) {
+                    NSLog(@"[SGDaemon] Token upload aborted — connection lost mid-loop");
+                    break;
+                }
 
                 if (SGP_RegisterDeviceToken(routingKey, bundleID)) {
                     [[SGDatabaseManager sharedManager] markTokenAsUploaded:routingKey];
+                } else {
+                    if (!SGP_IsConnected()) {
+                        NSLog(@"[SGDaemon] Token upload for %@ failed — connection dropped (will retry on reconnect)", bundleID);
+                        break;
+                    } else {
+                        NSLog(@"[SGDaemon] Token upload for %@ timed out waiting for S_TOKEN_ACK (server may be slow — will retry on reconnect)", bundleID);
+                    }
                 }
             }
         }
@@ -504,7 +464,6 @@ static BOOL isValidPort(NSString *port) {
 
         NSLog(@"[SGDaemon] Processing Push Notification (MSG_ID: %@)", [msgID description]);
 
-        // ── 1. Deduplication ────────────────────────────────────────
         @synchronized(_seenMessageIDs) {
             if ([_seenMessageIDs containsObject:msgID]) {
                 SGP_EnqueueAcknowledgement(msgID, 0);
@@ -525,7 +484,6 @@ static BOOL isValidPort(NSString *port) {
             });
         }
 
-        // ── 3. Processing ───────────────────────────────────────────
         NSData *routingKey = messageDict[@"routing_key"];
         NSDictionary *routingData = [[SGDatabaseManager sharedManager] tokenDataForRoutingKey:routingKey];
         if (!routingData) {
@@ -570,7 +528,17 @@ static BOOL isValidPort(NSString *port) {
         SGMach_SendPushToAppTopic(routingData[@"bundleID"], parsed);
         SGP_EnqueueAcknowledgement(msgID, 0);
 
-cleanup_assertion:
+        NSNumber *seqNum = messageDict[@"device_seq"];
+        if (seqNum) {
+            int64_t arrivedSeq = [seqNum longLongValue];
+            int64_t currentMax = [[SGDatabaseManager sharedManager] lastDeliveredSeq];
+
+            if (arrivedSeq > currentMax) {
+                [[SGDatabaseManager sharedManager] updateLastDeliveredSeq:arrivedSeq];
+            }
+        }
+
+        cleanup_assertion:
         {
             IOPMAssertionID current = atomic_exchange(&assertionID, 0);
             if (current != 0) IOPMAssertionRelease(current);
@@ -597,24 +565,56 @@ cleanup_assertion:
 
 - (void)protocolDidReceiveTimeSyncWithOffset:(int64_t)offsetSeconds {
     if (llabs(offsetSeconds) > 60) {
-        NSLog(@"[SGDaemon] ⚠️ Significant clock drift detected: %lld seconds", offsetSeconds);
+        NSLog(@"[SGDaemon] [WARNING] Significant clock drift detected: %lld seconds", offsetSeconds);
     }
 }
 
-// ── Registration flow ───────────────────────────────────────────────
+- (void)protocolDidCompleteRegistrationWithAddress:(NSString *)deviceAddress privateKey:(char *)pemKey serverVersion:(uint32_t)serverVersion {
 
-- (void)protocolDidCompleteRegistrationWithAddress:(NSString *)deviceAddress privateKey:(NSString *)privateKeyPEM serverVersion:(uint32_t)serverVersion {
+    if (!pemKey) {
+        [self handleEvent:SGEventDisconnected payload:nil];
+        return;
+    }
+
+    size_t pemLen = strlen(pemKey);
+
     NSString *profilePath = SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist");
     NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePath] ?: [NSMutableDictionary dictionary];
 
     profile[@"device_address"] = deviceAddress;
-    
+
     NSString *keyPath = @"/var/Library/PreferenceBundles/SGNPreferenceBundle.bundle/com.skyglow.client.pem";
     NSString *absoluteKeyPath = SGPath(keyPath);
     NSString *keyDir = [absoluteKeyPath stringByDeletingLastPathComponent];
     [[NSFileManager defaultManager] createDirectoryAtPath:keyDir withIntermediateDirectories:YES attributes:nil error:nil];
-    
-    [privateKeyPEM writeToFile:absoluteKeyPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+    BOOL keyWritten = NO;
+    const char *keyPathC = [absoluteKeyPath fileSystemRepresentation];
+    int fd = open(keyPathC, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd >= 0) {
+        size_t written = 0;
+        while (written < pemLen) {
+            ssize_t n = write(fd, pemKey + written, pemLen - written);
+            if (n <= 0) break;
+            written += (size_t)n;
+        }
+        if (written == pemLen) {
+            fsync(fd);
+            keyWritten = YES;
+        }
+        close(fd);
+    }
+
+    SGP_ZeroAndFreeKeyMaterial(pemKey, pemLen);
+    pemKey = NULL;
+
+    if (!keyWritten) {
+        NSLog(@"[SGDaemon] Failed to write private key to disk — aborting registration.");
+        [[NSFileManager defaultManager] removeItemAtPath:absoluteKeyPath error:nil];
+        [self handleEvent:SGEventDisconnected payload:nil];
+        return;
+    }
+
     profile[@"privateKey"] = keyPath;
 
     if (![profile writeToFile:profilePath atomically:YES]) {
@@ -623,27 +623,20 @@ cleanup_assertion:
     }
 
     [[SGConfiguration sharedConfiguration] reloadFromDisk];
-
     [[SGDatabaseManager sharedManager] resetAllTokensToRequireUpload];
 
-    BIO *bio = BIO_new_mem_buf((void *)[privateKeyPEM UTF8String], -1);
-    RSA *privKey = bio ? PEM_read_bio_RSAPrivateKey(bio, NULL, NULL, NULL) : NULL;
-    if (bio) BIO_free(bio);
-
+    RSA *privKey = SG_CryptoGetClientPrivateKey();
     if (!privKey) {
+        NSLog(@"[SGDaemon] Freshly-written key failed to reload — wiping profile for re-registration.");
         [self handleEvent:SGEventAuthFailed payload:nil];
         return;
     }
 
-    // Transition Registering → Authenticating through the FSM,
-    // so that SGEventAuthSuccess is handled in the correct state.
     [_stateLock lock];
     [self executeTransitionToState:SGStateAuthenticating backoff:0 ip:NULL];
     [_stateLock unlock];
     SGP_BeginLoginHandshake(deviceAddress, privKey);
 }
-
-// ── Daemon Control ──────────────────────────────────────────────────
 
 - (void)systemNetworkReachabilityDidChangeWithWWANStatus:(BOOL)isWWAN {
     [_stateLock lock];
@@ -664,13 +657,10 @@ cleanup_assertion:
 
 - (void)handleConfigurationReloadRequest {
     [[SGConfiguration sharedConfiguration] reloadFromDisk];
-    // Reconcile tokens before re-connecting — picks up apps registered while disabled
     [self reconcileTokensWithPlist];
     [self handleEvent:SGEventConfigReloaded payload:nil];
 }
 
-/// Wipes device registration inline (called while _stateLock is held).
-/// Does NOT re-enter handleEvent — avoids NSLock deadlock.
 - (void)performProfileWipeInline {
     @autoreleasepool {
         NSString *profilePath = SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist");
@@ -682,8 +672,6 @@ cleanup_assertion:
         [[SGDatabaseManager sharedManager] resetAllTokensToRequireUpload];
     }
 }
-
-// ── Worker Methods ──────────────────────────────────────────────────
 
 - (void)performDNSResolution {
     NSString *address = [[SGConfiguration sharedConfiguration] serverAddress];
@@ -722,13 +710,7 @@ cleanup_assertion:
     }
 }
 
-/// Connection-scoped worker: starts once when the socket connects and
-/// runs until the socket disconnects or returns an error. Does NOT check
-/// the FSM generation — the generation counter is only for timers.
-/// This is the APNS-style reader: one reader per connection lifetime.
 - (void)startConnectionScopedWorker {
-    // Guard: only one worker per connection. The Registering → Authenticating
-    // re-entry calls this again, but the flag prevents a duplicate.
     if (_workerActive) return;
     _workerActive = YES;
 

@@ -18,4 +18,4 @@
 
 @end
 
-#endif /* SKYGLOW_SG_SERVER_LOCATOR_H */
+#endif

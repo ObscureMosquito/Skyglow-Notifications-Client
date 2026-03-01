@@ -1,7 +1,5 @@
 #import "SGConfiguration.h"
 
-// SGPath() is defined in SGConfiguration.h
-
 @implementation SGConfiguration {
     NSString *_serverAddress;
     NSString *_serverIPAddress;
@@ -118,7 +116,6 @@
     return keyContent;
 }
 
-// Add this alongside your other property accessors
 - (BOOL)isValid {
     __block BOOL valid = NO;
     dispatch_sync(_isolationQueue, ^{
@@ -145,8 +142,6 @@
     if (_isolationQueue) dispatch_release(_isolationQueue);
     [super dealloc];
 }
-
-// ── Thread-Safe Property Accessors ─────────────────────────────────
 
 - (void)setServerAddress:(NSString *)address {
     dispatch_barrier_async(_isolationQueue, ^{

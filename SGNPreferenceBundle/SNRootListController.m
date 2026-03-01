@@ -43,26 +43,22 @@
     
     [[SNDataManager shared] setMainPrefValue:value forKey:key];
     
-    // Also sync via CFPreferences for backward compat
     CFStringRef appID = CFSTR("com.skyglow.sndp");
     CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, appID);
     CFPreferencesAppSynchronize(appID);
     
-    // Tell running daemon to re-read config (handles disable while connected)
     CFNotificationCenterPostNotificationWithOptions(
         CFNotificationCenterGetDarwinNotifyCenter(),
         CFSTR("com.skyglow.sgn.reload_config"),
         NULL, NULL, kCFNotificationDeliverImmediately);
     
-    // Also restart daemon via launchctl (handles enable when daemon wasn't running)
     [self reloadDaemon];
 }
 
 - (void)reloadDaemon {
-    // Send the signal to SpringBoard
     CFNotificationCenterPostNotificationWithOptions(
         CFNotificationCenterGetDarwinNotifyCenter(),
-        CFSTR("com.skyglow.sgn.trigger_restart"), // Must match the listener exactly
+        CFSTR("com.skyglow.sgn.trigger_restart"),
         NULL, NULL, kCFNotificationDeliverImmediately);
 }
 

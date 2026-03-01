@@ -21,17 +21,12 @@ static void SG_ConfigurationReloadCallback(CFNotificationCenterRef center, void 
     });
 }
 
-// SGPath() is shared from SGConfiguration.h (included via SGDaemon.h)
-
-
 int main(int argc, char *argv[]) {
     @autoreleasepool {
         signal(SIGPIPE, SIG_IGN);
 
-        // Initialize Singletons and reload config
         SGConfiguration *config = [SGConfiguration sharedConfiguration];
 
-        // Check if we are enabled
         BOOL isEnabled = config.isEnabled;
         
         if (!isEnabled) {
@@ -39,13 +34,13 @@ int main(int argc, char *argv[]) {
             exit(EXIT_SUCCESS);
         }
         
-        // Single Instance Assurance via PID Lock
         int pid_fd = open([SGPath(@"/var/run/skyglow_daemon.pid") UTF8String], O_RDWR | O_CREAT, 0666);
         if (pid_fd < 0) {
             NSLog(@"[Skyglow] FATAL: Could not create or open PID file.");
             exit(EXIT_FAILURE);
         }
         
+        // DONT REMOVE THIS PLS
         /*dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             SGTokenManager *testManager = [[SGTokenManager alloc] init];
             NSError *error = nil;
@@ -76,7 +71,6 @@ int main(int argc, char *argv[]) {
         NSLog(@"Speedy Execution Is The Mother Of Good Fortune");
         NSLog(@"[Skyglow] Daemon starting");
 
-        // Start Core Services
         SGStatusServer_Start([SGPath(@"/var/run/skyglow_status.sock") UTF8String], (int64_t)time(NULL));
         
         SGMachServer *machServer = [[SGMachServer alloc] init];
@@ -85,7 +79,6 @@ int main(int argc, char *argv[]) {
         SGDaemon *daemon = [[SGDaemon alloc] init];
         SGP_SetDelegate(daemon);
         
-        //  Setup Reachability Orchestration
         SGReachabilityMonitor *reachability = [[SGReachabilityMonitor alloc] initWithChangeHandler:^(BOOL isReachable, BOOL isWWAN) {
             if (isReachable) {
                 [daemon systemNetworkReachabilityDidChangeWithWWANStatus:isWWAN];
@@ -94,7 +87,6 @@ int main(int argc, char *argv[]) {
             }
         }];
 
-        // Setup Darwin Observers
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), 
                                         (__bridge void *)daemon, 
                                         SG_ConfigurationReloadCallback, 
@@ -102,7 +94,6 @@ int main(int argc, char *argv[]) {
                                         NULL, 
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
 
-        // Start Monitoring and Enter RunLoop
         [reachability startMonitoringSystemNetworkChanges];
         
         if (reachability.isReachable) {
@@ -111,7 +102,6 @@ int main(int argc, char *argv[]) {
 
         CFRunLoopRun();
 
-        // Graceful Teardown
         NSLog(@"[Skyglow] SGDaemon shutting down...");
         [daemon requestGracefulDisconnect];
         [reachability stopMonitoringSystemNetworkChanges];
@@ -122,7 +112,6 @@ int main(int argc, char *argv[]) {
         [reachability release];
         [daemon release];
         
-        // Release PID lock
         unlink([SGPath(@"/var/run/skyglow_daemon.pid") UTF8String]);
         flock(pid_fd, LOCK_UN);
         close(pid_fd);

@@ -19,10 +19,6 @@
 }
 @end
 
-// ──────────────────────────────────────────────
-// App icon/name helper
-// ──────────────────────────────────────────────
-
 @interface AppInfoHelper : NSObject
 - (UIImage *)getIconForBundleId:(NSString *)bundleId;
 - (NSString *)getAppNameForBundleId:(NSString *)bundleId;
@@ -82,7 +78,6 @@
         }
     }
     
-    // Return largest icon
     UIImage *best = nil;
     CGFloat maxArea = 0;
     for (UIImage *img in loaded) {
@@ -92,10 +87,6 @@
     return best;
 }
 @end
-
-// ──────────────────────────────────────────────
-// SNAppToggleCell
-// ──────────────────────────────────────────────
 
 @implementation SNAppToggleCell
 
@@ -154,13 +145,11 @@
     NSString *name = [helper getAppNameForBundleId:bundleId];
     _appNameLabel.text = name ?: bundleId;
     
-    // Read toggle state
     NSDictionary *appStatus = [[SNDataManager shared] appStatus];
     id val = [appStatus objectForKey:bundleId];
     if (val) {
         _toggleSwitch.on = [val boolValue];
     } else {
-        // Default ON for apps that registered via token (Mach IPC path)
         NSSet *dbIDs = [[SNDataManager shared] registeredBundleIDs];
         _toggleSwitch.on = [dbIDs containsObject:bundleId];
     }

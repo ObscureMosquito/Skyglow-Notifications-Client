@@ -30,7 +30,6 @@ static void* SGStatusServer_AcceptLoop(void* arg) {
         
         if (clientFd < 0) {
             if (errno == EMFILE || errno == ENFILE) {
-                // Yield CPU thread if daemon hits FD limit to prevent 100% spinloop drain on battery
                 sleep(1);
             } else if (errno == EINTR) {
                 continue;
@@ -51,7 +50,6 @@ static void* SGStatusServer_AcceptLoop(void* arg) {
         }
 
         if (mode == SS_MODE_QUERY) {
-            // Query: set non-blocking, write snapshot, close immediately
             int flags = fcntl(clientFd, F_GETFL, 0);
             fcntl(clientFd, F_SETFL, flags | O_NONBLOCK);
             pthread_mutex_lock(&_lock);

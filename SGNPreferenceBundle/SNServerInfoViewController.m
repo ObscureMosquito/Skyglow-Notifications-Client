@@ -11,7 +11,6 @@ typedef enum {
 } ServerInfoSection;
 
 @interface SNServerInfoViewController () <UIAlertViewDelegate>
-// Preferences Framework integration requirements for controllers pushed from a PSLinkCell
 @property (nonatomic, strong) id rootController;
 @property (nonatomic, strong) id parentController;
 @property (nonatomic, strong) id specifier;
@@ -31,8 +30,6 @@ typedef enum {
     [super viewWillAppear:animated];
     [self.tableView reloadData];
 }
-
-// ── Table View Data Source ──────────────────────────────────────────
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     return [[SNDataManager shared] isRegistered] ? SectionCount : 1;
@@ -119,8 +116,6 @@ typedef enum {
     
     return cell;
 }
-
-// ── Actions ─────────────────────────────────────────────────────────
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];

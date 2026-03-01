@@ -70,7 +70,6 @@ static NSString *const kSGNPlistNameKey  = @"sgn_plist_name";
 
     [skyglowSpec setIdentifier:kSkyglowID];
 
-    // Carry the bundle object just like PLBundleKey does in PreferenceLoader
     if (prefBundle) [skyglowSpec setProperty:prefBundle forKey:kSGNBundleObjKey];
 
     [skyglowSpec setProperty:@"Root" forKey:kSGNPlistNameKey];

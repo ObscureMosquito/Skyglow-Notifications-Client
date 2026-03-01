@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-// --- SGState Enum ---
+/** SGState Enum */
 typedef enum : uint32_t {
     SGStateStarting            = 0,
     SGStateDisabled            = 1,
@@ -28,8 +28,9 @@ typedef enum : uint32_t {
     SGStateRegistering         = 15
 } SGState;
 
-// --- SGStatusPayload Structure ---
-// Fixed-size binary packet for IPC communication.
+/**
+ * Fixed-size binary packet for IPC status communication.
+ */
 #pragma pack(4)
 typedef struct {
     uint32_t state;
@@ -42,9 +43,7 @@ typedef struct {
 #pragma pack()
 
 /**
- * Starts the status server on a background thread.
- * @param socketPath The filesystem path for the Unix Domain Socket (e.g., /var/run/sgn.sock).
- * @param startTime  The unix timestamp when the process launched.
+ * Starts the status server on a background thread using the given socket path.
  */
 void SGStatusServer_Start(const char *socketPath, int64_t startTime);
 
@@ -72,4 +71,4 @@ const char *SGState_GetName(SGState state);
 }
 #endif
 
-#endif /* SKYGLOW_SG_STATUS_SERVER_H */
+#endif
