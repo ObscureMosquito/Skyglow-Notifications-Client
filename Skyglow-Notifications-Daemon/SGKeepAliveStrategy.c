@@ -23,6 +23,7 @@ void SGKeepAlive_Initialize(SGKeepAliveAlgorithm *algo, bool isWiFi, double init
     }
     
     algo->maximumReachedInterval = 0.0;
+    algo->consecutiveSuccesses = 0;
 }
 
 void SGKeepAlive_ProcessHeartbeatResult(SGKeepAliveAlgorithm *algo, bool wasSuccessful) {
@@ -30,6 +31,16 @@ void SGKeepAlive_ProcessHeartbeatResult(SGKeepAliveAlgorithm *algo, bool wasSucc
     double maxLimit = algo->isWiFi ? MAX_WIFI : MAX_WWAN;
 
     if (wasSuccessful) {
+        if (algo->stage == SGKeepAliveStageBackoff) {
+            algo->consecutiveSuccesses++;
+            if (algo->consecutiveSuccesses >= 3) {
+                algo->stage = SGKeepAliveStageGrowth;
+                algo->consecutiveSuccesses = 0;
+            }
+        } else {
+            algo->consecutiveSuccesses++;
+        }
+
         if (algo->stage == SGKeepAliveStageGrowth) {
             double jitter = ((double)(arc4random_uniform(100)) / 100.0 * 10.0) - 5.0;
             algo->currentInterval += (INCREMENT + jitter);
@@ -38,9 +49,12 @@ void SGKeepAlive_ProcessHeartbeatResult(SGKeepAliveAlgorithm *algo, bool wasSucc
                 algo->stage = SGKeepAliveStageSteady;
             }
         }
-    } else if (algo->stage != SGKeepAliveStageBackoff) {
-        algo->stage = SGKeepAliveStageBackoff;
-        algo->currentInterval *= BACKOFF;
+    } else {
+        algo->consecutiveSuccesses = 0;
+        if (algo->stage != SGKeepAliveStageBackoff) {
+            algo->stage = SGKeepAliveStageBackoff;
+            algo->currentInterval *= BACKOFF;
+        }
     }
 }
 

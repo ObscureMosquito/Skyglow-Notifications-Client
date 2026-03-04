@@ -58,6 +58,8 @@ static void* SGStatusServer_AcceptLoop(void* arg) {
             write(clientFd, &snap, sizeof(snap));
             close(clientFd);
         } else if (mode == SS_MODE_WATCH) {
+            int flags = fcntl(clientFd, F_GETFL, 0);
+            fcntl(clientFd, F_SETFL, flags | O_NONBLOCK);
             pthread_mutex_lock(&_lock);
             SGStatusPayload snap = _current;
             int added = 0;

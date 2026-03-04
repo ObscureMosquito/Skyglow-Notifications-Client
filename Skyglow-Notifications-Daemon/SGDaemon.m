@@ -432,28 +432,29 @@ static BOOL isValidPort(NSString *port) {
     if ([pending count] == 0) return;
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        dispatch_group_t group = dispatch_group_create();
         for (NSDictionary *entry in pending) {
-            @autoreleasepool {
-                NSData   *routingKey = entry[@"routingKey"];
-                NSString *bundleID   = entry[@"bundleID"];
+            dispatch_group_async(group, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                @autoreleasepool {
+                    NSData   *routingKey = entry[@"routingKey"];
+                    NSString *bundleID   = entry[@"bundleID"];
 
-                if (!SGP_IsConnected()) {
-                    NSLog(@"[SGDaemon] Token upload aborted — connection lost mid-loop");
-                    break;
-                }
+                    if (!SGP_IsConnected()) return;
 
-                if (SGP_RegisterDeviceToken(routingKey, bundleID)) {
-                    [[SGDatabaseManager sharedManager] markTokenAsUploaded:routingKey];
-                } else {
-                    if (!SGP_IsConnected()) {
-                        NSLog(@"[SGDaemon] Token upload for %@ failed — connection dropped (will retry on reconnect)", bundleID);
-                        break;
+                    if (SGP_RegisterDeviceToken(routingKey, bundleID)) {
+                        [[SGDatabaseManager sharedManager] markTokenAsUploaded:routingKey];
                     } else {
-                        NSLog(@"[SGDaemon] Token upload for %@ timed out waiting for S_TOKEN_ACK (server may be slow — will retry on reconnect)", bundleID);
+                        if (!SGP_IsConnected()) {
+                            NSLog(@"[SGDaemon] Token upload for %@ failed — connection dropped (will retry on reconnect)", bundleID);
+                        } else {
+                            NSLog(@"[SGDaemon] Token upload for %@ timed out waiting for S_TOKEN_ACK (server may be slow — will retry on reconnect)", bundleID);
+                        }
                     }
                 }
-            }
+            });
         }
+        dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+        dispatch_release(group);
     });
 }
 
@@ -733,7 +734,9 @@ static BOOL isValidPort(NSString *port) {
                 break;
             }
         }
-        self->_workerActive = NO;
+        dispatch_async(self->_entryActionQueue, ^{
+            self->_workerActive = NO;
+        });
         NSLog(@"[SGDaemon] Connection worker stopped.");
     });
 }

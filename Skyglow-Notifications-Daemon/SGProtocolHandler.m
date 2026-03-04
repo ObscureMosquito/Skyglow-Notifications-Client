@@ -97,7 +97,7 @@ static uint32_t SG_DecodeBE32(const uint8_t p[4]) {
 }
 
 static int SG_WaitForSocket(int sock, int forWrite, int timeoutSec) {
-    if (sock < 0) return -1;
+    if (sock < 0 || sock >= FD_SETSIZE) return -1;
     fd_set fds; FD_ZERO(&fds); FD_SET(sock, &fds);
     struct timeval tv = {timeoutSec, 0};
     if (forWrite)
@@ -132,21 +132,25 @@ static int SG_SSLReadExact(void *buf, int len) {
 
 static int SG_SSLWriteLocked(const void *buf, int len) {
     if (!_ssl) return -1;
+    pthread_rwlock_rdlock(&_sslLock);
+    if (!_ssl) { pthread_rwlock_unlock(&_sslLock); return -1; }
     int total = 0;
     while (total < len) {
         int n = SSL_write(_ssl, (const char *)buf + total, len - total);
         if (n > 0) { total += n; continue; }
         int err = SSL_get_error(_ssl, n);
         if (err == SSL_ERROR_WANT_WRITE) {
-            if (SG_WaitForSocket(_sock, 1, 10) != 0) return -1;
+            if (SG_WaitForSocket(_sock, 1, 10) != 0) { pthread_rwlock_unlock(&_sslLock); return -1; }
             continue;
         }
         if (err == SSL_ERROR_WANT_READ) {
-            if (SG_WaitForSocket(_sock, 0, 10) != 0) return -1;
+            if (SG_WaitForSocket(_sock, 0, 10) != 0) { pthread_rwlock_unlock(&_sslLock); return -1; }
             continue;
         }
+        pthread_rwlock_unlock(&_sslLock);
         return -1;
     }
+    pthread_rwlock_unlock(&_sslLock);
     return 0;
 }
 
@@ -381,6 +385,7 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     }
 
     if (connectResult < 0) {
+        if (_sock >= FD_SETSIZE) { SGP_DisconnectFromServer(); return -3; }
         fd_set wfds; FD_ZERO(&wfds); FD_SET(_sock, &wfds);
         struct timeval tv = {10, 0};
         int sel = select(_sock + 1, NULL, &wfds, NULL, &tv);
@@ -506,6 +511,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
     int hasPending = (_ssl && SSL_pending(_ssl) > 0);
 
     if (!hasPending) {
+        if (_sock >= FD_SETSIZE) return SGP_ERR_IO;
         fd_set rfds; FD_ZERO(&rfds); FD_SET(_sock, &rfds);
     
         struct timeval tv = {(long)pingIntervalSec, 0};

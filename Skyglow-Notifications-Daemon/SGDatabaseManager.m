@@ -42,6 +42,7 @@
         chown([dbPath UTF8String], 501, 501);
 
         sqlite3_exec(_database, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
+        sqlite3_exec(_database, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
 
         char *errorMsg = NULL;
         const char *notifTable = "CREATE TABLE IF NOT EXISTS notifications "

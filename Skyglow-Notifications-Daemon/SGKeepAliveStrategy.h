@@ -20,6 +20,7 @@ typedef struct {
     SGKeepAliveStage stage;
     double currentInterval;
     double maximumReachedInterval;
+    int consecutiveSuccesses;
 } SGKeepAliveAlgorithm;
 
 /**

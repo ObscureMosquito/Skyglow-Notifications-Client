@@ -55,6 +55,11 @@ kern_return_t SGMach_SendPushToAppTopic(NSString *topic, NSDictionary *payload) 
     SGTokenManager *_tokenManager;
 }
 
+- (void)dealloc {
+    [_tokenManager release];
+    [super dealloc];
+}
+
 - (void)startMachBootstrapServices {
     _tokenManager = [[SGTokenManager alloc] init];
     mach_port_t serverPort;
