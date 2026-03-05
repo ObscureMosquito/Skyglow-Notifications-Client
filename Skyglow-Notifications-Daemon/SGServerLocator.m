@@ -80,6 +80,11 @@ static void DNSSD_API query_callback(DNSServiceRef sdRef, DNSServiceFlags flags,
     }
 
     int dns_fd = DNSServiceRefSockFD(sdRef);
+    if (dns_fd < 0 || dns_fd >= FD_SETSIZE) {
+        DNSServiceRefDeallocate(sdRef);
+        return nil;
+    }
+    
     NSDate *timeoutDate = [NSDate dateWithTimeIntervalSinceNow:5.0];
     BOOL done = NO;
     

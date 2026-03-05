@@ -26,7 +26,8 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateStarting,          SGStateErrorBadConfig      },
 
     { SGStateResolvingDNS,      SGStateConnecting          },
-    { SGStateResolvingDNS,      SGStateIdleDNSFailed       },
+    { SGStateResolvingDNS,      SGStateBackingOff          },
+    { SGStateResolvingDNS,      SGStateIdleCircuitOpen     },
     { SGStateResolvingDNS,      SGStateErrorBadConfig      },
     { SGStateResolvingDNS,      SGStateIdleNoNetwork       },
     { SGStateResolvingDNS,      SGStateDisabled            },

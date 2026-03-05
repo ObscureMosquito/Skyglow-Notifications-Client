@@ -435,7 +435,10 @@ static void ShowRegistrationChoiceAlert(NSString *bundleId) {
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath];
     NSDictionary *appStatus = [prefs objectForKey:@"appStatus"];
     id existing = [appStatus objectForKey:bundleId];
-    if (existing && ![existing boolValue]) {
+    if (existing) {
+        if ([existing boolValue]) {
+            DeliverSkyglowToken(bundleId);
+        }
         return %orig;
     }
 
@@ -464,7 +467,10 @@ static void ShowRegistrationChoiceAlert(NSString *bundleId) {
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath];
     NSDictionary *appStatus = [prefs objectForKey:@"appStatus"];
     id existing = [appStatus objectForKey:bundleIdentifier];
-    if (existing && ![existing boolValue]) {
+    if (existing) {
+        if ([existing boolValue]) {
+            DeliverSkyglowToken(bundleIdentifier);
+        }
         %orig;
         return;
     }
