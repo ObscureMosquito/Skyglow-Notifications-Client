@@ -384,4 +384,12 @@
     });
 }
 
+- (void)checkpoint {
+    dispatch_async(_databaseQueue, ^{
+        if (self->_database) {
+            sqlite3_wal_checkpoint_v2(self->_database, NULL, SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
+        }
+    });
+}
+
 @end

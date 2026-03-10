@@ -40,6 +40,7 @@ static BOOL      _hasPendingNonce = NO;
 
 static uint64_t  _pingSeq = 0;
 static double    _pingPendingSince = 0.0;
+static double    _lastFrameReceivedAt = 0.0;
 static uint32_t  _lastRetryHint = 0;
 
 /**
@@ -306,12 +307,37 @@ void SGP_ZeroAndFreeKeyMaterial(char *pemBuf, size_t len) {
 void SGP_SetDelegate(id<SGProtocolDelegate> delegate) { _delegate = delegate; }
 BOOL SGP_IsConnected(void) { return (_ssl != NULL && _sock >= 0); }
 uint32_t SGP_GetLastDisconnectRetryAfter(void) { return _lastRetryHint; }
+double SGP_GetLastFrameReceivedAt(void) { return _lastFrameReceivedAt; }
+
+BOOL SGP_SendKeepAlivePing(void) {
+    if (!SGP_IsConnected()) return NO;
+    if (_pingPendingSince > 0.0) return NO;
+
+    _pingSeq++;
+    _pingPendingSince = SG_GetMonotonicSeconds();
+    uint8_t seq[8];
+    SG_EncodeBE64((int64_t)_pingSeq, seq);
+    if (SGP_LowLevelSend(SGP_C_PING, seq, 8) != 0) {
+        _pingPendingSince = 0.0;
+        return NO;
+    }
+    return YES;
+}
 
 void SGP_AbortConnection(void) {
-    if (_sock >= 0) {
-        shutdown(_sock, SHUT_RDWR);
-        close(_sock);
-        _sock = -1;
+    /**
+     * Only close the socket to unblock any in-progress SSL_read.
+     * Do NOT touch _ssl here — DisconnectFromServer handles that
+     * under the write lock. After this call:
+     *   - SGP_IsConnected() returns NO (because _sock < 0)
+     *   - SSL_read returns error (fd closed underneath it)
+     *   - Worker loop exits cleanly
+     */
+    int s = _sock;
+    _sock = -1;
+    if (s >= 0) {
+        shutdown(s, SHUT_RDWR);
+        close(s);
     }
 }
 
@@ -337,12 +363,14 @@ void SGP_DisconnectFromServer(void) {
         _regPendingPrivKeyLen = 0;
     }
     _pingPendingSince = 0.0;
+    _lastFrameReceivedAt = 0.0;
 }
 
 int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     signal(SIGPIPE, SIG_IGN);
     SGP_DisconnectFromServer();
     _lastRetryHint = 0;
+    _lastFrameReceivedAt = 0.0;
 
     _sslctx = SSL_CTX_new(TLS_client_method());
     SSL_CTX_set_options(_sslctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
@@ -369,6 +397,25 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
 
     int yes = 1;
     setsockopt(_sock, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+
+    /**
+     * Enable TCP keepalive as a transport-level safety net.
+     * This does NOT replace the application-level adaptive ping/pong —
+     * it catches half-open connections where the NAT mapping died but
+     * both endpoints still think the socket is alive.
+     *
+     * On iOS, the baseband processor handles TCP keepalive responses
+     * during deep sleep without waking the Application Processor.
+     * apsd cannot do this because it uses CFStream; we can because
+     * we have a raw socket.
+     *
+     * TCP_KEEPALIVE (Darwin) = idle time before first probe.
+     * System defaults handle probe interval (~75s) and count (~8).
+     */
+    int keepalive = 1;
+    setsockopt(_sock, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
+    int keepidle = 120;
+    setsockopt(_sock, IPPROTO_TCP, TCP_KEEPALIVE, &keepidle, sizeof(keepidle));
 
     int flags = fcntl(_sock, F_GETFL, 0);
     fcntl(_sock, F_SETFL, flags | O_NONBLOCK);
@@ -540,6 +587,13 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
 
     uint8_t hdr[8];
     if (SG_SSLReadExact(hdr, 8) != 0) return SGP_ERR_IO;
+    _lastFrameReceivedAt = SG_GetMonotonicSeconds();
+
+    if (hdr[0] != SGP_MAGIC || hdr[1] != SGP_VERSION) {
+        NSLog(@"[SGP] Invalid magic/version: 0x%02X 0x%02X (expected 0x%02X 0x%02X)",
+              hdr[0], hdr[1], SGP_MAGIC, SGP_VERSION);
+        return SGP_ERR_PROTO;
+    }
 
     if (hdr[3] != 0x00) {
         NSLog(@"[SGP] Non-zero reserved header byte: 0x%02X", hdr[3]);
@@ -646,6 +700,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             NSData *rk  = [NSData dataWithBytes:raw length:SGP_ROUTING_KEY_LEN];
             NSData *mid = [NSData dataWithBytes:raw + SGP_ROUTING_KEY_LEN length:SGP_MSG_ID_LEN];
             int64_t deviceSeq = SG_DecodeBE64(raw + SGP_NOTIFY_OFF_SEQ);
+            int64_t expiresAt = SG_DecodeBE64(raw + SGP_NOTIFY_OFF_EXPIRES_AT);
             uint32_t dl = SG_DecodeBE32(raw + SGP_NOTIFY_OFF_DATA_LEN);
 
             if ((uint64_t)SGP_NOTIFY_MIN_PAYLOAD + dl > (uint64_t)len) {
@@ -660,6 +715,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
                 @(deviceSeq), @"device_seq",
                 nil];
             notif[@"data"] = [NSData dataWithBytes:raw + SGP_NOTIFY_MIN_PAYLOAD length:dl];
+            if (expiresAt > 0) notif[@"expires_at"] = @(expiresAt);
 
             if (raw[SGP_NOTIFY_OFF_FLAGS] & 0x01) {
                 if ((uint64_t)SGP_NOTIFY_MIN_PAYLOAD + dl + SGP_GCM_IV_LEN > (uint64_t)len) {

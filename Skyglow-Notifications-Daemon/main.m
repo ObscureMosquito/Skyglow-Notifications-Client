@@ -73,9 +73,6 @@ int main(int argc, char *argv[]) {
 
         SGStatusServer_Start([SGPath(@"/var/run/skyglow_status.sock") UTF8String], (int64_t)time(NULL));
         
-        SGMachServer *machServer = [[SGMachServer alloc] init];
-        [machServer startMachBootstrapServices];
-
         SGDaemon *daemon = [[SGDaemon alloc] init];
         SGP_SetDelegate(daemon);
         
@@ -108,7 +105,6 @@ int main(int argc, char *argv[]) {
         SGStatusServer_Shutdown();
         [[SGDatabaseManager sharedManager] closeDatabase];
         
-        [machServer release];
         [reachability release];
         [daemon release];
         

@@ -118,6 +118,11 @@
  */
 - (void)closeDatabase;
 
+/**
+ * Runs a passive WAL checkpoint to reclaim space and prevent unbounded WAL growth.
+ */
+- (void)checkpoint;
+
 @end
 
 #endif

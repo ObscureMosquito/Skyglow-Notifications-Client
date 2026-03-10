@@ -20,7 +20,7 @@
         if (token && [token length] > 0) return [[token retain] autorelease];
     }
 
-    return [self generateNewTokenForBundleIdentifier:bundleIdentifier error:outError];
+    return [self generateTokenLocallyForBundleIdentifier:bundleIdentifier error:outError];
 }
 
 - (BOOL)revokeTokenForBundleIdentifier:(NSString *)bundleIdentifier reason:(NSString *)reason {
@@ -32,7 +32,7 @@
     return YES;
 }
 
-- (NSData *)generateNewTokenForBundleIdentifier:(NSString *)bundleIdentifier error:(NSError **)outError {
+- (NSData *)generateTokenLocallyForBundleIdentifier:(NSString *)bundleIdentifier error:(NSError **)outError {
     NSString *serverAddr = [[SGConfiguration sharedConfiguration] serverAddress];
     if (!serverAddr) {
         if (outError) *outError = [NSError errorWithDomain:@"com.skyglow.tokens" code:11 userInfo:nil];
@@ -40,7 +40,10 @@
     }
 
     uint8_t K[16];
-    if (SecRandomCopyBytes(kSecRandomDefault, sizeof(K), K) != errSecSuccess) return nil;
+    if (SecRandomCopyBytes(kSecRandomDefault, sizeof(K), K) != errSecSuccess) {
+        if (outError) *outError = [NSError errorWithDomain:@"com.skyglow.tokens" code:12 userInfo:nil];
+        return nil;
+    }
 
     unsigned char hashBuf[CC_SHA256_DIGEST_LENGTH];
     CC_SHA256(K, sizeof(K), hashBuf);
@@ -56,18 +59,33 @@
     memcpy(ptr, [addrData bytes], MIN([addrData length], (NSUInteger)16));
     memcpy(ptr + 16, K, 16);
 
-    BOOL uploaded = NO;
-    if (SGP_IsConnected()) {
-        if (SGP_RegisterDeviceToken(routingKey, bundleIdentifier)) uploaded = YES;
-    }
+    // Store with isUploaded=NO — server upload happens async via uploadTokenIfNeededForBundleIdentifier:
+    [[SGDatabaseManager sharedManager] storeDeviceTokenData:routingKey
+                                                   e2eeKey:e2eeKey
+                                                  bundleID:bundleIdentifier
+                                                     token:deviceToken
+                                                isUploaded:NO];
 
-    [[SGDatabaseManager sharedManager] storeDeviceTokenData:routingKey 
-                                                   e2eeKey:e2eeKey 
-                                                  bundleID:bundleIdentifier 
-                                                     token:deviceToken 
-                                                isUploaded:uploaded];
-
+    NSLog(@"[SGTokenManager] Generated local token for %@", bundleIdentifier);
     return [deviceToken autorelease];
+}
+
+- (void)uploadTokenIfNeededForBundleIdentifier:(NSString *)bundleIdentifier {
+    NSArray *existing = [[SGDatabaseManager sharedManager] tokenEntriesForBundleIdentifier:bundleIdentifier];
+    if (existing.count == 0) return;
+
+    NSDictionary *entry = existing[0];
+    if ([entry[@"isUploaded"] boolValue]) return;
+
+    NSData *routingKey = entry[@"routingKey"];
+    if (!routingKey) return;
+
+    if (SGP_IsConnected() && SGP_RegisterDeviceToken(routingKey, bundleIdentifier)) {
+        [[SGDatabaseManager sharedManager] markTokenAsUploaded:routingKey];
+        NSLog(@"[SGTokenManager] Token uploaded for %@", bundleIdentifier);
+    } else {
+        NSLog(@"[SGTokenManager] Token upload deferred for %@ (not connected)", bundleIdentifier);
+    }
 }
 
 @end

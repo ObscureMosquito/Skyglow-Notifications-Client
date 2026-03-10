@@ -14,6 +14,21 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+/**
+ * PCPersistentTimer from PersistentConnection.framework (private).
+ * Survives device sleep by scheduling maintenance wakes via IOKit.
+ * This is the same mechanism apsd uses for its keepalive schedule.
+ * Link against: /System/Library/PrivateFrameworks/PersistentConnection.framework
+ */
+@interface PCPersistentTimer : NSObject
+- (id)initWithTimeInterval:(double)interval serviceIdentifier:(NSString *)sid
+                    target:(id)target selector:(SEL)sel userInfo:(id)info;
+- (void)setMinimumEarlyFireProportion:(double)proportion;
+- (void)scheduleInRunLoop:(NSRunLoop *)runLoop;
+- (void)invalidate;
+- (char)isValid;
+@end
+
 typedef struct { SGState from; SGState to; } SGTransition;
 
 static const SGTransition kLegalTransitions[] = {
@@ -123,6 +138,8 @@ static BOOL isValidPort(NSString *port) {
     uint32_t               _fsmGeneration;
     BOOL                   _workerActive;
     dispatch_queue_t       _entryActionQueue;
+    SGMachServer          *_machServer;
+    PCPersistentTimer     *_keepAliveTimer;
 }
 
 - (id)init {
@@ -132,6 +149,7 @@ static BOOL isValidPort(NSString *port) {
         _fsmGeneration       = 0;
         _seenMessageIDs      = [[NSMutableOrderedSet alloc] initWithCapacity:200];
         _entryActionQueue    = dispatch_queue_create("com.skyglow.daemon.entry", DISPATCH_QUEUE_SERIAL);
+        _machServer          = [[SGMachServer alloc] init];
     }
     return self;
 }
@@ -139,11 +157,17 @@ static BOOL isValidPort(NSString *port) {
 - (void)dealloc {
     [_stateLock release];
     [_seenMessageIDs release];
+    [_machServer release];
+    if (_keepAliveTimer) { [_keepAliveTimer invalidate]; [_keepAliveTimer release]; }
     dispatch_release(_entryActionQueue);
     [super dealloc];
 }
 
 - (void)start {
+    // Start the Mach bootstrap service first so SpringBoard can query tokens
+    // immediately — before any network activity or reconciliation.
+    [_machServer startMachBootstrapServices];
+
     [self reconcileTokensWithPlist];
     
     [_stateLock lock];
@@ -331,6 +355,10 @@ static BOOL isValidPort(NSString *port) {
         [self->_stateLock unlock];
         if (isStale) return;
 
+        // Invalidate the keepalive timer on every transition.
+        // Only SGStateConnected reschedules it.
+        [self _invalidateKeepAliveTimer];
+
         switch (newState) {
             case SGStateResolvingDNS:
                 [self performDNSResolution];
@@ -343,7 +371,9 @@ static BOOL isValidPort(NSString *port) {
                 [self scheduleTimerForEvent:SGEventAuthFailed delay:10 generation:capturedGen]; 
                 break;
             case SGStateRegistering:
+                break;
             case SGStateConnected:
+                [self _scheduleKeepAliveTimer];
                 break;
             case SGStateBackingOff:
             case SGStateIdleDNSFailed:
@@ -420,6 +450,7 @@ static BOOL isValidPort(NSString *port) {
     SGP_FlushPendingAcknowledgements();
     SGP_FlushActiveTopicFilter();
     SGP_RequestOfflineMessages();
+    [[SGDatabaseManager sharedManager] checkpoint];
     
     [self uploadPendingTokensAsync];
 }
@@ -475,6 +506,18 @@ static BOOL isValidPort(NSString *port) {
             if ([_seenMessageIDs count] > 200) [_seenMessageIDs removeObjectAtIndex:0];
         }
 
+        NSNumber *expiresAtNum = messageDict[@"expires_at"];
+        if (expiresAtNum) {
+            int64_t expiresAt = [expiresAtNum longLongValue];
+            int64_t now = (int64_t)time(NULL);
+            if (now > expiresAt) {
+                NSLog(@"[SGDaemon] DROP: Notification expired %llds ago (expires_at=%lld now=%lld)",
+                      now - expiresAt, expiresAt, now);
+                SGP_EnqueueAcknowledgement(msgID, 3);
+                return;
+            }
+        }
+
         __block _Atomic IOPMAssertionID assertionID = 0;
         IOPMAssertionID tempID = 0;
         if (IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep, 
@@ -502,6 +545,12 @@ static BOOL isValidPort(NSString *port) {
 
         if ([messageDict[@"is_encrypted"] boolValue]) {
             NSLog(@"[SGDaemon] Payload is Encrypted. Attempting AES-256-GCM decryption...");
+            if ([payloadBytes length] < SGP_GCM_TAG_LEN) {
+                NSLog(@"[SGDaemon] DROP: Encrypted payload too short for GCM tag (%lu < %d).",
+                      (unsigned long)[payloadBytes length], SGP_GCM_TAG_LEN);
+                SGP_EnqueueAcknowledgement(msgID, 1);
+                goto cleanup_assertion;
+            }
             NSData *iv = messageDict[@"iv"];
             if (!iv) { 
                 NSLog(@"[SGDaemon] DROP: Missing IV for decryption.");
@@ -559,6 +608,14 @@ static BOOL isValidPort(NSString *port) {
     if (newVal != oldVal) {
         [[SGDatabaseManager sharedManager] saveKeepAliveInterval:newVal forWiFi:isWiFi];
     }
+
+    /**
+     * Reschedule the PCPersistentTimer with the (possibly updated) interval.
+     * This keeps the maintenance wake schedule in sync with the adaptive algorithm.
+     * If the worker thread's select timeout sent the ping (not PCPersistentTimer),
+     * we still need to ensure a PCPersistentTimer is pending for the next cycle.
+     */
+    [self _scheduleKeepAliveTimer];
 }
 
 - (void)protocolDidFinishOfflineQueueDrain {
@@ -672,6 +729,91 @@ static BOOL isValidPort(NSString *port) {
         [profile writeToFile:profilePath atomically:YES];
         [[SGConfiguration sharedConfiguration] reloadFromDisk];
         [[SGDatabaseManager sharedManager] resetAllTokensToRequireUpload];
+    }
+}
+
+#pragma mark - PCPersistentTimer Keepalive (Survives Deep Sleep)
+
+/**
+ * Schedules a PCPersistentTimer for the current keepalive interval.
+ * PCPersistentTimer internally registers with IOKit for power notifications
+ * and schedules maintenance wakes via PCSystemWakeManager so the timer fires
+ * even when the device is in deep sleep. This is the same mechanism apsd uses.
+ *
+ * The worker thread's select timeout remains as a redundant path — whichever
+ * fires first sends the ping (dedup via _pingPendingSince in SGP_SendKeepAlivePing).
+ *
+ * Safe to call from any thread — dispatches to main internally.
+ */
+- (void)_scheduleKeepAliveTimer {
+    [_stateLock lock];
+    double interval = SGKeepAlive_GetCurrentInterval(&_keepAliveAlgo);
+    [_stateLock unlock];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->_keepAliveTimer) {
+            [self->_keepAliveTimer invalidate];
+            [self->_keepAliveTimer release];
+            self->_keepAliveTimer = nil;
+        }
+
+        self->_keepAliveTimer = [[PCPersistentTimer alloc]
+            initWithTimeInterval:interval
+               serviceIdentifier:@"com.skyglow.sgn"
+                          target:self
+                        selector:@selector(_keepAliveTimerFired:)
+                        userInfo:nil];
+
+        /**
+         * minimumEarlyFireProportion=0.9: timer may fire up to 10% early
+         * if the system is already awake for another reason (e.g., another
+         * daemon's maintenance wake). Reduces total wake count, saves battery.
+         */
+        [self->_keepAliveTimer setMinimumEarlyFireProportion:0.9];
+        [self->_keepAliveTimer scheduleInRunLoop:[NSRunLoop mainRunLoop]];
+
+        NSLog(@"[SGDaemon] PCPersistentTimer scheduled: %.0fs (survives sleep)", interval);
+    });
+}
+
+/**
+ * Invalidates and releases the current keepalive timer.
+ * Safe to call from any thread — dispatches to main internally.
+ */
+- (void)_invalidateKeepAliveTimer {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->_keepAliveTimer) {
+            [self->_keepAliveTimer invalidate];
+            [self->_keepAliveTimer release];
+            self->_keepAliveTimer = nil;
+        }
+    });
+}
+
+/**
+ * Fires on the main thread when the keepalive interval elapses.
+ * During deep sleep, PCPersistentTimer schedules a maintenance wake,
+ * the AP wakes briefly, this callback fires, ping goes out, pong
+ * comes back, system sleeps again.
+ */
+- (void)_keepAliveTimerFired:(id)timer {
+    if (!SGP_IsConnected()) {
+        NSLog(@"[SGDaemon] PCPersistentTimer fired but not connected — ignoring.");
+        return;
+    }
+
+    NSLog(@"[SGDaemon] PCPersistentTimer fired — sending keepalive ping.");
+    BOOL sent = SGP_SendKeepAlivePing();
+
+    if (sent) {
+        [self _scheduleKeepAliveTimer];
+    } else {
+        /**
+         * Ping already pending (worker thread beat us) or send failed.
+         * Timer will be rescheduled in protocolDidReceiveKeepAlivePong
+         * after the pong arrives and the adaptive algorithm updates.
+         */
+        NSLog(@"[SGDaemon] PCPersistentTimer: ping not sent (already pending or send failed).");
     }
 }
 

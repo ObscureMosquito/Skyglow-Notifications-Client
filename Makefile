@@ -26,7 +26,7 @@ SkyglowNotificationsDaemon_LDFLAGS = \
   $(THEOS_PROJECT_DIR)/openssl/lib/libcrypto.a
 SkyglowNotificationsDaemon_CODESIGN_FLAGS = -Sentitlements.plist
 SkyglowNotificationsDaemon_INSTALL_PATH = /usr/local/bin
-SkyglowNotificationsDaemon_FRAMEWORKS = UIKit SystemConfiguration CFNetwork Security IOKit
+SkyglowNotificationsDaemon_FRAMEWORKS = UIKit SystemConfiguration CFNetwork Security IOKit PersistentConnection
 SkyglowNotificationsDaemon_LIBRARIES += sqlite3
 
 

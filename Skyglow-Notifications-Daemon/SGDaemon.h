@@ -37,6 +37,8 @@ typedef NS_ENUM(NSInteger, SGEvent) {
 /** Darwin Notifications */
 #define kSGConfigurationDidUpdateNotification "com.skyglow.sgn.reload_config"
 
+@class SGMachServer;
+
 @interface SGDaemon : NSObject <SGProtocolDelegate>
 
 /**
