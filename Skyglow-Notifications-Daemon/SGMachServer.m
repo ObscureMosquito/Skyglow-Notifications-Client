@@ -101,24 +101,40 @@ kern_return_t SGMach_SendPushToAppTopic(NSString *topic, NSDictionary *payload) 
 }
 
 - (void)handleTokenRequest:(SGMachTokenRequestMessage *)request {
+    // Save the reply port name BEFORE any blocking work.
+    // After mach_msg receive, msgh_remote_port holds the reply send right
+    // (kernel swaps local↔remote on delivery).
+    mach_port_t replyPort = request->header.msgh_remote_port;
+
     NSString *bundleID = [[NSString alloc] initWithBytes:request->bundleID 
                                                   length:strnlen(request->bundleID, 256) 
                                                 encoding:NSUTF8StringEncoding];
-    
+
     SGMachTokenResponseMessage response;
     memset(&response, 0, sizeof(response));
-    response.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
+    // MOVE_SEND: consume the send right we received — correct disposition for a reply
+    response.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND, 0);
     response.header.msgh_size = sizeof(SGMachTokenResponseMessage);
-    response.header.msgh_remote_port = request->header.msgh_remote_port;
+    response.header.msgh_remote_port = replyPort;
     response.header.msgh_id = request->header.msgh_id + 100;
 
     NSData *token = nil;
     NSError *error = nil;
-    
+
     if (![[SGConfiguration sharedConfiguration] isEnabled]) {
-        error = [NSError errorWithDomain:@"com.skyglow.mach" code:503 userInfo:@{NSLocalizedDescriptionKey: @"Daemon is explicitly disabled in Settings"}];
+        error = [NSError errorWithDomain:@"com.skyglow.mach" code:503
+                                userInfo:@{NSLocalizedDescriptionKey: @"Daemon disabled in Settings"}];
     } else {
-        token = [_tokenManager synchronizedTokenForBundleIdentifier:bundleID error:&error];
+        // Fast path: check DB first (no network I/O)
+        NSArray *existing = [[SGDatabaseManager sharedManager] tokenEntriesForBundleIdentifier:bundleID];
+        if (existing.count > 0) {
+            NSData *t = existing[0][@"token"];
+            if (t.length > 0) token = t;
+        }
+        if (!token) {
+            // Generate locally — no blocking network call
+            token = [_tokenManager generateTokenLocallyForBundleIdentifier:bundleID error:&error];
+        }
     }
 
     if (token) {
@@ -128,13 +144,31 @@ kern_return_t SGMach_SendPushToAppTopic(NSString *topic, NSDictionary *payload) 
     } else {
         response.type = SG_MACH_MSG_ERROR;
         const char *desc = error ? [[error localizedDescription] UTF8String] : NULL;
-        strlcpy(response.error, desc ? desc : "Unknown Hardware Token Generator Error", sizeof(response.error));
+        strlcpy(response.error, desc ? desc : "Token generation failed", sizeof(response.error));
+        NSLog(@"[SGMachServer] Token error for %@: %s", bundleID, response.error);
     }
 
-    mach_msg(&response.header, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof(response), 0, MACH_PORT_NULL, 500, MACH_PORT_NULL);
+    kern_return_t kr = mach_msg(&response.header, MACH_SEND_MSG | MACH_SEND_TIMEOUT,
+                                sizeof(response), 0,
+                                MACH_PORT_NULL, 5000, MACH_PORT_NULL);
+    if (kr != KERN_SUCCESS) {
+        NSLog(@"[SGMachServer] Send failed kr=%d for %@", kr, bundleID);
+        // MOVE_SEND consumed the right on send attempt; if send failed the right is gone
+    } else {
+        NSLog(@"[SGMachServer] Token response sent for %@", bundleID);
+    }
+
+    // Upload to server async — does not block token delivery
+    if (token) {
+        NSString *bid = [bundleID retain];
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            [_tokenManager uploadTokenIfNeededForBundleIdentifier:bid];
+            [bid release];
+        });
+    }
+
     [bundleID release];
 }
-
 - (void)handleFeedback:(SGMachFeedbackResponse *)feedback {
     NSString *topic = [[NSString alloc] initWithBytes:feedback->topic length:strnlen(feedback->topic, SKYGLOW_MAX_TOPIC_SIZE) encoding:NSUTF8StringEncoding];
     NSString *reason = [[NSString alloc] initWithBytes:feedback->reason length:strnlen(feedback->reason, SKYGLOW_MAX_REASON_SIZE) encoding:NSUTF8StringEncoding];

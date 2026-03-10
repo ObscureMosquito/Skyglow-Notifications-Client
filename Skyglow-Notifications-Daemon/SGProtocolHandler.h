@@ -225,4 +225,17 @@ void SGP_RequestOfflineMessages(void);
  */
 uint32_t SGP_GetLastDisconnectRetryAfter(void);
 
+/**
+ * Sends a keep-alive ping if connected and no ping is already pending.
+ * Thread-safe — intended to be called from PCPersistentTimer on the main thread.
+ * Returns YES if a ping was actually sent.
+ */
+BOOL SGP_SendKeepAlivePing(void);
+
+/**
+ * Returns the monotonic timestamp of the last received server frame,
+ * or 0.0 if no frames have been received this connection.
+ */
+double SGP_GetLastFrameReceivedAt(void);
+
 #endif

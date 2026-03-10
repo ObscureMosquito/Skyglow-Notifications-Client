@@ -72,3 +72,53 @@
 }
 
 @end
+
+@interface SNFooterView : UIView
+- (id)initWithSpecifier:(PSSpecifier *)specifier;
+- (CGFloat)preferredHeightForWidth:(CGFloat)width;
+@end
+
+@implementation SNFooterView {
+    UIImageView *_logoView;
+    UILabel *_versionLabel;
+}
+
+- (id)initWithSpecifier:(PSSpecifier *)specifier {
+    self = [super initWithFrame:CGRectZero];
+    if (self) {
+        NSBundle *bundle = [NSBundle bundleForClass:[self class]];
+        UIImage *image = [UIImage imageWithContentsOfFile:[bundle pathForResource:@"icon-settings" ofType:@"png"]];
+        
+        _logoView = [[UIImageView alloc] initWithImage:image];
+        _logoView.contentMode = UIViewContentModeScaleAspectFit;
+        [self addSubview:_logoView];
+        
+        _versionLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _versionLabel.text = @"Version 1.0";
+        _versionLabel.backgroundColor = [UIColor clearColor];
+        _versionLabel.textColor = [UIColor colorWithRed:0.3f green:0.34f blue:0.42f alpha:1.0f];
+        _versionLabel.shadowColor = [UIColor whiteColor];
+        _versionLabel.shadowOffset = CGSizeMake(0, 1);
+        _versionLabel.font = [UIFont systemFontOfSize:13.0f];
+        _versionLabel.textAlignment = NSTextAlignmentCenter;
+        
+        [self addSubview:_versionLabel];
+    }
+    return self;
+}
+
+- (CGFloat)preferredHeightForWidth:(CGFloat)width {
+    return 135.0f; 
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    
+    CGRect bounds = self.bounds;
+    
+    CGFloat imageSize = 75.0f;
+    _logoView.frame = CGRectMake((bounds.size.width - imageSize) / 2.0, 10.0, imageSize, imageSize);
+    
+    _versionLabel.frame = CGRectMake(0, CGRectGetMaxY(_logoView.frame) + 5.0, bounds.size.width, 20.0);
+}
+@end

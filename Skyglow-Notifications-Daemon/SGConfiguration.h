@@ -7,10 +7,11 @@
  * Resolves the root-relative path for rootless jailbreaks.
  */
 static inline NSString * SGPath(NSString *path) {
-    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"]) {
-        return [@"/var/jb" stringByAppendingString:path];
+    static int _sgPathIsRootless = -1;
+    if (__builtin_expect(_sgPathIsRootless < 0, 0)) {
+        _sgPathIsRootless = [[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"] ? 1 : 0;
     }
-    return path;
+    return _sgPathIsRootless ? [@"/var/jb" stringByAppendingString:path] : path;
 }
 
 

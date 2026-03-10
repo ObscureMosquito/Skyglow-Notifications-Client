@@ -161,7 +161,7 @@
 }
 
 - (void)setServerIPAddress:(NSString *)ip {
-    dispatch_barrier_async(_isolationQueue, ^{
+    dispatch_barrier_sync(_isolationQueue, ^{
         if (self->_serverIPAddress != ip) {
             [self->_serverIPAddress release];
             self->_serverIPAddress = [ip copy];
@@ -178,7 +178,7 @@
 }
 
 - (void)setServerPort:(NSString *)port {
-    dispatch_barrier_async(_isolationQueue, ^{
+    dispatch_barrier_sync(_isolationQueue, ^{
         if (self->_serverPort != port) {
             [self->_serverPort release];
             self->_serverPort = [port copy];
