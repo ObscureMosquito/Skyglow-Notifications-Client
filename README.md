@@ -1,5 +1,5 @@
 <div align="center">
-<img src="icon.png" width=20% height=20%>
+<img src="https://github.com/ObscureMosquito/Skyglow-Notifications-Client/blob/main/SGNPreferenceBundle/Resources/icon-settings.png" width=20% height=20%>
 <h1>Skyglow Notifications Daemon</h1>
 </div>
 
