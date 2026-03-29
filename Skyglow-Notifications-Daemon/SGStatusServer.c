@@ -14,13 +14,18 @@
 #define SS_MODE_QUERY 0x51 // 'Q'
 #define SS_MODE_WATCH 0x57 // 'W'
 
-static SGStatusPayload _current;
+static SGStatusPayload  _current;
 static pthread_mutex_t  _lock = PTHREAD_MUTEX_INITIALIZER;
 static int              _serverFd = -1;
 static int              _watchers[SS_MAX_WATCHERS];
 static pthread_t        _acceptThread;
 static char             _socketPath[1024];
-static int              _running = 0;
+/**
+ * Written under _lock in SGStatusServer_Shutdown; read in the accept loop
+ * without the lock. volatile prevents the compiler from caching the value
+ * in a register across the accept() syscall boundary.
+ */
+static volatile int     _running = 0;
 
 static void* SGStatusServer_AcceptLoop(void* arg) {
     while (_running) {
@@ -30,11 +35,20 @@ static void* SGStatusServer_AcceptLoop(void* arg) {
         
         if (clientFd < 0) {
             if (errno == EMFILE || errno == ENFILE) {
+                /**
+                 * Process hit the file descriptor limit. Sleep briefly and retry —
+                 * don't break out of the loop. Without the continue, the original
+                 * code would sleep 1 second and then exit permanently, leaving the
+                 * status socket dead for the rest of the daemon's lifetime.
+                 */
                 sleep(1);
+                continue;
             } else if (errno == EINTR) {
                 continue;
+            } else {
+                /* Unrecoverable error (EBADF, ENOTSOCK, EINVAL, etc.) — exit loop. */
+                break;
             }
-            break;
         }
 
         struct timeval timeout;

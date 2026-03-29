@@ -66,6 +66,14 @@
                                                      token:deviceToken
                                                 isUploaded:NO];
 
+    /**
+     * Zero K before the stack frame is released. K is the raw entropy from which
+     * both the routing key (SHA256(K)) and the e2ee key (HKDF(K, salt)) are derived.
+     * Without this, K lives on the stack until the frame is reused — potentially
+     * never, on a long-running daemon with a stable call graph.
+     */
+    memset(K, 0, sizeof(K));
+
     NSLog(@"[SGTokenManager] Generated local token for %@", bundleIdentifier);
     return [deviceToken autorelease];
 }

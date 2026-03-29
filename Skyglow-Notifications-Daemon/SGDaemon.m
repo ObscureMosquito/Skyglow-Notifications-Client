@@ -344,6 +344,24 @@ static BOOL isValidPort(NSString *port) {
             }
             break;
             
+        case SGStateErrorAuth:
+            if (event == SGEventConfigReloaded) {
+                /**
+                 * A config reload (user changed server settings or re-enabled the
+                 * daemon) is the natural recovery path from an auth error. The new
+                 * config may have a different server or different credentials, so
+                 * retry from scratch. _consecutiveFailures is reset so the fresh
+                 * attempt gets a full set of retries before the circuit opens again.
+                 *
+                 * SGStateErrorAuth → SGStateResolvingDNS is a legal transition.
+                 * Without this case, the daemon would stay stuck indefinitely after
+                 * an explicit server auth rejection unless the process was restarted.
+                 */
+                _consecutiveFailures = 0;
+                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
+            }
+            break;
+
         case SGStateIdleCircuitOpen:
             if (event == SGEventNetworkUp || event == SGEventConfigReloaded) {
                 _consecutiveFailures = 0;

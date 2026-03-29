@@ -170,6 +170,18 @@ int main(int argc, char *argv[]) {
         NSLog(@"[Skyglow] SGDaemon shutting down...");
         [daemon requestGracefulDisconnect];
         [reachability stopMonitoringSystemNetworkChanges];
+
+        /**
+         * Remove the config-reload observer before releasing the daemon.
+         * SG_ConfigurationReloadCallback dispatches [daemon handleConfigurationReloadRequest]
+         * to the global queue. A Darwin notification delivered between CFRunLoopRun()
+         * returning and [daemon release] below would dispatch a block that calls into
+         * a being-torn-down object — no implicit retain in MRC.
+         */
+        CFNotificationCenterRemoveEveryObserver(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            (__bridge void *)daemon);
+
         SGStatusServer_Shutdown();
         [[SGDatabaseManager sharedManager] closeDatabase];
 

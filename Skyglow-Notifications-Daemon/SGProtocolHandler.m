@@ -706,7 +706,14 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         case SGP_S_POLL_DONE:
         case SGP_S_TOKEN_ACK:
         case SGP_S_PONG:
+            /**
+             * Clear _pingPendingSince under _pingLock for the same 32-bit ARM
+             * atomicity reason: without the lock, the main thread's
+             * SGP_SendKeepAlivePing may be writing the field at the same moment.
+             */
+            pthread_mutex_lock(&_pingLock);
             _pingPendingSince = 0.0;
+            pthread_mutex_unlock(&_pingLock);
             break;
         default:
             break;
@@ -829,8 +836,20 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             break;
         }
         case SGP_S_PONG: {
-            if (SG_DecodeBE64(raw) == (int64_t)_pingSeq) {
+            pthread_mutex_lock(&_pingLock);
+            uint64_t seq = _pingSeq;
+            pthread_mutex_unlock(&_pingLock);
+            if (SG_DecodeBE64(raw) == (int64_t)seq) {
+                /**
+                 * _pingPendingSince is already cleared in the first switch above,
+                 * but we clear it again here under the lock as the authoritative
+                 * confirmation that the pong matched our outstanding ping.
+                 * The first-switch clear is a broad "any data means the connection
+                 * is live" heuristic; this is the precise per-sequence clear.
+                 */
+                pthread_mutex_lock(&_pingLock);
                 _pingPendingSince = 0.0;
+                pthread_mutex_unlock(&_pingLock);
                 [_delegate protocolDidReceiveKeepAlivePong];
             }
             break;
