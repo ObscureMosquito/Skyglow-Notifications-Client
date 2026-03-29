@@ -54,6 +54,10 @@ void SGKeepAlive_ProcessHeartbeatResult(SGKeepAliveAlgorithm *algo, bool wasSucc
         if (algo->stage != SGKeepAliveStageBackoff) {
             algo->stage = SGKeepAliveStageBackoff;
             algo->currentInterval *= BACKOFF;
+            double minLimit = algo->isWiFi ? MIN_WIFI : MIN_WWAN;
+            if (algo->currentInterval < minLimit) {
+                algo->currentInterval = minLimit;
+            }
         }
     }
 }

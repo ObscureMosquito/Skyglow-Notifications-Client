@@ -32,6 +32,19 @@ static pthread_mutex_t _sendLock = PTHREAD_MUTEX_INITIALIZER;
  */
 static pthread_rwlock_t _sslLock = PTHREAD_RWLOCK_INITIALIZER;
 
+/**
+ * Serialises the check-then-set of _pingPendingSince / _pingSeq.
+ * SGP_SendKeepAlivePing is called from two threads:
+ *   - Worker thread (select timeout path in SGP_ProcessNextIncomingMessage)
+ *   - Main thread   (PCPersistentTimer callback via _keepAliveTimerFired:)
+ * Without this lock both threads can pass the `_pingPendingSince > 0` guard
+ * simultaneously and send duplicate pings. The server pong for the first seq
+ * is then orphaned, _pingPendingSince never clears, and a spurious
+ * SGP_ERR_TIMEOUT disconnect follows. Separate from _sendLock (which
+ * SGP_LowLevelSend acquires internally) to avoid a deadlock.
+ */
+static pthread_mutex_t _pingLock = PTHREAD_MUTEX_INITIALIZER;
+
 static NSString *_userAddress = nil;
 static RSA      *_userPrivKey = NULL;
 static int64_t   _loginTimestamp = 0;
@@ -47,8 +60,12 @@ static uint32_t  _lastRetryHint = 0;
  * Clock skew correction from the last S_TIME_SYNC message.
  * Applied to time(NULL) in login/registration so the server's timestamp
  * window check doesn't reject us on devices with drifted clocks (iOS 3-5).
+ *
+ * On 32-bit ARM (iPhone 4/4S/5), a 64-bit write is not atomic — two
+ * 32-bit stores can interleave with a reader causing a torn read.
+ * Protected by _sendLock since time sync is rare and the overhead is negligible.
  */
-static volatile int64_t _clockSkewSeconds = 0;
+static int64_t _clockSkewSeconds = 0;
 
 static NSString *_regPendingAddress = nil;
 /**
@@ -78,7 +95,10 @@ static double SG_GetMonotonicSeconds(void) {
  * to fail the server's CHALLENGE_WINDOW_SEC = 300 check.
  */
 static int64_t SG_GetCorrectedTime(void) {
-    return (int64_t)time(NULL) + _clockSkewSeconds;
+    pthread_mutex_lock(&_sendLock);
+    int64_t skew = _clockSkewSeconds;
+    pthread_mutex_unlock(&_sendLock);
+    return (int64_t)time(NULL) + skew;
 }
 
 static void SG_EncodeBE64(int64_t v, uint8_t out[8]) {
@@ -311,14 +331,22 @@ double SGP_GetLastFrameReceivedAt(void) { return _lastFrameReceivedAt; }
 
 BOOL SGP_SendKeepAlivePing(void) {
     if (!SGP_IsConnected()) return NO;
-    if (_pingPendingSince > 0.0) return NO;
 
+    pthread_mutex_lock(&_pingLock);
+    if (_pingPendingSince > 0.0) {
+        pthread_mutex_unlock(&_pingLock);
+        return NO;
+    }
     _pingSeq++;
     _pingPendingSince = SG_GetMonotonicSeconds();
     uint8_t seq[8];
     SG_EncodeBE64((int64_t)_pingSeq, seq);
+    pthread_mutex_unlock(&_pingLock);
+
     if (SGP_LowLevelSend(SGP_C_PING, seq, 8) != 0) {
+        pthread_mutex_lock(&_pingLock);
         _pingPendingSince = 0.0;
+        pthread_mutex_unlock(&_pingLock);
         return NO;
     }
     return YES;
@@ -397,25 +425,6 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
 
     int yes = 1;
     setsockopt(_sock, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-
-    /**
-     * Enable TCP keepalive as a transport-level safety net.
-     * This does NOT replace the application-level adaptive ping/pong —
-     * it catches half-open connections where the NAT mapping died but
-     * both endpoints still think the socket is alive.
-     *
-     * On iOS, the baseband processor handles TCP keepalive responses
-     * during deep sleep without waking the Application Processor.
-     * apsd cannot do this because it uses CFStream; we can because
-     * we have a raw socket.
-     *
-     * TCP_KEEPALIVE (Darwin) = idle time before first probe.
-     * System defaults handle probe interval (~75s) and count (~8).
-     */
-    int keepalive = 1;
-    setsockopt(_sock, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
-    int keepidle = 120;
-    setsockopt(_sock, IPPROTO_TCP, TCP_KEEPALIVE, &keepidle, sizeof(keepidle));
 
     int flags = fcntl(_sock, F_GETFL, 0);
     fcntl(_sock, F_SETFL, flags | O_NONBLOCK);
@@ -575,11 +584,18 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         if (sel < 0) return (errno == EINTR) ? SGP_OK : SGP_ERR_IO;
     
         if (sel == 0) {
-            if (pingIntervalSec <= 0.0) return SGP_OK; 
-        
-            if (_pingPendingSince > 0.0) return SGP_ERR_TIMEOUT;
-            _pingSeq++; _pingPendingSince = SG_GetMonotonicSeconds();
-            uint8_t seq[8]; SG_EncodeBE64((int64_t)_pingSeq, seq);
+            if (pingIntervalSec <= 0.0) return SGP_OK;
+
+            pthread_mutex_lock(&_pingLock);
+            if (_pingPendingSince > 0.0) {
+                pthread_mutex_unlock(&_pingLock);
+                return SGP_ERR_TIMEOUT;
+            }
+            _pingSeq++;
+            _pingPendingSince = SG_GetMonotonicSeconds();
+            uint8_t seq[8];
+            SG_EncodeBE64((int64_t)_pingSeq, seq);
+            pthread_mutex_unlock(&_pingLock);
             SGP_LowLevelSend(SGP_C_PING, seq, 8);
             return SGP_OK;
         }
@@ -812,7 +828,9 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             int64_t serverTime = SG_DecodeBE64(raw);
             int64_t localTime  = (int64_t)time(NULL);
             int64_t offset     = serverTime - localTime;
+            pthread_mutex_lock(&_sendLock);
             _clockSkewSeconds = offset;
+            pthread_mutex_unlock(&_sendLock);
             NSLog(@"[SGP] Time sync: server=%lld local=%lld offset=%llds (skew applied)", serverTime, localTime, offset);
             [_delegate protocolDidReceiveTimeSyncWithOffset:offset];
             break;

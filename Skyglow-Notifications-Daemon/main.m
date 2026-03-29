@@ -40,23 +40,6 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
         
-        // DONT REMOVE THIS PLS
-        /*dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            SGTokenManager *testManager = [[SGTokenManager alloc] init];
-            NSError *error = nil;
-            
-            NSLog(@"[SGN] Testing manual token generation for com.skyglow.WindFall...");
-            NSData *token = [testManager synchronizedTokenForBundleIdentifier:@"com.skyglow.WindFall" error:&error];
-            
-            if (token) {
-                NSLog(@"[SGN] Success! Token generated and sent to server: %@", token);
-            } else {
-                NSLog(@"[SGN] Failed to generate token: %@", error);
-            }
-            
-            [testManager release];
-        });*/
-
         fchmod(pid_fd, 0666);
         
         if (flock(pid_fd, LOCK_EX | LOCK_NB) != 0) {
@@ -91,11 +74,20 @@ int main(int argc, char *argv[]) {
                                         NULL, 
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
 
+        /**
+         * Always start the daemon before wiring reachability.
+         *
+         * start initializes the Mach bootstrap server and reconciles tokens.
+         * If we skip it when offline, apps can never request tokens — even after
+         * WiFi reconnects — because the Mach IPC server was never launched.
+         *
+         * The FSM handles the no-network case on its own: the reachability callback
+         * fires SGEventNetworkDown → SGStateIdleNoNetwork → retries when WiFi returns.
+         * Starting before wiring reachability also ensures the FSM is fully initialized
+         * before the first callback arrives.
+         */
+        [daemon start];
         [reachability startMonitoringSystemNetworkChanges];
-        
-        if (reachability.isReachable) {
-            [daemon start]; 
-        }
 
         CFRunLoopRun();
 

@@ -8,26 +8,10 @@
 #import "SGMachServer.h"
 #import "SGPayloadParser.h"
 #import "SGCryptoEngine.h"
-#include <IOKit/pwr_mgt/IOPMLib.h>
-#include <stdatomic.h>
+#import "SGAvailability.h"
 #include <openssl/pem.h>
 #include <unistd.h>
 #include <fcntl.h>
-
-/**
- * PCPersistentTimer from PersistentConnection.framework (private).
- * Survives device sleep by scheduling maintenance wakes via IOKit.
- * This is the same mechanism apsd uses for its keepalive schedule.
- * Link against: /System/Library/PrivateFrameworks/PersistentConnection.framework
- */
-@interface PCPersistentTimer : NSObject
-- (id)initWithTimeInterval:(double)interval serviceIdentifier:(NSString *)sid
-                    target:(id)target selector:(SEL)sel userInfo:(id)info;
-- (void)setMinimumEarlyFireProportion:(double)proportion;
-- (void)scheduleInRunLoop:(NSRunLoop *)runLoop;
-- (void)invalidate;
-- (char)isValid;
-@end
 
 typedef struct { SGState from; SGState to; } SGTransition;
 
@@ -133,13 +117,15 @@ static BOOL isValidPort(NSString *port) {
 @implementation SGDaemon {
     NSLock                *_stateLock;
     int                    _consecutiveFailures;
-    SGKeepAliveAlgorithm   _keepAliveAlgo;
+    SGKeepAliveAlgorithm   _keepAliveAlgo;        // Fallback for iOS 5
+    id                     _growthAlgorithm;       // PCMultiStageGrowthAlgorithm, nil on iOS 5
     NSMutableOrderedSet   *_seenMessageIDs;
     uint32_t               _fsmGeneration;
     BOOL                   _workerActive;
     dispatch_queue_t       _entryActionQueue;
     SGMachServer          *_machServer;
-    PCPersistentTimer     *_keepAliveTimer;
+    id                     _keepAliveTimer;        // PCPersistentTimer, nil on iOS 5
+    BOOL                   _isWiFi;
 }
 
 - (id)init {
@@ -158,6 +144,7 @@ static BOOL isValidPort(NSString *port) {
     [_stateLock release];
     [_seenMessageIDs release];
     [_machServer release];
+    [_growthAlgorithm release];
     if (_keepAliveTimer) { [_keepAliveTimer invalidate]; [_keepAliveTimer release]; }
     dispatch_release(_entryActionQueue);
     [super dealloc];
@@ -171,8 +158,24 @@ static BOOL isValidPort(NSString *port) {
     [self reconcileTokensWithPlist];
     
     [_stateLock lock];
+    _isWiFi = YES; // Default assumption until reachability callback fires
     double savedInterval = [[SGDatabaseManager sharedManager] loadKeepAliveIntervalForWiFi:YES];
-    SGKeepAlive_Initialize(&_keepAliveAlgo, true, savedInterval);
+
+    /**
+     * Use Apple's PCMultiStageGrowthAlgorithm on iOS 6+ (PersistentConnection.framework).
+     * Falls back to our C implementation (SGKeepAliveStrategy) on iOS 5.
+     */
+    SGAvailability *avail = [SGAvailability shared];
+    if (avail.growthAlgorithmAvailable) {
+        double initialInterval = (savedInterval > 0.0) ? savedInterval : 600.0;
+        _growthAlgorithm = [avail createGrowthAlgorithmWithInterval:initialInterval
+                                                    minimumInterval:600.0
+                                                    maximumInterval:1680.0];
+        NSLog(@"[SGDaemon] Using PCMultiStageGrowthAlgorithm (iOS 6+) — initial: %.0fs", initialInterval);
+    } else {
+        SGKeepAlive_Initialize(&_keepAliveAlgo, true, savedInterval);
+        NSLog(@"[SGDaemon] Using SGKeepAliveStrategy fallback (iOS 5)");
+    }
     [_stateLock unlock];
     
     [self handleEvent:SGEventStartRequested payload:nil];
@@ -402,11 +405,17 @@ static BOOL isValidPort(NSString *port) {
         [self executeTransitionToState:SGStateIdleCircuitOpen backoff:0 ip:NULL];
     } 
     else {
-        uint32_t baseDelay = SG_INITIAL_BACKOFF_SECONDS * (1 << (_consecutiveFailures - 1));
+        uint32_t baseDelay = (uint32_t)SG_INITIAL_BACKOFF_SECONDS * ((uint32_t)1 << (_consecutiveFailures - 1));
         uint32_t jitter = arc4random_uniform(SG_MAX_JITTER_SECONDS + 1);
         uint32_t finalDelay = baseDelay + jitter;
         if (finalDelay > SG_MAX_BACKOFF_SECONDS) {
             finalDelay = SG_MAX_BACKOFF_SECONDS;
+        }
+
+        uint32_t serverHint = SGP_GetLastDisconnectRetryAfter();
+        if (serverHint > finalDelay) {
+            finalDelay = serverHint;
+            NSLog(@"[SGDaemon] Server requested retry-after %us, honoring.", serverHint);
         }
 
         NSLog(@"[SGDaemon] Backing off for %u seconds (Failure %d/%d)", finalDelay, _consecutiveFailures, SG_MAX_CONSECUTIVE_FAILURES);
@@ -464,29 +473,16 @@ static BOOL isValidPort(NSString *port) {
     if ([pending count] == 0) return;
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        dispatch_group_t group = dispatch_group_create();
         for (NSDictionary *entry in pending) {
-            dispatch_group_async(group, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                @autoreleasepool {
-                    NSData   *routingKey = entry[@"routingKey"];
-                    NSString *bundleID   = entry[@"bundleID"];
-
-                    if (!SGP_IsConnected()) return;
-
-                    if (SGP_RegisterDeviceToken(routingKey, bundleID)) {
-                        [[SGDatabaseManager sharedManager] markTokenAsUploaded:routingKey];
-                    } else {
-                        if (!SGP_IsConnected()) {
-                            NSLog(@"[SGDaemon] Token upload for %@ failed — connection dropped (will retry on reconnect)", bundleID);
-                        } else {
-                            NSLog(@"[SGDaemon] Token upload for %@ timed out waiting for S_TOKEN_ACK (server may be slow — will retry on reconnect)", bundleID);
-                        }
-                    }
+            @autoreleasepool {
+                if (!SGP_IsConnected()) break;
+                NSData   *routingKey = entry[@"routingKey"];
+                NSString *bundleID   = entry[@"bundleID"];
+                if (SGP_RegisterDeviceToken(routingKey, bundleID)) {
+                    [[SGDatabaseManager sharedManager] markTokenAsUploaded:routingKey];
                 }
-            });
+            }
         }
-        dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
-        dispatch_release(group);
     });
 }
 
@@ -499,7 +495,7 @@ static BOOL isValidPort(NSString *port) {
 
         @synchronized(_seenMessageIDs) {
             if ([_seenMessageIDs containsObject:msgID]) {
-                SGP_EnqueueAcknowledgement(msgID, 0);
+                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
                 return; 
             }
             [_seenMessageIDs addObject:msgID];
@@ -513,21 +509,14 @@ static BOOL isValidPort(NSString *port) {
             if (now > expiresAt) {
                 NSLog(@"[SGDaemon] DROP: Notification expired %llds ago (expires_at=%lld now=%lld)",
                       now - expiresAt, expiresAt, now);
-                SGP_EnqueueAcknowledgement(msgID, 3);
+                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_EXPIRED);
                 return;
             }
         }
 
-        __block _Atomic IOPMAssertionID assertionID = 0;
-        IOPMAssertionID tempID = 0;
-        if (IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep, 
-                                        kIOPMAssertionLevelOn, CFSTR("com.skyglow.sgn.processing"), &tempID) == kIOReturnSuccess) {
-            atomic_store(&assertionID, tempID);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                IOPMAssertionID expected = tempID;
-                if (atomic_compare_exchange_strong(&assertionID, &expected, 0)) IOPMAssertionRelease(expected);
-            });
-        }
+        uint32_t assertionID = [[SGAvailability shared]
+            createTimedPowerAssertionWithName:@"com.skyglow.sgn.processing"
+                                     timeout:15.0];
 
         NSData *routingKey = messageDict[@"routing_key"];
         NSDictionary *routingData = [[SGDatabaseManager sharedManager] tokenDataForRoutingKey:routingKey];
@@ -539,7 +528,7 @@ static BOOL isValidPort(NSString *port) {
         NSData *payloadBytes = messageDict[@"data"];
         if (!payloadBytes) { 
             NSLog(@"[SGDaemon] DROP: Payload data is empty.");
-            SGP_EnqueueAcknowledgement(msgID, 2); 
+            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED); 
             goto cleanup_assertion; 
         }
 
@@ -548,20 +537,20 @@ static BOOL isValidPort(NSString *port) {
             if ([payloadBytes length] < SGP_GCM_TAG_LEN) {
                 NSLog(@"[SGDaemon] DROP: Encrypted payload too short for GCM tag (%lu < %d).",
                       (unsigned long)[payloadBytes length], SGP_GCM_TAG_LEN);
-                SGP_EnqueueAcknowledgement(msgID, 1);
+                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED);
                 goto cleanup_assertion;
             }
             NSData *iv = messageDict[@"iv"];
             if (!iv) { 
                 NSLog(@"[SGDaemon] DROP: Missing IV for decryption.");
-                SGP_EnqueueAcknowledgement(msgID, 1); 
+                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED); 
                 goto cleanup_assertion; 
             }
             
             payloadBytes = SG_CryptoDecryptAESGCM(payloadBytes, routingData[@"e2eeKey"], iv, nil);
             if (!payloadBytes) { 
                 NSLog(@"[SGDaemon] DROP: Decryption failed (Bad Key or MAC Tag Tampering).");
-                SGP_EnqueueAcknowledgement(msgID, 1); 
+                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED); 
                 goto cleanup_assertion; 
             }
         } else {
@@ -571,13 +560,13 @@ static BOOL isValidPort(NSString *port) {
         NSDictionary *parsed = SG_PayloadParseBinaryData((const uint8_t *)payloadBytes.bytes, (uint32_t)payloadBytes.length);
         if (!parsed || parsed.count == 0) {
             NSLog(@"[SGDaemon] DROP: TLV Parser returned empty dictionary. Malformed binary data?");
-            SGP_EnqueueAcknowledgement(msgID, 2);
+            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
             goto cleanup_assertion;
         }
 
         NSLog(@"[SGDaemon] Sending Push to app [%@]: %@", routingData[@"bundleID"], parsed);
         SGMach_SendPushToAppTopic(routingData[@"bundleID"], parsed);
-        SGP_EnqueueAcknowledgement(msgID, 0);
+        SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
 
         NSNumber *seqNum = messageDict[@"device_seq"];
         if (seqNum) {
@@ -591,18 +580,17 @@ static BOOL isValidPort(NSString *port) {
 
         cleanup_assertion:
         {
-            IOPMAssertionID current = atomic_exchange(&assertionID, 0);
-            if (current != 0) IOPMAssertionRelease(current);
+            [[SGAvailability shared] releasePowerAssertion:assertionID];
         }
     }
 }
 
 - (void)protocolDidReceiveKeepAlivePong {
     [_stateLock lock];
-    double oldVal = SGKeepAlive_GetCurrentInterval(&_keepAliveAlgo);
-    SGKeepAlive_ProcessHeartbeatResult(&_keepAliveAlgo, true);
-    double newVal = SGKeepAlive_GetCurrentInterval(&_keepAliveAlgo);
-    BOOL isWiFi = _keepAliveAlgo.isWiFi;
+    double oldVal = [self _currentKeepAliveInterval];
+    [self _processKeepAliveResult:YES];
+    double newVal = [self _currentKeepAliveInterval];
+    BOOL isWiFi = _isWiFi;
     [_stateLock unlock];
     
     if (newVal != oldVal) {
@@ -699,8 +687,9 @@ static BOOL isValidPort(NSString *port) {
 
 - (void)systemNetworkReachabilityDidChangeWithWWANStatus:(BOOL)isWWAN {
     [_stateLock lock];
-    double savedInterval = [[SGDatabaseManager sharedManager] loadKeepAliveIntervalForWiFi:!isWWAN];
-    SGKeepAlive_Initialize(&_keepAliveAlgo, !isWWAN, savedInterval); 
+    _isWiFi = !isWWAN;
+    double savedInterval = [[SGDatabaseManager sharedManager] loadKeepAliveIntervalForWiFi:_isWiFi];
+    [self _reinitializeKeepAliveForWiFi:_isWiFi savedInterval:savedInterval];
     [_stateLock unlock];
 
     [self handleEvent:SGEventNetworkUp payload:nil];
@@ -732,6 +721,49 @@ static BOOL isValidPort(NSString *port) {
     }
 }
 
+#pragma mark - Keepalive Algorithm Helpers (unified iOS 5/6+)
+
+/**
+ * Returns the current keepalive interval from whichever algorithm is active.
+ * MUST be called while holding _stateLock.
+ */
+- (double)_currentKeepAliveInterval {
+    if (_growthAlgorithm) {
+        return [[SGAvailability shared] currentIntervalForGrowthAlgorithm:_growthAlgorithm];
+    }
+    return SGKeepAlive_GetCurrentInterval(&_keepAliveAlgo);
+}
+
+/**
+ * Informs the active algorithm of a keepalive result.
+ * MUST be called while holding _stateLock.
+ */
+- (void)_processKeepAliveResult:(BOOL)success {
+    if (_growthAlgorithm) {
+        [[SGAvailability shared] processResult:success forGrowthAlgorithm:_growthAlgorithm];
+    } else {
+        SGKeepAlive_ProcessHeartbeatResult(&_keepAliveAlgo, success);
+    }
+}
+
+/**
+ * Reinitializes the active algorithm for a network type change.
+ * MUST be called while holding _stateLock.
+ */
+- (void)_reinitializeKeepAliveForWiFi:(BOOL)isWiFi savedInterval:(double)savedInterval {
+    if (_growthAlgorithm) {
+        double minKA = isWiFi ? 900.0 : 600.0;
+        double maxKA = isWiFi ? 3600.0 : 1680.0;
+        double initial = (savedInterval >= minKA && savedInterval <= maxKA) ? savedInterval : minKA;
+        [_growthAlgorithm release];
+        _growthAlgorithm = [[SGAvailability shared] createGrowthAlgorithmWithInterval:initial
+                                                                     minimumInterval:minKA
+                                                                     maximumInterval:maxKA];
+    } else {
+        SGKeepAlive_Initialize(&_keepAliveAlgo, isWiFi, savedInterval);
+    }
+}
+
 #pragma mark - PCPersistentTimer Keepalive (Survives Deep Sleep)
 
 /**
@@ -746,8 +778,10 @@ static BOOL isValidPort(NSString *port) {
  * Safe to call from any thread — dispatches to main internally.
  */
 - (void)_scheduleKeepAliveTimer {
+    if (![SGAvailability shared].persistentTimerAvailable) return;
+
     [_stateLock lock];
-    double interval = SGKeepAlive_GetCurrentInterval(&_keepAliveAlgo);
+    double interval = [self _currentKeepAliveInterval];
     [_stateLock unlock];
 
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -757,20 +791,13 @@ static BOOL isValidPort(NSString *port) {
             self->_keepAliveTimer = nil;
         }
 
-        self->_keepAliveTimer = [[PCPersistentTimer alloc]
-            initWithTimeInterval:interval
-               serviceIdentifier:@"com.skyglow.sgn"
-                          target:self
-                        selector:@selector(_keepAliveTimerFired:)
-                        userInfo:nil];
+        self->_keepAliveTimer = [[SGAvailability shared]
+            createPersistentTimerWithInterval:interval
+                           serviceIdentifier:@"com.skyglow.sgn"
+                                      target:self
+                                    selector:@selector(_keepAliveTimerFired:)];
 
-        /**
-         * minimumEarlyFireProportion=0.9: timer may fire up to 10% early
-         * if the system is already awake for another reason (e.g., another
-         * daemon's maintenance wake). Reduces total wake count, saves battery.
-         */
-        [self->_keepAliveTimer setMinimumEarlyFireProportion:0.9];
-        [self->_keepAliveTimer scheduleInRunLoop:[NSRunLoop mainRunLoop]];
+        [[SGAvailability shared] schedulePersistentTimer:self->_keepAliveTimer inRunLoop:[NSRunLoop mainRunLoop]];
 
         NSLog(@"[SGDaemon] PCPersistentTimer scheduled: %.0fs (survives sleep)", interval);
     });
@@ -862,7 +889,7 @@ static BOOL isValidPort(NSString *port) {
         NSLog(@"[SGDaemon] Connection worker started.");
         while (SGP_IsConnected()) {
             [self->_stateLock lock];
-            double pingInterval = SGKeepAlive_GetCurrentInterval(&self->_keepAliveAlgo);
+            double pingInterval = [self _currentKeepAliveInterval];
             [self->_stateLock unlock];
             
             int rc = SGP_ProcessNextIncomingMessage(pingInterval);

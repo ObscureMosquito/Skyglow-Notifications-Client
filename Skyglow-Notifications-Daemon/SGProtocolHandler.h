@@ -46,6 +46,12 @@
 #define SGP_ERR_TIMEOUT  5
 #define SGP_ERR_REPLACED 6
 
+/** Acknowledgement Status Codes */
+#define SGP_ACK_SUCCESS          0
+#define SGP_ACK_DECRYPT_FAILED   1
+#define SGP_ACK_PARSE_FAILED     2
+#define SGP_ACK_EXPIRED          3
+
 typedef enum : uint8_t {
     SGP_S_HELLO          = 0x10,
     SGP_S_CHALLENGE      = 0x11,

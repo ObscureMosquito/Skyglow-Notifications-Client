@@ -23,7 +23,7 @@
     if ((self = [super init])) {
         _databaseQueue = dispatch_queue_create("com.skyglow.database.queue", DISPATCH_QUEUE_SERIAL);
 
-        NSString *dbPath = @"/var/mobile/Library/SkyglowNotifications/sqlite.db";
+        NSString *dbPath = SGPath(@"/var/mobile/Library/SkyglowNotifications/sqlite.db");
         NSString *dbDir = [dbPath stringByDeletingLastPathComponent];
         NSFileManager *fm = [NSFileManager defaultManager];
         [fm createDirectoryAtPath:dbDir
