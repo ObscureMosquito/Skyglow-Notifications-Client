@@ -153,7 +153,16 @@ static int SG_SSLReadExact(void *buf, int len) {
 
 static int SG_SSLWriteLocked(const void *buf, int len) {
     if (!_ssl) return -1;
-    pthread_rwlock_rdlock(&_sslLock);
+    /**
+     * Acquire the write lock (not read lock) so that SSL_write and SSL_read
+     * cannot execute concurrently on the same SSL* object. OpenSSL 1.0.x
+     * requires external serialization — concurrent SSL_read + SSL_write on
+     * the same SSL* is undefined behavior and can corrupt the record layer.
+     * Write lock is exclusive: it blocks until any in-progress SSL_read (rdlock)
+     * has returned, and blocks any new SSL_read until the write completes.
+     * Writes are brief (one keepalive ping or ack frame), so the stall is negligible.
+     */
+    pthread_rwlock_wrlock(&_sslLock);
     if (!_ssl) { pthread_rwlock_unlock(&_sslLock); return -1; }
     int total = 0;
     while (total < len) {
@@ -573,8 +582,19 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         struct timeval tv = {(long)pingIntervalSec, 0};
         struct timeval *tv_ptr = (pingIntervalSec > 0.0) ? &tv : NULL;
 
-        if (_pingPendingSince > 0.0) {
-            double elapsed = SG_GetMonotonicSeconds() - _pingPendingSince;
+        /**
+         * Read _pingPendingSince under _pingLock. On 32-bit ARM (iPod touch 4G,
+         * iPhone 4S) a double is two 32-bit loads — not atomic. Without the lock,
+         * a concurrent write from the main thread (SGP_SendKeepAlivePing) can
+         * produce a torn read, giving a garbage elapsed value that either fires
+         * an immediate spurious SGP_ERR_TIMEOUT or suppresses the timeout.
+         */
+        pthread_mutex_lock(&_pingLock);
+        double pendingSince = _pingPendingSince;
+        pthread_mutex_unlock(&_pingLock);
+
+        if (pendingSince > 0.0) {
+            double elapsed = SG_GetMonotonicSeconds() - pendingSince;
             if (elapsed >= (double)SGP_PONG_TIMEOUT_SEC) return SGP_ERR_TIMEOUT;
             tv.tv_sec = (long)(SGP_PONG_TIMEOUT_SEC - elapsed);
             tv_ptr = &tv;

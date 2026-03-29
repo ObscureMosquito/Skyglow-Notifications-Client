@@ -289,6 +289,17 @@ static BOOL isValidPort(NSString *port) {
             if (event == SGEventBackoffTimerFired || event == SGEventNetworkUp) {
                 if (event == SGEventNetworkUp) _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
+            } else if (event == SGEventSystemDidWake) {
+                /**
+                 * Device woke from deep sleep while a backoff timer was pending.
+                 * Skip the remaining wait and retry immediately — the system wake
+                 * implies enough time has passed that a retry is reasonable.
+                 * Unlike SGEventNetworkUp this does NOT reset _consecutiveFailures:
+                 * the server may still be unreachable; the circuit breaker count
+                 * is preserved so we still reach SGStateIdleCircuitOpen eventually.
+                 */
+                NSLog(@"[SGDaemon] System wake received during backoff — skipping remaining wait.");
+                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             }
             break;
 
@@ -305,9 +316,21 @@ static BOOL isValidPort(NSString *port) {
             if (event == SGEventAuthSuccess) {
                 _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateConnected backoff:0 ip:NULL];
-            } 
+            }
             else if (event == SGEventAuthFailed) {
+                /**
+                 * Explicit server rejection — the server told us this credential
+                 * is invalid. Wipe the profile so the next attempt re-registers.
+                 */
                 [self performProfileWipeInline];
+                [self executeFailureBackoff];
+            }
+            else if (event == SGEventAuthTimeout) {
+                /**
+                 * Auth timer expired with no response — the server may be slow
+                 * or the connection dropped silently. Back off and retry without
+                 * wiping the profile: the credential itself is not the problem.
+                 */
                 [self executeFailureBackoff];
             }
             else if (event == SGEventDisconnected) {
@@ -323,6 +346,23 @@ static BOOL isValidPort(NSString *port) {
             
         case SGStateIdleCircuitOpen:
             if (event == SGEventNetworkUp || event == SGEventConfigReloaded) {
+                _consecutiveFailures = 0;
+                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
+            } else if (event == SGEventSystemDidWake) {
+                /**
+                 * The device woke from deep sleep while the circuit breaker was open.
+                 * The network interface is almost certainly still available (same WiFi),
+                 * but the server may have recovered while we were asleep — or the device
+                 * may have moved to a different network without triggering a change event.
+                 *
+                 * This is NOT SGEventNetworkUp: the network has not changed. We are not
+                 * lying to the FSM. This is a distinct "enough time has passed, try again"
+                 * trigger that exists specifically for the wake-from-sleep case.
+                 *
+                 * From all other states this event is a no-op (handled by the default
+                 * case below), so IOKit can fire it on every wake without wasted work.
+                 */
+                NSLog(@"[SGDaemon] System wake received in circuit-open idle — resetting failures and retrying.");
                 _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             }
@@ -370,8 +410,14 @@ static BOOL isValidPort(NSString *port) {
                 [self performSocketConnection];
                 break;    
             case SGStateAuthenticating:
-                [self startConnectionScopedWorker]; 
-                [self scheduleTimerForEvent:SGEventAuthFailed delay:10 generation:capturedGen]; 
+                [self startConnectionScopedWorker];
+                /**
+                 * 30-second timeout fires SGEventAuthTimeout, not SGEventAuthFailed.
+                 * SGEventAuthFailed is reserved for explicit server rejection and
+                 * triggers a profile wipe. A silent timeout is ambiguous — the
+                 * credential is presumed valid; we just back off and retry.
+                 */
+                [self scheduleTimerForEvent:SGEventAuthTimeout delay:30 generation:capturedGen];
                 break;
             case SGStateRegistering:
                 break;
@@ -380,6 +426,12 @@ static BOOL isValidPort(NSString *port) {
                 break;
             case SGStateBackingOff:
             case SGStateIdleDNSFailed:
+                /**
+                 * Abort any in-progress connection (e.g. auth timed out while
+                 * the socket was still open). SGP_AbortConnection is idempotent —
+                 * safe to call when already disconnected.
+                 */
+                SGP_AbortConnection();
                 [self scheduleTimerForEvent:SGEventBackoffTimerFired delay:backoff generation:capturedGen];
                 break;
             case SGStateIdleCircuitOpen:
@@ -709,6 +761,10 @@ static BOOL isValidPort(NSString *port) {
     [self handleEvent:SGEventConfigReloaded payload:nil];
 }
 
+- (void)handleSystemWake {
+    [self handleEvent:SGEventSystemDidWake payload:nil];
+}
+
 - (void)performProfileWipeInline {
     @autoreleasepool {
         NSString *profilePath = SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist");
@@ -851,34 +907,114 @@ static BOOL isValidPort(NSString *port) {
         return;
     }
 
-    NSDictionary *txt = [SGServerLocator resolveEndpointForServerAddress:address];
-    
-    if (txt && isValidPort(txt[@"tcp_port"])) {
-        [self handleEvent:SGEventDNSResolved payload:txt];
-    } else {
-        [self handleEvent:SGEventDNSFailed payload:nil];
-    }
+    [_stateLock lock];
+    uint32_t gen = _fsmGeneration;
+    [_stateLock unlock];
+
+    /**
+     * Watchdog timer: if SGServerLocator blocks (mDNSResponder stall, DNS-SD socket
+     * issue), the 30-second timer fires SGEventDNSFailed so the FSM backs off and
+     * retries rather than blocking _entryActionQueue indefinitely. The generation
+     * check inside scheduleTimerForEvent: discards the watchdog if DNS resolves first
+     * (state changes → new generation → timer sees mismatch and no-ops).
+     */
+    [self scheduleTimerForEvent:SGEventDNSFailed delay:30 generation:gen];
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSDictionary *txt = [SGServerLocator resolveEndpointForServerAddress:address];
+
+        /**
+         * Discard the result if the FSM moved on while DNS was in flight
+         * (e.g. network dropped, user disabled daemon, watchdog fired).
+         */
+        [self->_stateLock lock];
+        BOOL isStale = (self->_fsmGeneration != gen);
+        [self->_stateLock unlock];
+        if (isStale) return;
+
+        if (txt && isValidPort(txt[@"tcp_port"])) {
+            [self handleEvent:SGEventDNSResolved payload:txt];
+        } else {
+            [self handleEvent:SGEventDNSFailed payload:nil];
+        }
+    });
 }
 
 - (void)performSocketConnection {
     NSString *ip = [[SGConfiguration sharedConfiguration] serverIPAddress];
     NSString *portStr = [[SGConfiguration sharedConfiguration] serverPort];
     NSString *cert = [[SGConfiguration sharedConfiguration] serverPubKeyPEM];
-    
+
     if (!ip || !portStr || !cert) {
         NSLog(@"[SGDaemon] Missing IP, Port, or Certificate. Aborting connection.");
         [self handleEvent:SGEventConnectFailed payload:nil];
         return;
     }
 
+    [_stateLock lock];
+    uint32_t gen = _fsmGeneration;
+    [_stateLock unlock];
+
+    /**
+     * SGP_ConnectToServer performs a non-blocking TLS handshake and can
+     * block for several seconds (TCP timeout, slow server). Running it on
+     * the entry-action queue would serialize all subsequent state entry
+     * actions behind the connect. Dispatching to the global queue keeps
+     * the FSM responsive to concurrent events (network drop, SIGTERM).
+     *
+     * Pre-connect stale check: avoids starting a connection that will be
+     * immediately discarded (e.g. network dropped just before we got here).
+     *
+     * Post-connect stale check: if the FSM transitioned while the TLS
+     * handshake was in flight, close the socket we just opened so it is
+     * not leaked. SGP_DisconnectFromServer (not SGP_AbortConnection) is
+     * used here because SGP_ConnectToServer successfully completed the
+     * handshake and the SSL/socket objects are in a valid state — a
+     * graceful teardown avoids leaving the server slot in an ambiguous state.
+     */
+    NSString *ipCopy   = [ip copy];
+    NSString *certCopy = [cert copy];
     int port = [portStr intValue];
-    int rc = SGP_ConnectToServer([ip UTF8String], port, cert);
-    
-    if (rc == 0) {
-        [self handleEvent:SGEventConnectSuccess payload:nil];
-    } else {
-        [self handleEvent:SGEventConnectFailed payload:nil];
-    }
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        @autoreleasepool {
+            [self->_stateLock lock];
+            BOOL isStale = (self->_fsmGeneration != gen);
+            [self->_stateLock unlock];
+
+            if (isStale) {
+                [ipCopy release];
+                [certCopy release];
+                return;
+            }
+
+            int rc = SGP_ConnectToServer([ipCopy UTF8String], port, certCopy);
+
+            [ipCopy release];
+            [certCopy release];
+
+            [self->_stateLock lock];
+            isStale = (self->_fsmGeneration != gen);
+            [self->_stateLock unlock];
+
+            if (isStale) {
+                if (rc == 0) {
+                    /**
+                     * Connection succeeded but FSM moved on — release the socket.
+                     * Use Disconnect (not Abort) since the SSL object is valid.
+                     */
+                    SGP_DisconnectFromServer();
+                }
+                return;
+            }
+
+            if (rc == 0) {
+                [self handleEvent:SGEventConnectSuccess payload:nil];
+            } else {
+                [self handleEvent:SGEventConnectFailed payload:nil];
+            }
+        }
+    });
 }
 
 - (void)startConnectionScopedWorker {
@@ -905,7 +1041,9 @@ static BOOL isValidPort(NSString *port) {
             }
         }
         dispatch_async(self->_entryActionQueue, ^{
+            [self->_stateLock lock];
             self->_workerActive = NO;
+            [self->_stateLock unlock];
         });
         NSLog(@"[SGDaemon] Connection worker stopped.");
     });

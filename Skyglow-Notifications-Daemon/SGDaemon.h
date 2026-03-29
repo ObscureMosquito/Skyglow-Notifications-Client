@@ -31,7 +31,11 @@ typedef NS_ENUM(NSInteger, SGEvent) {
     SGEventDisconnected,
     
     // Timers
-    SGEventBackoffTimerFired
+    SGEventBackoffTimerFired,
+
+    // System Power
+    SGEventSystemDidWake,   // Device woke from deep sleep — retry if circuit-open
+    SGEventAuthTimeout      // Auth timer expired (not an explicit server rejection)
 };
 
 /** Darwin Notifications */
@@ -65,6 +69,14 @@ typedef NS_ENUM(NSInteger, SGEvent) {
  * Requests a graceful disconnection and loop termination.
  */
 - (void)requestGracefulDisconnect;
+
+/**
+ * Called by the IOKit power notification callback when the system has fully
+ * woken from deep sleep. Only acts if the FSM is in SGStateIdleCircuitOpen —
+ * it is a no-op from all other states, so it is safe to call unconditionally
+ * on every wake without wasting battery.
+ */
+- (void)handleSystemWake;
 
 @end
 

@@ -28,7 +28,7 @@
 @implementation SGAvailability {
     Class         _persistentTimerClass;
     Class         _growthAlgorithmClass;
-    NSMutableSet *_releasedAssertionIDs;
+    NSMutableSet *_activeAssertionIDs;   // IDs created but not yet released
     NSLock       *_assertionLock;
 }
 
@@ -54,7 +54,7 @@
          */
         _persistentTimerClass  = NSClassFromString(@"PCPersistentTimer");
         _growthAlgorithmClass  = NSClassFromString(@"PCMultiStageGrowthAlgorithm");
-        _releasedAssertionIDs  = [[NSMutableSet alloc] init];
+        _activeAssertionIDs    = [[NSMutableSet alloc] init];
         _assertionLock         = [[NSLock alloc] init];
 
         NSLog(@"[SGAvailability] PCPersistentTimer: %@, PCMultiStageGrowthAlgorithm: %@",
@@ -65,7 +65,7 @@
 }
 
 - (void)dealloc {
-    [_releasedAssertionIDs release];
+    [_activeAssertionIDs release];
     [_assertionLock release];
     [super dealloc];
 }
@@ -158,15 +158,24 @@
     if (ret != kIOReturnSuccess) return 0;
 
     /**
-     * Schedule an auto-release after timeout seconds as a safety net in case the
-     * caller forgets. Both this block and releasePowerAssertion: funnel through the
-     * same idempotent release path — whichever fires first wins, the second is a no-op.
+     * Track the assertion as active immediately so releasePowerAssertion: can
+     * guard against double-release. Both the dispatch_after auto-timeout below
+     * and the caller's explicit release funnel through releasePowerAssertion: —
+     * whichever fires first removes the ID from the active set and releases the
+     * OS assertion; the second call finds nothing in the set and is a no-op.
      *
-     * Previously used `__block _Atomic IOPMAssertionID` which is undefined behavior in
-     * C11: `__block` moves the variable to the heap, where `_Atomic` has no specified
-     * semantics and the CAS may not be atomic on ARM.
+     * Tracking active (not released) IDs means the set is bounded by the number
+     * of concurrent assertions (typically 0-1) rather than growing indefinitely.
+     *
+     * Previously used `__block _Atomic IOPMAssertionID` which is undefined
+     * behavior in C11: `__block` moves the variable to the heap, where `_Atomic`
+     * has no specified semantics and the CAS may not be atomic on ARM.
      */
     uint32_t capturedID = (uint32_t)assertionID;
+    [_assertionLock lock];
+    [_activeAssertionIDs addObject:@(capturedID)];
+    [_assertionLock unlock];
+
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)),
                    dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [self releasePowerAssertion:capturedID];
@@ -179,22 +188,20 @@
     if (assertionID == 0) return;
 
     /**
-     * Guard against double-release. Both the dispatch_after auto-timeout and the
-     * caller's explicit release call this method. The first call releases the OS
-     * assertion; subsequent calls with the same ID are no-ops.
-     *
-     * This matters because IOPMAssertionRelease of an already-released ID is
-     * undefined — the OS may have recycled the ID for a different assertion.
+     * Atomically remove the ID from the active set. If it was there, this is the
+     * first release — perform it. If it was already removed by a prior call, skip.
+     * This prevents double-release regardless of whether the timeout path or the
+     * explicit caller path fires first.
      */
     NSNumber *key = @(assertionID);
     [_assertionLock lock];
-    BOOL alreadyReleased = [_releasedAssertionIDs containsObject:key];
-    if (!alreadyReleased) {
-        [_releasedAssertionIDs addObject:key];
+    BOOL wasActive = [_activeAssertionIDs containsObject:key];
+    if (wasActive) {
+        [_activeAssertionIDs removeObject:key];
     }
     [_assertionLock unlock];
 
-    if (!alreadyReleased) {
+    if (wasActive) {
         IOPMAssertionRelease((IOPMAssertionID)assertionID);
     }
 }
