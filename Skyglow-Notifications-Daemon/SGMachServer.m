@@ -25,7 +25,10 @@ kern_return_t SGMach_SendPushToAppTopic(NSString *topic, NSDictionary *payload) 
     
     mach_port_t servicePort;
     kern_return_t kr = bootstrap_look_up(bootstrapPort, SKYGLOW_MACH_SERVICE_NAME_PUSH, &servicePort);
-    if (kr != KERN_SUCCESS) return kr;
+    if (kr != KERN_SUCCESS) {
+        NSLog(@"[SGMachServer] bootstrap_look_up for push receiver failed kr=%d — SpringBoard tweak not loaded or not yet registered", kr);
+        return kr;
+    }
 
     if (plistData.length > SKYGLOW_MAX_USERINFO_SIZE) return KERN_RESOURCE_SHORTAGE;
 

@@ -31,7 +31,7 @@ static void SGReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkRea
 - (void)startMonitoringSystemNetworkChanges {
     struct sockaddr_in zeroAddr;
     memset(&zeroAddr, 0, sizeof(zeroAddr));
-    zeroAddr.sin_len = sizeof(zeroAddr);
+    zeroAddr.sin_len    = sizeof(zeroAddr);
     zeroAddr.sin_family = AF_INET;
 
     _reachabilityRef = SCNetworkReachabilityCreateWithAddress(NULL, (const struct sockaddr *)&zeroAddr);

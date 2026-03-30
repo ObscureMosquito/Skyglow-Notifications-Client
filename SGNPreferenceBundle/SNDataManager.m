@@ -157,116 +157,137 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
 
 - (void)startWatchingDaemonStatus {
     [self stopWatchingDaemonStatus];
-    
+
     self.latestPayload = [self queryDaemonStatus];
     [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
-    
+
     self.isWatching = YES;
     self.watchSocketFD = -1;
     self.watchGeneration++;
-    uint32_t myGen = self.watchGeneration;
-    
+
+    [self _performConnectionCycleForGeneration:self.watchGeneration];
+}
+
+/*
+ * Performs one full connect → write-mode → read-loop cycle.
+ * On any failure the thread is released immediately and the next attempt is
+ * scheduled via dispatch_after — no thread is consumed during the wait.
+ * The read loop itself blocks on I/O (SO_RCVTIMEO), which is intentional:
+ * productive blocking waiting for data is not the same as an idle sleep.
+ */
+- (void)_performConnectionCycleForGeneration:(uint32_t)gen {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        while (self.isWatching && self.watchGeneration == myGen) {
-            int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-            if (fd < 0) { sleep(1); continue; }
-            self.watchSocketFD = fd;
-            
-            struct sockaddr_un addr;
-            memset(&addr, 0, sizeof(addr));
-            addr.sun_family = AF_UNIX;
-            strlcpy(addr.sun_path, SGPocketPath(), sizeof(addr.sun_path));
-            
-            struct timeval connectTv = {1, 0};
-            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &connectTv, sizeof(connectTv));
-            
-            if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-                close(fd);
-                self.watchSocketFD = -1;
-                
-                if (self.watchGeneration == myGen) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        SGStatusPayload empty;
-                        memset(&empty, 0, sizeof(empty));
-                        BOOL isEnabled = NO;
-                        FILE *pidFile = fopen(SGPIDPath(), "r");
-                        if (pidFile) {
-                            int pid = 0;
-                            if (fscanf(pidFile, "%d", &pid) == 1 && pid > 0) {
-                                if (kill(pid, 0) == 0) isEnabled = YES;
-                            }
-                            fclose(pidFile);
-                        }
-                        empty.state = isEnabled ? SGStateStarting : SGStateDisabled;
-                        self.latestPayload = empty;
-                        [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
-                    });
-                }
-                
-                sleep(2);
-                continue;
-            }
-            
-            struct timeval readTv = {5, 0};
-            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &readTv, sizeof(readTv));
-            
-            uint8_t mode = 0x57;
-            if (write(fd, &mode, 1) != 1) {
-                close(fd);
-                self.watchSocketFD = -1;
-                sleep(1);
-                continue;
-            }
-            
-            while (self.isWatching && self.watchGeneration == myGen) {
-                SGStatusPayload payload;
-                memset(&payload, 0, sizeof(payload));
-                ssize_t total = 0, remaining = sizeof(payload);
-                uint8_t *buf = (uint8_t *)&payload;
-                BOOL readError = NO;
-                
-                while (remaining > 0) {
-                    ssize_t n = read(fd, buf + total, remaining);
-                    if (n > 0) {
-                        total += n;
-                        remaining -= n;
-                    } else if (n == 0) {
-                        readError = YES;
-                        break;
-                    } else {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            readError = YES;
-                            break;
-                        } else if (errno == EINTR) {
-                            continue;
-                        } else {
-                            readError = YES;
-                            break;
-                        }
-                    }
-                }
-                
-                if (readError) {
-                    if (self.watchGeneration == myGen) {
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            self.latestPayload = [self queryDaemonStatus];
-                            [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
-                        });
-                    }
-                    break;
-                }
-                
-                if (total == sizeof(payload) && self.watchGeneration == myGen) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        self.latestPayload = payload;
-                        [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
-                    });
-                }
-            }
-            
+        if (!self.isWatching || self.watchGeneration != gen) return;
+
+        /* --- Open socket --- */
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) {
+            [self _scheduleConnectionAttemptForGeneration:gen delay:1.0];
+            return;
+        }
+        self.watchSocketFD = fd;
+
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        strlcpy(addr.sun_path, SGPocketPath(), sizeof(addr.sun_path));
+
+        struct timeval connectTv = {1, 0};
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &connectTv, sizeof(connectTv));
+
+        /* --- Connect --- */
+        if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
             close(fd);
             self.watchSocketFD = -1;
-            if (self.isWatching && self.watchGeneration == myGen) usleep(500000);
+
+            if (self.watchGeneration == gen) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (self.watchGeneration != gen) return;
+                    SGStatusPayload empty;
+                    memset(&empty, 0, sizeof(empty));
+                    BOOL isEnabled = NO;
+                    FILE *pidFile = fopen(SGPIDPath(), "r");
+                    if (pidFile) {
+                        int pid = 0;
+                        if (fscanf(pidFile, "%d", &pid) == 1 && pid > 0) {
+                            if (kill(pid, 0) == 0) isEnabled = YES;
+                        }
+                        fclose(pidFile);
+                    }
+                    empty.state = isEnabled ? SGStateStarting : SGStateDisabled;
+                    self.latestPayload = empty;
+                    [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
+                });
+            }
+            [self _scheduleConnectionAttemptForGeneration:gen delay:2.0];
+            return;
+        }
+
+        /* --- Write watch-mode byte --- */
+        uint8_t mode = 0x57;
+        if (write(fd, &mode, 1) != 1) {
+            close(fd);
+            self.watchSocketFD = -1;
+            [self _scheduleConnectionAttemptForGeneration:gen delay:1.0];
+            return;
+        }
+
+        /* --- Read loop: blocks on I/O, no idle sleep --- */
+        struct timeval readTv = {5, 0};
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &readTv, sizeof(readTv));
+
+        while (self.isWatching && self.watchGeneration == gen) {
+            SGStatusPayload payload;
+            memset(&payload, 0, sizeof(payload));
+            ssize_t total = 0, remaining = sizeof(payload);
+            uint8_t *buf = (uint8_t *)&payload;
+            BOOL readError = NO;
+
+            while (remaining > 0) {
+                ssize_t n = read(fd, buf + total, remaining);
+                if (n > 0) {
+                    total += n; remaining -= n;
+                } else if (n == 0) {
+                    readError = YES; break;
+                } else {
+                    if (errno == EINTR) continue;
+                    readError = YES; break; /* EAGAIN = 5s timeout expired; reconnect */
+                }
+            }
+
+            if (readError) {
+                if (self.watchGeneration == gen) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (self.watchGeneration != gen) return;
+                        self.latestPayload = [self queryDaemonStatus];
+                        [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
+                    });
+                }
+                break;
+            }
+
+            if (total == (ssize_t)sizeof(payload) && self.watchGeneration == gen) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (self.watchGeneration != gen) return;
+                    self.latestPayload = payload;
+                    [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
+                });
+            }
+        }
+
+        close(fd);
+        self.watchSocketFD = -1;
+
+        /* Brief reconnect pause — replaced usleep(500000) with dispatch_after */
+        [self _scheduleConnectionAttemptForGeneration:gen delay:0.5];
+    });
+}
+
+- (void)_scheduleConnectionAttemptForGeneration:(uint32_t)gen delay:(double)seconds {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        if (self.isWatching && self.watchGeneration == gen) {
+            [self _performConnectionCycleForGeneration:gen];
         }
     });
 }

@@ -635,17 +635,32 @@ static BOOL isValidPort(NSString *port) {
         }
 
         NSLog(@"[SGDaemon] Sending Push to app [%@]: %@", routingData[@"bundleID"], parsed);
-        SGMach_SendPushToAppTopic(routingData[@"bundleID"], parsed);
-        SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
+        kern_return_t deliveryKr = SGMach_SendPushToAppTopic(routingData[@"bundleID"], parsed);
+        if (deliveryKr == KERN_SUCCESS) {
+            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
 
-        NSNumber *seqNum = messageDict[@"device_seq"];
-        if (seqNum) {
-            int64_t arrivedSeq = [seqNum longLongValue];
-            int64_t currentMax = [[SGDatabaseManager sharedManager] lastDeliveredSeq];
-
-            if (arrivedSeq > currentMax) {
-                [[SGDatabaseManager sharedManager] updateLastDeliveredSeq:arrivedSeq];
+            NSNumber *seqNum = messageDict[@"device_seq"];
+            if (seqNum) {
+                int64_t arrivedSeq = [seqNum longLongValue];
+                int64_t currentMax = [[SGDatabaseManager sharedManager] lastDeliveredSeq];
+                if (arrivedSeq > currentMax) {
+                    [[SGDatabaseManager sharedManager] updateLastDeliveredSeq:arrivedSeq];
+                }
             }
+        } else {
+            /*
+             * Mach delivery failed — most likely the SpringBoard push receiver
+             * is not registered (tweak not loaded, or SpringBoard restarting).
+             * Log and ACK immediately. A timer-based retry with an arbitrary
+             * duration is not appropriate here: if the receiver is absent due
+             * to a configuration problem no amount of retrying will fix it,
+             * and if it is a transient SpringBoard restart the next incoming
+             * notification will succeed on its own once SpringBoard is back.
+             */
+            NSLog(@"[SGDaemon] WARN: Mach delivery failed kr=%d for %@ — "
+                  @"SpringBoard push receiver unavailable. Notification lost.",
+                  deliveryKr, routingData[@"bundleID"]);
+            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
         }
 
         cleanup_assertion:
@@ -654,6 +669,7 @@ static BOOL isValidPort(NSString *port) {
         }
     }
 }
+
 
 - (void)protocolDidReceiveKeepAlivePong {
     [_stateLock lock];
