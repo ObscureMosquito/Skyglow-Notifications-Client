@@ -17,9 +17,6 @@ extern char **environ;
     UIActivityIndicatorView *activityIndicatorView;
 }
 
-/** Posts a Darwin notification to restart the daemon. */
-- (void)reloadDaemon;
-
 /** Pushes the debug/diagnostics view controller. */
 - (void)pushDebugView;
 

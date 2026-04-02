@@ -22,6 +22,7 @@
 - (void)removeAppStatusForBundleId:(NSString *)bundleId;
 - (void)setMainPrefValue:(id)value forKey:(NSString *)key;
 - (NSString *)serverAddressInput;
+- (BOOL)importProfileFromPEMAtPath:(NSString *)path serverAddress:(NSString *)serverAddress;
 
 /** Profile */
 - (NSDictionary *)profile;

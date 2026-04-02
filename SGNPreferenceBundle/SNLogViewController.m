@@ -21,16 +21,25 @@
     self.statusLabel.clipsToBounds = YES;
     self.statusLabel.font = [UIFont boldSystemFontOfSize:14.0];
     self.statusLabel.textColor = [UIColor whiteColor];
-    
+
     [self.view addSubview:self.statusLabel];
-    
+
     self.gradientLayer = [CAGradientLayer layer];
     self.gradientLayer.frame = self.view.bounds;
     self.gradientLayer.colors = @[(id)[[UIColor colorWithWhite:1.0 alpha:0.15] CGColor],
                                   (id)[[UIColor colorWithWhite:0.0 alpha:0.15] CGColor]];
     [self.statusLabel.layer addSublayer:self.gradientLayer];
-    
-    self.lastKnownState = (SGState)-1; // Force immediate update
+
+    self.lastKnownState = (SGState)-1;
+
+    /* Start watching here so status updates even when viewWillAppear is never
+     * called (SNCustomTableViewCell embeds this VC via addSubview: without
+     * addChildViewController:, so UIKit does not forward lifecycle events). */
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(refreshDaemonStatus)
+                                                 name:@"SNDaemonStatusUpdated"
+                                               object:nil];
+    [[SNDataManager shared] startWatchingDaemonStatus];
     [self refreshDaemonStatus];
 }
 
@@ -42,10 +51,18 @@
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    self.lastKnownState = (SGState)-1; // Force UI refresh on re-appear
+    self.lastKnownState = (SGState)-1;
+    /* Remove before re-adding prevents duplicate observer registrations when
+     * both viewDidLoad and viewWillAppear fire (properly-parented VC case). */
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"SNDaemonStatusUpdated" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refreshDaemonStatus) name:@"SNDaemonStatusUpdated" object:nil];
     [[SNDataManager shared] startWatchingDaemonStatus];
     [self refreshDaemonStatus];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+    [[SNDataManager shared] stopWatchingDaemonStatus];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {

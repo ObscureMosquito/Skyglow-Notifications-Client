@@ -444,6 +444,62 @@ static sqlite3 *openDBReadOnly(void) {
     return info;
 }
 
+- (BOOL)importProfileFromPEMAtPath:(NSString *)path serverAddress:(NSString *)serverAddress {
+    if (!path || path.length == 0) return NO;
+    if (!serverAddress || serverAddress.length == 0) return NO;
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+
+    /* Destination directory — create if needed. */
+    NSString *destDir = SGPath(@"/var/mobile/Library/SkyglowNotifications");
+    if (![fm fileExistsAtPath:destDir]) {
+        NSError *mkErr = nil;
+        if (![fm createDirectoryAtPath:destDir
+           withIntermediateDirectories:YES
+                            attributes:nil
+                                 error:&mkErr]) {
+            return NO;
+        }
+    }
+
+    /* Copy the PEM to our storage directory, replacing any existing file. */
+    NSString *destPath = [destDir stringByAppendingPathComponent:@"server.pem"];
+    if ([fm fileExistsAtPath:destPath]) {
+        [fm removeItemAtPath:destPath error:nil];
+    }
+    NSError *copyErr = nil;
+    if (![fm copyItemAtPath:path toPath:destPath error:&copyErr]) {
+        return NO;
+    }
+
+    /* Sanity check: the file must be readable PEM content. */
+    NSError *readErr = nil;
+    NSString *pemString = [NSString stringWithContentsOfFile:destPath
+                                                    encoding:NSUTF8StringEncoding
+                                                       error:&readErr];
+    if (!pemString || pemString.length == 0 ||
+        [pemString rangeOfString:@"BEGIN"].location == NSNotFound) {
+        [fm removeItemAtPath:destPath error:nil];
+        return NO;
+    }
+
+    /* The daemon stores/reads server_pub_key as a FILE PATH (no /var/jb prefix).
+     * It applies SGPath() itself at load time. Do NOT store PEM content.
+     *
+     * Do NOT write device_address or privateKey — the daemon generates both
+     * during first-time registration (protocolDidCompleteRegistrationWithAddress:).
+     * Writing a device_address here without a privateKey causes the daemon to find
+     * a credential it cannot use, fire SGEventAuthFailed, wipe the profile, and
+     * back off before eventually succeeding on the next attempt. */
+    NSString *storedPath = @"/var/mobile/Library/SkyglowNotifications/server.pem";
+
+    NSMutableDictionary *profile = [NSMutableDictionary dictionary];
+    [profile setObject:serverAddress forKey:@"server_address"];
+    [profile setObject:storedPath    forKey:@"server_pub_key"];
+
+    return [profile writeToFile:[self profilePath] atomically:YES];
+}
+
 - (void)unregisterDevice {
     [[NSFileManager defaultManager] removeItemAtPath:SGProfilePath() error:nil];
 
@@ -453,8 +509,6 @@ static sqlite3 *openDBReadOnly(void) {
         sqlite3_exec(db, "DELETE FROM dns_cache;", NULL, NULL, NULL);
     }
     if (db) sqlite3_close(db);
-
-    CFNotificationCenterPostNotificationWithOptions(CFNotificationCenterGetDarwinNotifyCenter(), CFSTR("com.skyglow.sgn.reload_config"), NULL, NULL, kCFNotificationDeliverImmediately);
 }
 
 - (NSString *)hexStringFromData:(NSData *)data {

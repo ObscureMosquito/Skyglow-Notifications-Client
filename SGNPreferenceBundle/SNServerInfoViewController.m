@@ -1,19 +1,53 @@
 #import "SNServerInfoViewController.h"
 #import "SNDataManager.h"
+#import "SkyglowFilePicker/SFPFilePicker.h"
+#import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
+/* ── Darwin notification helper ─────────────────────────────────────────────── */
+static void SNPostReloadConfig(void) {
+    CFNotificationCenterPostNotificationWithOptions(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFSTR("com.skyglow.sgn.reload_config"),
+        NULL, NULL, kCFNotificationDeliverImmediately);
+}
+
+/* ── Section/row layout ──────────────────────────────────────────────────────── */
+
 typedef enum {
-    SectionServer = 0,
-    SectionDevice,
-    SectionActions,
-    SectionCount
+    WizardSectionServer = 0,
+    WizardSectionCert   = 1,
+    WizardSectionCount  = 2
+} WizardSection;
+
+typedef enum {
+    SectionServer  = 0,
+    SectionDevice  = 1,
+    SectionActions = 2,
+    SectionCount   = 3
 } ServerInfoSection;
 
-@interface SNServerInfoViewController () <UIAlertViewDelegate>
+/* Alert tags */
+static const NSInteger kAlertTagPEMConfirm  = 1;
+static const NSInteger kAlertTagUnregister  = 2;
+
+
+@interface SNServerInfoViewController () <UIAlertViewDelegate, UITextFieldDelegate, SFPFilePickerDelegate>
+
+/* Wizard state */
+@property (nonatomic, strong) NSString    *pendingServerAddress;
+@property (nonatomic, strong) NSString    *pendingPEMPath;       /* set when file chosen, cleared after import */
+@property (nonatomic, weak)   UITextField *serverAddressField;   /* owned by cell */
+
+/* Registered: inline server address editing */
+@property (nonatomic, weak)   UITextField *registeredAddressField; /* owned by cell */
+
+/* Required by PreferenceLoader */
 @property (nonatomic, strong) id rootController;
 @property (nonatomic, strong) id parentController;
 @property (nonatomic, strong) id specifier;
+
 @end
 
 @implementation SNServerInfoViewController
@@ -21,80 +55,260 @@ typedef enum {
 - (id)init {
     self = [super initWithStyle:UITableViewStyleGrouped];
     if (self) {
-        self.title = @"Registration Info";
+        self.title = @"Registration";
     }
     return self;
 }
 
+/* ── Lifecycle ───────────────────────────────────────────────────────────────── */
+
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    [self _updateTableHeaderView];
     [self.tableView reloadData];
 }
 
+/* ── Welcome header ──────────────────────────────────────────────────────────── */
+
+/* Builds and sets (or clears) tableView.tableHeaderView based on registration
+ * state. The unregistered header mimics the iOS 6 Settings first-run aesthetic:
+ * centred icon, bold app name, and a brief instruction line beneath it. */
+- (void)_updateTableHeaderView {
+    if (![self isRegistered]) {
+        CGFloat w = self.tableView.bounds.size.width;
+        if (w < 10.0f) w = 320.0f;
+
+        CGFloat iconSize      = 62.0f;
+        CGFloat smallIconSize = 55.5f;
+        CGFloat arrowWidth    = 30.0f;
+        CGFloat spacing       = 16.0f;
+        CGFloat topPad        = 22.0f;
+        CGFloat totalGroupWidth = iconSize + spacing + arrowWidth + spacing + smallIconSize;
+        CGFloat startX = (w - totalGroupWidth) / 2.0f;
+
+        NSBundle *bundle = [NSBundle bundleForClass:[self class]];
+
+        UIImage *webIcon = [UIImage imageWithContentsOfFile:[bundle pathForResource:@"web" ofType:@"png"]];
+        UIImageView *webIconView = [[UIImageView alloc] initWithImage:webIcon];
+        webIconView.contentMode   = UIViewContentModeScaleAspectFit;
+        webIconView.clipsToBounds = YES;
+        webIconView.frame = CGRectMake(startX, topPad, iconSize, iconSize);
+
+        UILabel *arrowLabel = [[UILabel alloc] initWithFrame:CGRectMake(startX + iconSize + spacing, topPad, arrowWidth, iconSize)];
+        arrowLabel.text = @"➔";
+        arrowLabel.font = [UIFont boldSystemFontOfSize:28.0f];
+        arrowLabel.textColor = [UIColor colorWithRed:0.55f green:0.55f blue:0.58f alpha:1.0f];
+        arrowLabel.shadowColor = [UIColor colorWithWhite:1.0f alpha:0.7f];
+        arrowLabel.shadowOffset = CGSizeMake(0, 1);
+        arrowLabel.backgroundColor = [UIColor clearColor];
+        arrowLabel.textAlignment = NSTextAlignmentCenter;
+
+        UIImage *settingsIcon = [UIImage imageWithContentsOfFile:[bundle pathForResource:@"icon-settings" ofType:@"png"]];
+        UIImageView *settingsIconView = [[UIImageView alloc] initWithImage:settingsIcon];
+        settingsIconView.contentMode   = UIViewContentModeScaleAspectFit;
+        settingsIconView.clipsToBounds = YES;
+
+        CGFloat settingsYOffset = topPad + ((iconSize - smallIconSize) / 2.0f);
+        CGFloat settingsXOrigin = startX + iconSize + spacing + arrowWidth + spacing;
+
+        settingsIconView.frame = CGRectMake(settingsXOrigin, settingsYOffset, smallIconSize, smallIconSize);
+
+        CGFloat iconGap   = 10.0f;
+        CGFloat titleGap  = 4.0f;
+        CGFloat bodyGap   = 12.0f;
+        CGFloat botPad    = 18.0f;
+        CGFloat sideInset = 24.0f;
+
+        UILabel *titleLabel     = [[UILabel alloc] init];
+        titleLabel.text         = @"Skyglow Notifications";
+        titleLabel.font         = [UIFont boldSystemFontOfSize:17.0f];
+        titleLabel.textColor    = [UIColor colorWithRed:0.18f green:0.18f blue:0.18f alpha:1.0f];
+        titleLabel.shadowColor  = [UIColor colorWithWhite:1.0f alpha:0.7f];
+        titleLabel.shadowOffset = CGSizeMake(0, 1);
+        titleLabel.textAlignment     = NSTextAlignmentCenter;
+        titleLabel.backgroundColor   = [UIColor clearColor];
+        CGFloat titleY = topPad + iconSize + iconGap;
+        titleLabel.frame = CGRectMake(sideInset, titleY, w - sideInset * 2.0f, 22.0f);
+
+        UILabel *bodyLabel      = [[UILabel alloc] init];
+        bodyLabel.text          = @"Enter your server address below, then select\nyour server\xe2\x80\x99s public certificate to get started.";
+        bodyLabel.font          = [UIFont systemFontOfSize:13.0f];
+        bodyLabel.textColor     = [UIColor colorWithRed:0.38f green:0.38f blue:0.42f alpha:1.0f];
+        bodyLabel.shadowColor   = [UIColor colorWithWhite:1.0f alpha:0.6f];
+        bodyLabel.shadowOffset  = CGSizeMake(0, 1);
+        bodyLabel.textAlignment    = NSTextAlignmentCenter;
+        bodyLabel.backgroundColor  = [UIColor clearColor];
+        bodyLabel.numberOfLines    = 0;
+        CGFloat bodyY = titleY + 22.0f + titleGap;
+        CGSize bodyFit = [bodyLabel sizeThatFits:CGSizeMake(w - sideInset * 2.0f, 999.0f)];
+        bodyLabel.frame = CGRectMake(sideInset, bodyY, w - sideInset * 2.0f, bodyFit.height);
+
+        CGFloat totalH = bodyY + bodyFit.height + bodyGap + botPad;
+        UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, totalH)];
+        header.backgroundColor = [UIColor clearColor];
+        
+        [header addSubview:webIconView];
+        [header addSubview:arrowLabel];
+        [header addSubview:settingsIconView];
+        
+        [header addSubview:titleLabel];
+        [header addSubview:bodyLabel];
+
+        self.tableView.tableHeaderView = header;
+    } else {
+        self.tableView.tableHeaderView = nil;
+    }
+}
+
+- (BOOL)isRegistered {
+    return [[SNDataManager shared] isRegistered];
+}
+
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return [[SNDataManager shared] isRegistered] ? SectionCount : 1;
+    return [self isRegistered] ? SectionCount : WizardSectionCount;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (![[SNDataManager shared] isRegistered]) return 1; // Only show "Not Registered"
-    
+    if (![self isRegistered]) return 1;
     switch (section) {
-        case SectionServer:  return 3; // Address, Resolved IP, Port
-        case SectionDevice:  return 1; // Device ID
-        case SectionActions: return 1; // Unregister Button
+        case SectionServer:  return 3; /* Domain (editable), Resolved IP, Port */
+        case SectionDevice:  return 1;
+        case SectionActions: return 1;
         default: return 0;
     }
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    if (![[SNDataManager shared] isRegistered]) return @"Status";
-    
+    if (![self isRegistered]) {
+        return (section == WizardSectionServer) ? @"Server Address" : @"Certificate";
+    }
     switch (section) {
-        case SectionServer:  return @"Server Details";
-        case SectionDevice:  return @"Identity";
+        case SectionServer: return @"Server Details";
+        case SectionDevice: return @"Identity";
         default: return nil;
     }
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == SectionActions) {
-        return @"Unregistering deletes keys and tokens, but preserves your app toggles. New keys will be generated automatically on next connect.";
+    if (![self isRegistered]) {
+        if (section == WizardSectionServer)
+            return @"Enter the hostname or IP address of your Skyglow notification server.";
+        if (section == WizardSectionCert)
+            return @"Select the server's public certificate (.pem). Enter the server address first.";
+        return nil;
     }
+    if (section == SectionActions)
+        return @"Unregistering disables the daemon and deletes your cryptographic keys. App toggles are preserved.";
     return nil;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *CellId = @"InfoCell";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:CellId];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:CellId];
-    }
-    
-    cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    cell.textLabel.textColor = [UIColor blackColor];
-    cell.detailTextLabel.textColor = [UIColor grayColor];
-    cell.accessoryType = UITableViewCellAccessoryNone;
 
-    if (![[SNDataManager shared] isRegistered]) {
-        cell.textLabel.text = @"Registration";
-        cell.detailTextLabel.text = @"Waiting for configuration...";
+    if (![self isRegistered]) {
+
+        if (indexPath.section == WizardSectionServer) {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"TFCell"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                              reuseIdentifier:@"TFCell"];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+
+                UITextField *tf = [[UITextField alloc] init];
+                tf.placeholder              = @"hostname or IP address";
+                tf.autocorrectionType       = UITextAutocorrectionTypeNo;
+                tf.autocapitalizationType   = UITextAutocapitalizationTypeNone;
+                tf.keyboardType             = UIKeyboardTypeURL;
+                tf.returnKeyType            = UIReturnKeyDone;
+                tf.clearButtonMode          = UITextFieldViewModeWhileEditing;
+                tf.delegate                 = self;
+                tf.font                     = [UIFont systemFontOfSize:15.0f];
+                tf.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
+                tf.autoresizingMask         = UIViewAutoresizingFlexibleWidth;
+                tf.tag                      = 100;
+                [cell.contentView addSubview:tf];
+            }
+
+            UITextField *tf = (UITextField *)[cell.contentView viewWithTag:100];
+            CGRect b = cell.contentView.bounds;
+            tf.frame = CGRectMake(16.0f, 0, b.size.width - 32.0f, b.size.height);
+            tf.text  = self.pendingServerAddress ?: @"";
+            self.serverAddressField = tf;
+            return cell;
+        }
+
+        /* WizardSectionCert */
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"CertCell"];
+        if (!cell) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                          reuseIdentifier:@"CertCell"];
+        }
+        BOOL canSelect = (self.pendingServerAddress.length > 0);
+        cell.textLabel.text       = @"Select Certificate";
+        cell.textLabel.textColor  = canSelect
+            ? [UIColor colorWithRed:0.05f green:0.42f blue:0.86f alpha:1.0f]
+            : [UIColor grayColor];
+        //cell.detailTextLabel.text = @"Choose .pem file";
+        cell.detailTextLabel.textColor = [UIColor grayColor];
+        cell.accessoryType  = canSelect ? UITableViewCellAccessoryDisclosureIndicator
+                                        : UITableViewCellAccessoryNone;
+        cell.selectionStyle = canSelect ? UITableViewCellSelectionStyleBlue
+                                        : UITableViewCellSelectionStyleNone;
         return cell;
     }
 
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"InfoCell"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                      reuseIdentifier:@"InfoCell"];
+    }
+
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.accessoryType  = UITableViewCellAccessoryNone;
+    cell.textLabel.textColor       = [UIColor blackColor];
+    cell.detailTextLabel.textColor = [UIColor grayColor];
+    cell.detailTextLabel.adjustsFontSizeToFitWidth = NO;
+
+    UIView *oldTF = [cell.contentView viewWithTag:200];
+    if (oldTF) [oldTF removeFromSuperview];
+
     SNDataManager *dm = [SNDataManager shared];
-    NSDictionary *dns = [dm cachedDNSForServerAddress:[dm serverAddress]];
-    
+
     switch (indexPath.section) {
         case SectionServer: {
             if (indexPath.row == 0) {
                 cell.textLabel.text = @"Domain";
-                cell.detailTextLabel.text = [dm serverAddress] ?: @"Unknown";
+
+                UITextField *tf = [[UITextField alloc] init];
+                tf.text                     = [dm serverAddress] ?: @"";
+                tf.placeholder              = @"hostname or IP";
+                tf.autocorrectionType       = UITextAutocorrectionTypeNo;
+                tf.autocapitalizationType   = UITextAutocapitalizationTypeNone;
+                tf.keyboardType             = UIKeyboardTypeURL;
+                tf.returnKeyType            = UIReturnKeyDone;
+                tf.clearButtonMode          = UITextFieldViewModeWhileEditing;
+                tf.delegate                 = self;
+                tf.font                     = [UIFont systemFontOfSize:15.0f];
+                tf.textColor                = [UIColor grayColor];
+                tf.textAlignment            = NSTextAlignmentRight;
+                tf.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
+                tf.autoresizingMask         = UIViewAutoresizingFlexibleWidth;
+                tf.tag                      = 200;
+                [cell.contentView addSubview:tf];
+                self.registeredAddressField = tf;
+
+                CGRect b = cell.contentView.bounds;
+                tf.frame = CGRectMake(90.0f, 0, b.size.width - 106.0f, b.size.height);
+
             } else if (indexPath.row == 1) {
-                cell.textLabel.text = @"Resolved IP";
-                cell.detailTextLabel.text = dns && dns[@"ip"] ? dns[@"ip"] : @"Waiting...";
-            } else if (indexPath.row == 2) {
-                cell.textLabel.text = @"Port";
-                cell.detailTextLabel.text = dns && dns[@"port"] ? [dns[@"port"] description] : @"Waiting...";
+                NSDictionary *dns = [dm cachedDNSForServerAddress:[dm serverAddress]];
+                cell.textLabel.text       = @"Resolved IP";
+                cell.detailTextLabel.text = (dns && dns[@"ip"]) ? dns[@"ip"] : @"Waiting\xe2\x80\xa6";
+            } else {
+                NSDictionary *dns = [dm cachedDNSForServerAddress:[dm serverAddress]];
+                cell.textLabel.text       = @"Port";
+                cell.detailTextLabel.text = (dns && dns[@"port"])
+                                                ? [dns[@"port"] description]
+                                                : @"Waiting\xe2\x80\xa6";
             }
             break;
         }
@@ -102,66 +316,254 @@ typedef enum {
             cell.textLabel.text = @"Device ID";
             cell.detailTextLabel.text = [dm deviceAddress] ?: @"None";
             cell.detailTextLabel.adjustsFontSizeToFitWidth = YES;
-            cell.detailTextLabel.minimumFontSize = 8.0;
+            cell.detailTextLabel.minimumFontSize = 8.0f;
             break;
         }
         case SectionActions: {
-            cell.textLabel.text = @"Unregister Device";
+            cell.textLabel.text      = @"Unregister Device";
             cell.textLabel.textColor = [UIColor redColor];
             cell.detailTextLabel.text = @"";
             cell.selectionStyle = UITableViewCellSelectionStyleBlue;
             break;
         }
     }
-    
+
     return cell;
 }
 
+/* ── UITableViewDelegate ─────────────────────────────────────────────────────── */
+
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    
+
+    if (![self isRegistered]) {
+        if (indexPath.section == WizardSectionCert && self.pendingServerAddress.length > 0) {
+            [self.serverAddressField resignFirstResponder];
+
+            SFPFilePickerFilter *filter = [[SFPFilePickerFilter alloc] init];
+            filter.allowedExtensions = @[@"pem"];
+
+            SFPFilePickerViewController *picker =
+                [[SFPFilePickerViewController alloc] initWithPath:nil
+                                                           filter:filter
+                                                         delegate:self];
+            picker.showsCancelButton = NO;
+            [self.navigationController pushViewController:picker animated:YES];
+        }
+        return;
+    }
+
     if (indexPath.section == SectionActions && indexPath.row == 0) {
-        Class alertControllerClass = NSClassFromString(@"UIAlertController");
-        if (alertControllerClass) {
-            SEL alertCreateSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
-            id (*createAlert)(Class, SEL, id, id, NSInteger) = (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
-            id alert = createAlert(alertControllerClass, alertCreateSel, @"Unregister?", @"This will delete your cryptographic keys and disconnect from the server.", 1);
-            
-            Class alertActionClass = NSClassFromString(@"UIAlertAction");
-            SEL actionCreateSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
-            id (*createAction)(Class, SEL, id, NSInteger, id) = (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
-            
-            id cancelAction = createAction(alertActionClass, actionCreateSel, @"Cancel", 1, nil);
-            
-            void (^unregisterBlock)(id) = ^(id action) {
-                [[SNDataManager shared] unregisterDevice];
-                [self.navigationController popViewControllerAnimated:YES];
-            };
-            id unregisterAction = createAction(alertActionClass, actionCreateSel, @"Unregister", 2, unregisterBlock);
-            
-            SEL addActionSel = NSSelectorFromString(@"addAction:");
-            void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
-            addAction(alert, addActionSel, cancelAction);
-            addAction(alert, addActionSel, unregisterAction);
-            
-            SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
-            void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
-            present(self, presentSel, alert, YES, nil);
-        } else {
-            UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Unregister?"
-                                                         message:@"This will delete your cryptographic keys and disconnect from the server."
-                                                        delegate:self
-                                               cancelButtonTitle:@"Cancel"
-                                               otherButtonTitles:@"Unregister", nil];
-            [av show];
+        [self _showUnregisterConfirmation];
+    }
+}
+
+/* ── UITextFieldDelegate ─────────────────────────────────────────────────────── */
+
+- (BOOL)textFieldShouldReturn:(UITextField *)textField {
+    [textField resignFirstResponder];
+    return YES;
+}
+
+- (void)textFieldDidEndEditing:(UITextField *)textField {
+    NSString *trimmed = [textField.text stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+    if (textField.tag == 100) {
+        self.pendingServerAddress = trimmed;
+        [self.tableView reloadData];
+
+    } else if (textField.tag == 200) {
+        NSString *current = [[SNDataManager shared] serverAddress];
+        if (trimmed.length > 0 && ![trimmed isEqualToString:current]) {
+            [self _commitServerAddressChange:trimmed];
+        } else if (trimmed.length == 0) {
+            textField.text = current;
         }
     }
 }
 
+- (BOOL)textField:(UITextField *)textField
+        shouldChangeCharactersInRange:(NSRange)range
+        replacementString:(NSString *)string {
+    if (textField.tag == 100) {
+        NSString *updated = [textField.text stringByReplacingCharactersInRange:range
+                                                                    withString:string];
+        self.pendingServerAddress = [updated stringByTrimmingCharactersInSet:
+                                     [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSIndexPath *certPath = [NSIndexPath indexPathForRow:0 inSection:WizardSectionCert];
+        if ([self.tableView respondsToSelector:@selector(reloadRowsAtIndexPaths:withRowAnimation:)]) {
+            [self.tableView reloadRowsAtIndexPaths:@[certPath]
+                                 withRowAnimation:UITableViewRowAnimationNone];
+        }
+    }
+    return YES;
+}
+
+/* ── SFPFilePickerDelegate ───────────────────────────────────────────────────── */
+
+- (void)filePicker:(SFPFilePickerViewController *)picker didSelectFileAtPath:(NSString *)path {
+    /* Store the path and ask for confirmation before importing. */
+    self.pendingPEMPath = path;
+    NSString *filename  = [path lastPathComponent];
+    NSString *message   = [NSString stringWithFormat:
+                           @"Import \"%@\" as the server certificate for %@?",
+                           filename, self.pendingServerAddress];
+
+    Class alertControllerClass = NSClassFromString(@"UIAlertController");
+    if (alertControllerClass) {
+        SEL createSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
+        id (*create)(Class, SEL, id, id, NSInteger) =
+            (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
+        id alert = create(alertControllerClass, createSel,
+                          @"Confirm Certificate", message, 1 /* Alert */);
+
+        Class actionClass = NSClassFromString(@"UIAlertAction");
+        SEL actionSel     = NSSelectorFromString(@"actionWithTitle:style:handler:");
+        id (*makeAction)(Class, SEL, id, NSInteger, id) =
+            (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
+
+        id cancelAction = makeAction(actionClass, actionSel, @"Cancel", 1, nil);
+
+        /* Capture values before block creation — pendingServerAddress could change
+         * if viewWillAppear fires while the alert is on screen. */
+        NSString *capturedAddress = self.pendingServerAddress;
+        NSString *capturedPath    = path;
+        __weak typeof(self) weakSelf = self;
+        void (^confirmBlock)(id) = ^(id action) {
+            [weakSelf _confirmImportFromPath:capturedPath serverAddress:capturedAddress];
+        };
+        id importAction = makeAction(actionClass, actionSel, @"Import", 0, confirmBlock);
+
+        SEL addSel = NSSelectorFromString(@"addAction:");
+        void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
+        addAction(alert, addSel, cancelAction);
+        addAction(alert, addSel, importAction);
+
+        SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
+        void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
+        /* Present on the picker (topmost VC), not self (buried in nav stack). */
+        present(picker, presentSel, alert, YES, nil);
+    } else {
+        UIAlertView *av = [[UIAlertView alloc]
+                           initWithTitle:@"Confirm Certificate"
+                                 message:message
+                                delegate:self
+                       cancelButtonTitle:@"Cancel"
+                       otherButtonTitles:@"Import", nil];
+        av.tag = kAlertTagPEMConfirm;
+        [av show];
+    }
+}
+
+/* ── Private helpers ─────────────────────────────────────────────────────────── */
+
+/*
+ * Performs the actual file import. Called after user confirms.
+ * If import succeeds: pops all file picker levels back to self, no reload posted.
+ * If import fails: shows error (still on file picker — user can pick again).
+ */
+- (void)_confirmImportFromPath:(NSString *)path serverAddress:(NSString *)serverAddress {
+    BOOL success = [[SNDataManager shared] importProfileFromPEMAtPath:path
+                                                        serverAddress:serverAddress];
+    self.pendingPEMPath = nil;
+
+    if (success) {
+        self.pendingServerAddress = nil;
+        /* Pop all file picker levels back to this VC in one animated move. */
+        [self.navigationController popToViewController:self animated:YES];
+        self.title = @"Registration Info";
+        /* viewWillAppear → reloadData will refresh the table to registered state.
+         * We do NOT post a reload config notification on registration —
+         * the daemon picks up the new profile when the user enables it. */
+    } else {
+        UIAlertView *av = [[UIAlertView alloc]
+                           initWithTitle:@"Import Failed"
+                                 message:@"Could not read or copy the selected .pem file. Make sure the file is a valid PEM certificate."
+                                delegate:nil
+                       cancelButtonTitle:@"OK"
+                       otherButtonTitles:nil];
+        [av show]; /* Stay on file picker — user can try another file. */
+    }
+}
+
+- (void)_commitServerAddressChange:(NSString *)newAddress {
+    NSMutableDictionary *profile =
+        [NSMutableDictionary dictionaryWithContentsOfFile:[[SNDataManager shared] profilePath]]
+        ?: [NSMutableDictionary dictionary];
+    profile[@"server_address"] = newAddress;
+    [profile writeToFile:[[SNDataManager shared] profilePath] atomically:YES];
+    SNPostReloadConfig();
+}
+
+- (void)_performUnregister {
+    /* Disable the daemon first so it doesn't attempt to reconnect with no profile. */
+    [[SNDataManager shared] setMainPrefValue:@NO forKey:@"enabled"];
+    CFPreferencesSetAppValue(CFSTR("enabled"),
+                             (__bridge CFPropertyListRef)@NO,
+                             CFSTR("com.skyglow.sndp"));
+    CFPreferencesAppSynchronize(CFSTR("com.skyglow.sndp"));
+
+    [[SNDataManager shared] unregisterDevice];
+    SNPostReloadConfig();
+    [self.navigationController popViewControllerAnimated:YES];
+}
+
+- (void)_showUnregisterConfirmation {
+    NSString *msg = @"This will disable the daemon and delete your cryptographic keys. The server will be disconnected.";
+
+    Class alertControllerClass = NSClassFromString(@"UIAlertController");
+    if (alertControllerClass) {
+        SEL createSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
+        id (*create)(Class, SEL, id, id, NSInteger) =
+            (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
+        id alert = create(alertControllerClass, createSel, @"Unregister?", msg, 1);
+
+        Class actionClass = NSClassFromString(@"UIAlertAction");
+        SEL actionSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
+        id (*makeAction)(Class, SEL, id, NSInteger, id) =
+            (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
+
+        id cancelAction = makeAction(actionClass, actionSel, @"Cancel", 1, nil);
+
+        __weak typeof(self) weakSelf = self;
+        void (^unregBlock)(id) = ^(id action) { [weakSelf _performUnregister]; };
+        id unregAction = makeAction(actionClass, actionSel, @"Unregister", 2 /* Destructive */, unregBlock);
+
+        SEL addSel = NSSelectorFromString(@"addAction:");
+        void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
+        addAction(alert, addSel, cancelAction);
+        addAction(alert, addSel, unregAction);
+
+        SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
+        void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
+        present(self, presentSel, alert, YES, nil);
+    } else {
+        UIAlertView *av = [[UIAlertView alloc]
+                           initWithTitle:@"Unregister?"
+                                 message:msg
+                                delegate:self
+                       cancelButtonTitle:@"Cancel"
+                       otherButtonTitles:@"Unregister", nil];
+        av.tag = kAlertTagUnregister;
+        [av show];
+    }
+}
+
+/* ── UIAlertViewDelegate ─────────────────────────────────────────────────────── */
+
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
-    if (buttonIndex == 1) { // "Unregister"
-        [[SNDataManager shared] unregisterDevice];
-        [self.navigationController popViewControllerAnimated:YES];
+    if (alertView.tag == kAlertTagPEMConfirm) {
+        if (buttonIndex == 1) { /* "Import" */
+            [self _confirmImportFromPath:self.pendingPEMPath
+                           serverAddress:self.pendingServerAddress];
+        } else {
+            self.pendingPEMPath = nil;
+        }
+    } else if (alertView.tag == kAlertTagUnregister) {
+        if (buttonIndex == 1) { /* "Unregister" */
+            [self _performUnregister];
+        }
     }
 }
 

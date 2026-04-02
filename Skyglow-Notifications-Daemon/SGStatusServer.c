@@ -131,8 +131,7 @@ void SGStatusServer_Start(const char *socketPath, int64_t startTime) {
     }
 
     listen(_serverFd, 5);
-    chmod(_socketPath, 0660);
-    chown(_socketPath, 0, 501);
+    chmod(_socketPath, 0666);
     
     _running = 1;
     pthread_create(&_acceptThread, NULL, SGStatusServer_AcceptLoop, NULL);

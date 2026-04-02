@@ -22,7 +22,7 @@
 			<key>label</key>
 			<string>Enabled</string>
 		</dict>
-		<dict>
+		<!--dict>
 			<key>cell</key>
 			<string>PSEditTextCell</string>
 			<key>defaults</key>
@@ -35,7 +35,7 @@
 			<false/>
 			<key>keyboardType</key>
 			<string>URL</string>
-		</dict>
+		</dict-->
 		<!--dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
