@@ -24,6 +24,7 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateStarting,          SGStateError               },
     { SGStateStarting,          SGStateErrorBadConfig      },
 
+    { SGStateResolvingDNS,      SGStateResolvingDNS        },
     { SGStateResolvingDNS,      SGStateConnecting          },
     { SGStateResolvingDNS,      SGStateBackingOff          },
     { SGStateResolvingDNS,      SGStateIdleCircuitOpen     },
@@ -42,8 +43,9 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateIdleUnregistered,  SGStateResolvingDNS        },
     { SGStateIdleUnregistered,  SGStateDisabled            },
 
+    { SGStateConnecting,        SGStateResolvingDNS        },
     { SGStateConnecting,        SGStateAuthenticating      },
-    { SGStateConnecting,        SGStateRegistering         }, 
+    { SGStateConnecting,        SGStateRegistering         },
     { SGStateConnecting,        SGStateBackingOff          },
     { SGStateConnecting,        SGStateIdleNoNetwork       },
     { SGStateConnecting,        SGStateIdleCircuitOpen     },
@@ -55,11 +57,12 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateRegistering,       SGStateIdleNoNetwork       },
     { SGStateRegistering,       SGStateDisabled            },
 
-    { SGStateAuthenticating,    SGStateRegistering         }, 
+    { SGStateAuthenticating,    SGStateResolvingDNS        },
+    { SGStateAuthenticating,    SGStateRegistering         },
     { SGStateAuthenticating,    SGStateConnected           },
     { SGStateAuthenticating,    SGStateBackingOff          },
     { SGStateAuthenticating,    SGStateErrorAuth           },
-    { SGStateAuthenticating,    SGStateDisabled            }, 
+    { SGStateAuthenticating,    SGStateDisabled            },
     { SGStateAuthenticating,    SGStateIdleNoNetwork       },
     { SGStateAuthenticating,    SGStateIdleUnregistered    },
     { SGStateAuthenticating,    SGStateErrorBadConfig      },
@@ -126,6 +129,7 @@ static BOOL isValidPort(NSString *port) {
     SGMachServer          *_machServer;
     id                     _keepAliveTimer;        // PCPersistentTimer, nil on iOS 5
     BOOL                   _isWiFi;
+    char                   _lastErrorDetail[128];  // Human-readable error for status broadcast
 }
 
 - (id)init {
@@ -236,9 +240,10 @@ static BOOL isValidPort(NSString *port) {
     
     NSLog(@"[SGDaemon] FSM Rx Event: %ld in State: %s", (long)event, SGState_GetName(currentState));
 
-    if (event == SGEventStopRequested || 
+    if (event == SGEventStopRequested ||
        (event == SGEventConfigReloaded && ![[SGConfiguration sharedConfiguration] isEnabled])) {
         _consecutiveFailures = 0;
+        strlcpy(_lastErrorDetail, "Daemon is disabled", sizeof(_lastErrorDetail));
         [self executeTransitionToState:SGStateDisabled backoff:0 ip:NULL];
         [_stateLock unlock];
         return;
@@ -246,6 +251,7 @@ static BOOL isValidPort(NSString *port) {
 
     if (event == SGEventNetworkDown) {
         if (currentState != SGStateDisabled && currentState != SGStateErrorBadConfig) {
+            strlcpy(_lastErrorDetail, "No network connection available", sizeof(_lastErrorDetail));
             [self executeTransitionToState:SGStateIdleNoNetwork backoff:0 ip:NULL];
         }
         [_stateLock unlock];
@@ -260,8 +266,10 @@ static BOOL isValidPort(NSString *port) {
             if (event == SGEventStartRequested || event == SGEventConfigReloaded) {
                 _consecutiveFailures = 0;
                 if ([[SGConfiguration sharedConfiguration] isValid]) {
+                    _lastErrorDetail[0] = '\0';
                     [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
                 } else {
+                    strlcpy(_lastErrorDetail, "Missing server address or certificate", sizeof(_lastErrorDetail));
                     [self executeTransitionToState:SGStateErrorBadConfig backoff:0 ip:NULL];
                 }
             }
@@ -274,19 +282,26 @@ static BOOL isValidPort(NSString *port) {
             break;
 
         case SGStateResolvingDNS:
-            if (event == SGEventDNSResolved) {
+            if (event == SGEventConfigReloaded) {
+                _consecutiveFailures = 0;
+                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
+            } else if (event == SGEventDNSResolved) {
                 NSDictionary *txt = (NSDictionary *)payload;
                 [[SGConfiguration sharedConfiguration] setServerIPAddress:txt[@"tcp_addr"]];
                 [[SGConfiguration sharedConfiguration] setServerPort:txt[@"tcp_port"]];
                 [self executeTransitionToState:SGStateConnecting backoff:0 ip:[txt[@"tcp_addr"] UTF8String]];
             } else if (event == SGEventDNSFailed) {
+                strlcpy(_lastErrorDetail, "DNS resolution failed", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
             }
             break;
 
         case SGStateIdleDNSFailed:
         case SGStateBackingOff:
-            if (event == SGEventBackoffTimerFired || event == SGEventNetworkUp) {
+            if (event == SGEventConfigReloaded) {
+                _consecutiveFailures = 0;
+                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
+            } else if (event == SGEventBackoffTimerFired || event == SGEventNetworkUp) {
                 if (event == SGEventNetworkUp) _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             } else if (event == SGEventSystemDidWake) {
@@ -304,42 +319,45 @@ static BOOL isValidPort(NSString *port) {
             break;
 
         case SGStateConnecting:
-            if (event == SGEventConnectSuccess) {
+            if (event == SGEventConfigReloaded) {
+                _consecutiveFailures = 0;
+                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
+            } else if (event == SGEventConnectSuccess) {
                 [self executeTransitionToState:SGStateAuthenticating backoff:0 ip:NULL];
-            } 
-            else if (event == SGEventConnectFailed || event == SGEventDisconnected) {
+            } else if (event == SGEventConnectFailed || event == SGEventDisconnected) {
+                strlcpy(_lastErrorDetail, "Connection to server failed", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
             }
             break;
 
         case SGStateAuthenticating:
-            if (event == SGEventAuthSuccess) {
+            if (event == SGEventConfigReloaded) {
                 _consecutiveFailures = 0;
+                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
+            } else if (event == SGEventAuthSuccess) {
+                _consecutiveFailures = 0;
+                _lastErrorDetail[0] = '\0';
                 [self executeTransitionToState:SGStateConnected backoff:0 ip:NULL];
-            }
-            else if (event == SGEventAuthFailed) {
-                /**
-                 * Explicit server rejection — the server told us this credential
-                 * is invalid. Wipe the profile so the next attempt re-registers.
-                 */
+            } else if (event == SGEventAuthFailed) {
+                strlcpy(_lastErrorDetail, "Server rejected authentication \xe2\x80\x94 key may be revoked", sizeof(_lastErrorDetail));
                 [self performProfileWipeInline];
                 [self executeFailureBackoff];
-            }
-            else if (event == SGEventAuthTimeout) {
-                /**
-                 * Auth timer expired with no response — the server may be slow
-                 * or the connection dropped silently. Back off and retry without
-                 * wiping the profile: the credential itself is not the problem.
-                 */
+            } else if (event == SGEventAuthTimeout) {
+                strlcpy(_lastErrorDetail, "Authentication timed out (30s)", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
-            }
-            else if (event == SGEventDisconnected) {
+            } else if (event == SGEventDisconnected) {
+                strlcpy(_lastErrorDetail, "Disconnected during authentication", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
             }
             break;
 
         case SGStateConnected:
-            if (event == SGEventDisconnected) {
+            if (event == SGEventConfigReloaded) {
+                _consecutiveFailures = 0;
+                _lastErrorDetail[0] = '\0';
+                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
+            } else if (event == SGEventDisconnected) {
+                strlcpy(_lastErrorDetail, "Connection lost", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
             }
             break;
@@ -407,7 +425,16 @@ static BOOL isValidPort(NSString *port) {
     NSString *currentIPStr = [[SGConfiguration sharedConfiguration] serverIPAddress];
     const char *resolvedIP = ip ? ip : (currentIPStr ? [currentIPStr UTF8String] : NULL);
 
-    SGStatusServer_Post(newState, (uint32_t)_consecutiveFailures, backoff, resolvedIP);
+    /* Clear error detail for non-error/non-backoff states */
+    if (newState == SGStateConnected || newState == SGStateResolvingDNS ||
+        newState == SGStateConnecting || newState == SGStateAuthenticating ||
+        newState == SGStateRegistering) {
+        _lastErrorDetail[0] = '\0';
+    }
+
+    uint32_t activeProfile = (uint32_t)[[SGConfiguration sharedConfiguration] activeProfileIndex];
+    SGStatusServer_Post(newState, (uint32_t)_consecutiveFailures, backoff,
+                        resolvedIP, _lastErrorDetail, activeProfile);
     NSLog(@"[SGDaemon] Transitioned to %s (gen=%u)", SGState_GetName(newState), capturedGen);
 
     dispatch_async(_entryActionQueue, ^{
@@ -422,6 +449,7 @@ static BOOL isValidPort(NSString *port) {
 
         switch (newState) {
             case SGStateResolvingDNS:
+                SGP_AbortConnection(); /* Tear down any previous connection (idempotent) */
                 [self performDNSResolution];
                 break;
             case SGStateConnecting:
@@ -472,6 +500,7 @@ static BOOL isValidPort(NSString *port) {
     
     if (_consecutiveFailures >= SG_MAX_CONSECUTIVE_FAILURES) {
         NSLog(@"[SGDaemon] Max failures (%d) reached after ~1h. Idling until network change.", SG_MAX_CONSECUTIVE_FAILURES);
+        strlcpy(_lastErrorDetail, "Too many consecutive failures \xe2\x80\x94 paused", sizeof(_lastErrorDetail));
         [self executeTransitionToState:SGStateIdleCircuitOpen backoff:0 ip:NULL];
     } 
     else {
@@ -711,12 +740,15 @@ static BOOL isValidPort(NSString *port) {
 
     size_t pemLen = strlen(pemKey);
 
-    NSString *profilePath = SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist");
+    NSInteger profileIdx = [[SGConfiguration sharedConfiguration] activeProfileIndex];
+    NSString *profilePath = SGPath([NSString stringWithFormat:
+        @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile%ld.plist", (long)profileIdx]);
     NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePath] ?: [NSMutableDictionary dictionary];
 
     profile[@"device_address"] = deviceAddress;
 
-    NSString *keyPath = @"/var/Library/PreferenceBundles/SGNPreferenceBundle.bundle/com.skyglow.client.pem";
+    NSString *keyPath = [NSString stringWithFormat:
+        @"/var/Library/PreferenceBundles/SGNPreferenceBundle.bundle/client_profile%ld.pem", (long)profileIdx];
     NSString *absoluteKeyPath = SGPath(keyPath);
     NSString *keyDir = [absoluteKeyPath stringByDeletingLastPathComponent];
     [[NSFileManager defaultManager] createDirectoryAtPath:keyDir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -801,8 +833,17 @@ static BOOL isValidPort(NSString *port) {
 
 - (void)performProfileWipeInline {
     @autoreleasepool {
-        NSString *profilePath = SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist");
+        NSInteger profileIdx = [[SGConfiguration sharedConfiguration] activeProfileIndex];
+        NSString *profilePath = SGPath([NSString stringWithFormat:
+            @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile%ld.plist", (long)profileIdx]);
         NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePath] ?: [NSMutableDictionary dictionary];
+
+        /* Remove the profile-specific private key file */
+        NSString *privKeyRelPath = profile[@"privateKey"];
+        if (privKeyRelPath) {
+            [[NSFileManager defaultManager] removeItemAtPath:SGPath(privKeyRelPath) error:nil];
+        }
+
         [profile removeObjectForKey:@"device_address"];
         [profile removeObjectForKey:@"privateKey"];
         [profile writeToFile:profilePath atomically:YES];
@@ -981,6 +1022,7 @@ static BOOL isValidPort(NSString *port) {
 
     if (!ip || !portStr || !cert) {
         NSLog(@"[SGDaemon] Missing IP, Port, or Certificate. Aborting connection.");
+        strlcpy(_lastErrorDetail, "Missing server IP, port, or certificate", sizeof(_lastErrorDetail));
         [self handleEvent:SGEventConnectFailed payload:nil];
         return;
     }

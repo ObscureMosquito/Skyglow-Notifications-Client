@@ -11,6 +11,7 @@ SGNPreferenceBundle_FILES = \
     SNAppToggleCell.m \
     SNAppListController.m \
     SNServerInfoViewController.m \
+    SNProfileListController.m \
     SNCustomViewCell.m \
     SNDebugViewController.m \
     SNDataManager.m \

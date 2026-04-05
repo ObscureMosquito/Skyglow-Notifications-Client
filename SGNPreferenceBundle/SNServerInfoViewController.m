@@ -53,9 +53,14 @@ static const NSInteger kAlertTagUnregister  = 2;
 @implementation SNServerInfoViewController
 
 - (id)init {
+    return [self initWithProfileIndex:[[SNDataManager shared] activeProfileIndex]];
+}
+
+- (id)initWithProfileIndex:(NSInteger)index {
     self = [super initWithStyle:UITableViewStyleGrouped];
     if (self) {
-        self.title = @"Registration";
+        _profileIndex = index;
+        self.title = [NSString stringWithFormat:@"Profile %ld", (long)index];
     }
     return self;
 }
@@ -161,7 +166,9 @@ static const NSInteger kAlertTagUnregister  = 2;
 }
 
 - (BOOL)isRegistered {
-    return [[SNDataManager shared] isRegistered];
+    NSDictionary *profile = [[SNDataManager shared] profileForIndex:self.profileIndex];
+    NSString *addr = [profile objectForKey:@"server_address"];
+    return (addr != nil && [addr length] > 0);
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -272,6 +279,7 @@ static const NSInteger kAlertTagUnregister  = 2;
     if (oldTF) [oldTF removeFromSuperview];
 
     SNDataManager *dm = [SNDataManager shared];
+    NSDictionary *prof = [dm profileForIndex:self.profileIndex];
 
     switch (indexPath.section) {
         case SectionServer: {
@@ -279,7 +287,7 @@ static const NSInteger kAlertTagUnregister  = 2;
                 cell.textLabel.text = @"Domain";
 
                 UITextField *tf = [[UITextField alloc] init];
-                tf.text                     = [dm serverAddress] ?: @"";
+                tf.text                     = [prof objectForKey:@"server_address"] ?: @"";
                 tf.placeholder              = @"hostname or IP";
                 tf.autocorrectionType       = UITextAutocorrectionTypeNo;
                 tf.autocapitalizationType   = UITextAutocapitalizationTypeNone;
@@ -300,11 +308,13 @@ static const NSInteger kAlertTagUnregister  = 2;
                 tf.frame = CGRectMake(90.0f, 0, b.size.width - 106.0f, b.size.height);
 
             } else if (indexPath.row == 1) {
-                NSDictionary *dns = [dm cachedDNSForServerAddress:[dm serverAddress]];
+                NSString *addr = [prof objectForKey:@"server_address"];
+                NSDictionary *dns = [dm cachedDNSForServerAddress:addr];
                 cell.textLabel.text       = @"Resolved IP";
                 cell.detailTextLabel.text = (dns && dns[@"ip"]) ? dns[@"ip"] : @"Waiting\xe2\x80\xa6";
             } else {
-                NSDictionary *dns = [dm cachedDNSForServerAddress:[dm serverAddress]];
+                NSString *addr = [prof objectForKey:@"server_address"];
+                NSDictionary *dns = [dm cachedDNSForServerAddress:addr];
                 cell.textLabel.text       = @"Port";
                 cell.detailTextLabel.text = (dns && dns[@"port"])
                                                 ? [dns[@"port"] description]
@@ -314,7 +324,7 @@ static const NSInteger kAlertTagUnregister  = 2;
         }
         case SectionDevice: {
             cell.textLabel.text = @"Device ID";
-            cell.detailTextLabel.text = [dm deviceAddress] ?: @"None";
+            cell.detailTextLabel.text = [prof objectForKey:@"device_address"] ?: @"None";
             cell.detailTextLabel.adjustsFontSizeToFitWidth = YES;
             cell.detailTextLabel.minimumFontSize = 8.0f;
             break;
@@ -374,7 +384,7 @@ static const NSInteger kAlertTagUnregister  = 2;
         [self.tableView reloadData];
 
     } else if (textField.tag == 200) {
-        NSString *current = [[SNDataManager shared] serverAddress];
+        NSString *current = [[[SNDataManager shared] profileForIndex:self.profileIndex] objectForKey:@"server_address"];
         if (trimmed.length > 0 && ![trimmed isEqualToString:current]) {
             [self _commitServerAddressChange:trimmed];
         } else if (trimmed.length == 0) {
@@ -465,17 +475,14 @@ static const NSInteger kAlertTagUnregister  = 2;
  */
 - (void)_confirmImportFromPath:(NSString *)path serverAddress:(NSString *)serverAddress {
     BOOL success = [[SNDataManager shared] importProfileFromPEMAtPath:path
-                                                        serverAddress:serverAddress];
+                                                        serverAddress:serverAddress
+                                                         profileIndex:self.profileIndex];
     self.pendingPEMPath = nil;
 
     if (success) {
         self.pendingServerAddress = nil;
-        /* Pop all file picker levels back to this VC in one animated move. */
         [self.navigationController popToViewController:self animated:YES];
-        self.title = @"Registration Info";
-        /* viewWillAppear → reloadData will refresh the table to registered state.
-         * We do NOT post a reload config notification on registration —
-         * the daemon picks up the new profile when the user enables it. */
+        self.title = [NSString stringWithFormat:@"Profile %ld", (long)self.profileIndex];
     } else {
         UIAlertView *av = [[UIAlertView alloc]
                            initWithTitle:@"Import Failed"
@@ -488,23 +495,41 @@ static const NSInteger kAlertTagUnregister  = 2;
 }
 
 - (void)_commitServerAddressChange:(NSString *)newAddress {
+    NSString *path = [[SNDataManager shared] profilePathForIndex:self.profileIndex];
     NSMutableDictionary *profile =
-        [NSMutableDictionary dictionaryWithContentsOfFile:[[SNDataManager shared] profilePath]]
+        [NSMutableDictionary dictionaryWithContentsOfFile:path]
         ?: [NSMutableDictionary dictionary];
     profile[@"server_address"] = newAddress;
-    [profile writeToFile:[[SNDataManager shared] profilePath] atomically:YES];
+    [profile writeToFile:path atomically:YES];
     SNPostReloadConfig();
 }
 
 - (void)_performUnregister {
-    /* Disable the daemon first so it doesn't attempt to reconnect with no profile. */
-    [[SNDataManager shared] setMainPrefValue:@NO forKey:@"enabled"];
-    CFPreferencesSetAppValue(CFSTR("enabled"),
-                             (__bridge CFPropertyListRef)@NO,
-                             CFSTR("com.skyglow.sndp"));
-    CFPreferencesAppSynchronize(CFSTR("com.skyglow.sndp"));
+    SNDataManager *dm = [SNDataManager shared];
 
-    [[SNDataManager shared] unregisterDevice];
+    [dm unregisterProfileAtIndex:self.profileIndex];
+
+    /* If we just deleted the active profile, pick the next available one. */
+    if ([dm activeProfileIndex] == self.profileIndex) {
+        NSInteger nextActive = 0;
+        for (NSInteger i = 1; i <= 5; i++) {
+            if (i != self.profileIndex && [dm profileExistsAtIndex:i]) {
+                nextActive = i;
+                break;
+            }
+        }
+        if (nextActive > 0) {
+            [dm setActiveProfileIndex:nextActive];
+        } else {
+            /* No profiles left — disable daemon. */
+            [dm setMainPrefValue:@NO forKey:@"enabled"];
+            CFPreferencesSetAppValue(CFSTR("enabled"),
+                                     (__bridge CFPropertyListRef)@NO,
+                                     CFSTR("com.skyglow.sndp"));
+            CFPreferencesAppSynchronize(CFSTR("com.skyglow.sndp"));
+        }
+    }
+
     SNPostReloadConfig();
     [self.navigationController popViewControllerAnimated:YES];
 }

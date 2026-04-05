@@ -138,13 +138,18 @@ void SGStatusServer_Start(const char *socketPath, int64_t startTime) {
     pthread_mutex_unlock(&_lock);
 }
 
-void SGStatusServer_Post(SGState state, uint32_t failures, uint32_t backoff, const char *ip) {
+void SGStatusServer_Post(SGState state, uint32_t failures, uint32_t backoff,
+                         const char *ip, const char *errorDetail,
+                         uint32_t activeProfile) {
     pthread_mutex_lock(&_lock);
     _current.state = state;
     _current.consecutiveFailures = failures;
     _current.currentBackoffSec = backoff;
     _current.lastStateTransitionTime = (int64_t)time(NULL);
     if (ip) strncpy(_current.serverIP, ip, sizeof(_current.serverIP)-1);
+    if (errorDetail) strlcpy(_current.errorDetail, errorDetail, sizeof(_current.errorDetail));
+    else _current.errorDetail[0] = '\0';
+    _current.activeProfileIndex = activeProfile;
     
     SGStatusPayload snapshot = _current;
     int snapshotWatchers[SS_MAX_WATCHERS];

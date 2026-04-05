@@ -60,9 +60,9 @@
 			<key>cell</key>
 			<string>PSLinkCell</string>
 			<key>label</key>
-			<string>Manage Registration</string>
+			<string>Server Profiles</string>
 			<key>detail</key>
-			<string>SNServerInfoViewController</string>
+			<string>SNProfileListController</string>
         </dict>
 		<dict>
 			<key>cell</key>

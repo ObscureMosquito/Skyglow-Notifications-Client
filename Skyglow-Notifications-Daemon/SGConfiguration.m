@@ -4,13 +4,14 @@
     NSString *_serverAddress;
     NSString *_serverIPAddress;
     NSString *_serverPort;
-    
+
     BOOL _isEnabled;
     BOOL _hasProfile;
     NSString *_deviceAddress;
     NSString *_privateKeyPEM;
     NSString *_serverPubKeyPEM;
-    
+    NSInteger _activeProfileIndex;
+
     dispatch_queue_t _isolationQueue;
 }
 
@@ -40,8 +41,14 @@
         } else {
             self->_isEnabled = NO;
         }
-        
-        NSString *profilePath = SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist");
+
+        NSNumber *profileNum = mainPrefs[@"activeProfile"];
+        NSInteger idx = (profileNum && [profileNum integerValue] >= 1 && [profileNum integerValue] <= 5)
+                        ? [profileNum integerValue] : 1;
+        self->_activeProfileIndex = idx;
+
+        NSString *profilePath = SGPath([NSString stringWithFormat:
+            @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile%ld.plist", (long)idx]);
         NSDictionary *profilePrefs = [NSDictionary dictionaryWithContentsOfFile:profilePath];
         if (profilePrefs) {
             self->_hasProfile = YES;
@@ -271,6 +278,14 @@
         result = [self->_serverPubKeyPEM retain];
     });
     return [result autorelease];
+}
+
+- (NSInteger)activeProfileIndex {
+    __block NSInteger result = 1;
+    dispatch_sync(_isolationQueue, ^{
+        result = self->_activeProfileIndex;
+    });
+    return result;
 }
 
 @end

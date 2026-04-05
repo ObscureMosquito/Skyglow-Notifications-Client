@@ -30,6 +30,10 @@ typedef enum : uint32_t {
 
 /**
  * Fixed-size binary packet for IPC status communication.
+ *
+ * IMPORTANT: Both the daemon and the preference bundle read/write this struct
+ * across a Unix socket.  They ship in the same .deb so the sizes always match.
+ * If you change this struct, rebuild BOTH targets.
  */
 #pragma pack(4)
 typedef struct {
@@ -39,6 +43,8 @@ typedef struct {
     char     serverIP[16];
     int64_t  daemonStartTime;
     int64_t  lastStateTransitionTime;
+    char     errorDetail[128];      /* Human-readable error, null-terminated  */
+    uint32_t activeProfileIndex;    /* 1-5, or 0 if no profile is active     */
 } SGStatusPayload;
 #pragma pack()
 
@@ -49,8 +55,12 @@ void SGStatusServer_Start(const char *socketPath, int64_t startTime);
 
 /**
  * Updates the global state and broadcasts to all active watchers.
+ * @param errorDetail  Human-readable error string (may be NULL or "").
+ * @param activeProfile  1-based index of the active profile (0 = none).
  */
-void SGStatusServer_Post(SGState state, uint32_t failures, uint32_t backoff, const char *ip);
+void SGStatusServer_Post(SGState state, uint32_t failures, uint32_t backoff,
+                         const char *ip, const char *errorDetail,
+                         uint32_t activeProfile);
 
 /**
  * Fills outPayload with the current daemon status snapshot.
