@@ -4,7 +4,7 @@
  */
 
 #import "SFPFilePicker.h"
-#import "SFPUploadPanel.h"
+#import "SFPUploadViewController.h"
 
 #include <sys/stat.h>   /* lstat(), stat(), S_ISLNK, S_ISDIR */
 #include <unistd.h>     /* readlink()                         */
@@ -47,6 +47,7 @@ typedef enum {
 @synthesize type           = _type;
 @synthesize selectable     = _selectable;
 @synthesize fileSize       = _fileSize;
+
 - (void)dealloc {
     [_name release];
     [_fullPath release];
@@ -63,6 +64,7 @@ typedef enum {
 @synthesize allowedExtensions;
 @synthesize allowedFilenames;
 @synthesize allowedPaths;
+
 - (void)dealloc {
     [allowedExtensions release];
     [allowedFilenames  release];
@@ -92,8 +94,8 @@ static NSString *SFP_FormatFileSize(unsigned long long bytes) {
  * Nil filter or all-empty filter → all files match.
  */
 static BOOL SFP_IsSelectable(NSString *fullPath,
-                              NSString *name,
-                              SFPFilePickerFilter *filter) {
+                             NSString *name,
+                             SFPFilePickerFilter *filter) {
     if (!filter) return YES;
 
     BOOL hasExt   = (filter.allowedExtensions.count > 0);
@@ -127,16 +129,17 @@ static NSComparisonResult SFP_ItemComparator(id aObj, id bObj, void *ctx) {
     SFPFileItem *b = (SFPFileItem *)bObj;
     BOOL aDir = (a.type == SFPItemTypeDirectory || a.type == SFPItemTypeSymlinkToDirectory);
     BOOL bDir = (b.type == SFPItemTypeDirectory || b.type == SFPItemTypeSymlinkToDirectory);
+
     if (aDir && !bDir) return NSOrderedAscending;
     if (!aDir && bDir) return NSOrderedDescending;
     return [a.name caseInsensitiveCompare:b.name];
 }
 
 /* Text colours that survive across every iOS version. */
-static UIColor *SFP_DirectoryColor(void)    { return [UIColor colorWithRed:0.05f green:0.42f blue:0.86f alpha:1.0f]; }
-static UIColor *SFP_GrayTextColor(void)     { return [UIColor colorWithRed:0.6f  green:0.6f  blue:0.6f  alpha:1.0f]; }
-static UIColor *SFP_ErrorTextColor(void)    { return [UIColor colorWithRed:0.82f green:0.18f blue:0.18f alpha:1.0f]; }
-static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f green:0.66f blue:0.38f alpha:1.0f]; }
+static UIColor *SFP_DirectoryColor(void)   { return [UIColor colorWithRed:0.05f green:0.42f blue:0.86f alpha:1.0f]; }
+static UIColor *SFP_GrayTextColor(void)    { return [UIColor colorWithRed:0.60f green:0.60f blue:0.60f alpha:1.0f]; }
+static UIColor *SFP_ErrorTextColor(void)   { return [UIColor colorWithRed:0.82f green:0.18f blue:0.18f alpha:1.0f]; }
+static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f green:0.66f blue:0.38f alpha:1.0f]; }
 
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -149,7 +152,6 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
     SFPFilePickerFilter       *_filter;
     BOOL                       _showsHidden;
     BOOL                       _showsCancel;
-    SFPUploadPanel            *_uploadPanel;      /* non-nil while panel is on screen */
 }
 
 - (void)_loadContents;
@@ -161,7 +163,6 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
 - (SFPFilePickerViewController *)_childPickerForPath:(NSString *)path;
 - (void)_popAfterPermissionError;
 - (void)_toolbarActionTapped;
-- (void)_uploadPanelDismissed;
 
 @end
 
@@ -202,12 +203,6 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
 }
 
 - (void)dealloc {
-    /* Stop and detach any live upload panel before releasing it. */
-    if (_uploadPanel) {
-        [_uploadPanel stopAndRemove];
-        [_uploadPanel release];
-        _uploadPanel = nil;
-    }
     [_directoryPath release];
     [_filter release];
     [_items release];
@@ -225,7 +220,7 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    
+
     NSIndexPath *sel = [self.tableView indexPathForSelectedRow];
     if (sel) [self.tableView deselectRowAtIndexPath:sel animated:animated];
 
@@ -235,17 +230,12 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     [self.navigationController setToolbarHidden:YES animated:animated];
-    /* If the upload panel is visible (user navigated away), stop it cleanly. */
-    if (_uploadPanel) {
-        [_uploadPanel stopAndRemove];
-        [_uploadPanel release];
-        _uploadPanel = nil;
-    }
 }
 
 /* ── Public properties ────────────────────────────────────────────────────── */
 
 - (BOOL)showsHiddenFiles { return _showsHidden; }
+
 - (void)setShowsHiddenFiles:(BOOL)v {
     _showsHidden = v;
     [self _updateNavButtons];
@@ -253,6 +243,7 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
 }
 
 - (BOOL)showsCancelButton { return _showsCancel; }
+
 - (void)setShowsCancelButton:(BOOL)v {
     _showsCancel = v;
     [self _updateNavButtons];
@@ -260,9 +251,11 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
 
 - (void)setFilter:(SFPFilePickerFilter *)newFilter {
     if (newFilter == _filter) return;
+
     [newFilter retain];
     [_filter release];
     _filter = newFilter;
+
     [self _loadContents];
 }
 
@@ -287,37 +280,34 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
                                                         action:@selector(_cancelTapped)];
         self.navigationItem.leftBarButtonItem = cancel;
         [cancel release];
+    } else {
+        self.navigationItem.leftBarButtonItem = nil;
     }
 }
 
 - (void)_updateToolbarButtons {
-    UIBarButtonItem *actionBtn = [[UIBarButtonItem alloc] 
-                                  initWithBarButtonSystemItem:UIBarButtonSystemItemAction 
-                                  target:self 
-                                  action:@selector(_toolbarActionTapped)];
-
     NSString *toggleLabel = _showsHidden ? @"Hide Hidden" : @"Show Hidden";
+
     UIBarButtonItem *toggleBtn = [[UIBarButtonItem alloc]
                                   initWithTitle:toggleLabel
                                           style:UIBarButtonItemStyleBordered
                                          target:self
                                          action:@selector(_toggleHiddenFiles)];
-
-    toggleBtn.width = 90.0f; 
+    toggleBtn.width = 90.0f;
 
     UIBarButtonItem *flexSpace = [[UIBarButtonItem alloc]
                                   initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
-                                                       target:nil action:nil];
+                                                       target:nil
+                                                       action:nil];
 
-    UIBarButtonItem *httpServerBtn = [[UIBarButtonItem alloc]
-                                        initWithBarButtonSystemItem:UIBarButtonSystemItemOrganize 
-                                        target:self
-                                        action:@selector(_toolbarActionTapped)];
+    UIBarButtonItem *uploadBtn = [[UIBarButtonItem alloc]
+                                  initWithBarButtonSystemItem:UIBarButtonSystemItemOrganize
+                                                       target:self
+                                                       action:@selector(_toolbarActionTapped)];
 
-    self.toolbarItems = @[httpServerBtn, flexSpace, toggleBtn];
+    self.toolbarItems = [NSArray arrayWithObjects:uploadBtn, flexSpace, toggleBtn, nil];
 
-    [actionBtn release];
-    [httpServerBtn release];
+    [uploadBtn release];
     [toggleBtn release];
     [flexSpace release];
 }
@@ -360,6 +350,7 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
         /* Permission denied or other I/O error — alert and pop back. */
         NSString *msg = err ? [err localizedDescription]
                             : @"Unable to read directory contents.";
+
         UIAlertView *alert = [[UIAlertView alloc]
                               initWithTitle:@"Access Denied"
                                     message:msg
@@ -368,10 +359,12 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
                           otherButtonTitles:nil];
         [alert show];
         [alert release];
+
         /* Defer the pop so it fires after the view has fully appeared. */
         [self performSelector:@selector(_popAfterPermissionError)
                    withObject:nil
                    afterDelay:0.0];
+
         [self.tableView reloadData];
         [self _updateEmptyStateView];
         return;
@@ -401,8 +394,8 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
             struct stat tst;
             if (stat([fullPath fileSystemRepresentation], &tst) == 0) {
                 item.type     = S_ISDIR(tst.st_mode)
-                                    ? SFPItemTypeSymlinkToDirectory
-                                    : SFPItemTypeSymlinkToFile;
+                              ? SFPItemTypeSymlinkToDirectory
+                              : SFPItemTypeSymlinkToFile;
                 item.fileSize = (unsigned long long)tst.st_size;
             } else {
                 item.type = SFPItemTypeSymlinkBroken;
@@ -466,17 +459,17 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
                       (_filter.allowedExtensions.count > 0 ||
                        _filter.allowedFilenames.count  > 0 ||
                        _filter.allowedPaths.count      > 0));
+
     NSString *msg = hasFilter ? @"No matching files in this directory."
                               : @"This directory is empty.";
 
     UILabel *label = [[[UILabel alloc] init] autorelease];
-    label.text          = msg;
-    label.textColor     = SFP_GrayTextColor();
-    label.font          = [UIFont systemFontOfSize:15.0f];
+    label.text = msg;
+    label.textColor = SFP_GrayTextColor();
+    label.font = [UIFont systemFontOfSize:15.0f];
     label.numberOfLines = 0;
     /* NSTextAlignmentCenter == UITextAlignmentCenter == 1 on all iOS versions. */
     label.textAlignment = (NSTextAlignment)1;
-    /* Keep the background transparent so the table's own background shows. */
     label.backgroundColor = [UIColor clearColor];
 
     self.tableView.backgroundView = label;
@@ -488,13 +481,17 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
         [[SFPFilePickerViewController alloc] initWithPath:path
                                                    filter:_filter
                                                  delegate:_pickerDelegate];
-    /* showsCancelButton MUST be set NO before showsHiddenFiles.
+
+    /*
+     * showsCancelButton MUST be set NO before showsHiddenFiles.
      * Both setters call _updateNavButtons. At init time _showsCancel = YES,
      * so if showsHiddenFiles fires first, _updateNavButtons installs a Cancel
-     * button that setShowsCancelButton:NO subsequently fails to clear (it only
-     * does nothing when NO). Reversing the order keeps leftBarButtonItem nil. */
+     * button that setShowsCancelButton:NO subsequently fails to clear unless
+     * _updateNavButtons explicitly nils the left item when !_showsCancel.
+     */
     child.showsCancelButton = NO;
     child.showsHiddenFiles  = _showsHidden;
+
     return [child autorelease];
 }
 
@@ -518,20 +515,20 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
     if (!cell) {
         /*
          * UITableViewCellStyleSubtitle gives us a title + subtitle layout.
-         * The initWithStyle:reuseIdentifier: initialiser arrived in iOS 3.0.
-         * Fall back to the iOS 2.0 initialiser when needed.
+         * The initWithStyle:reuseIdentifier: initializer arrived in iOS 3.0.
+         * Fall back to the iOS 2.0 initializer when needed.
          */
         if ([UITableViewCell instancesRespondToSelector:
-                @selector(initWithStyle:reuseIdentifier:)]) {
+             @selector(initWithStyle:reuseIdentifier:)]) {
             cell = [[[UITableViewCell alloc]
                      initWithStyle:UITableViewCellStyleSubtitle
-                   reuseIdentifier:reuseID] autorelease];
+                     reuseIdentifier:reuseID] autorelease];
         } else {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
             cell = [[[UITableViewCell alloc]
                      initWithFrame:CGRectZero
-                   reuseIdentifier:reuseID] autorelease];
+                     reuseIdentifier:reuseID] autorelease];
 #pragma clang diagnostic pop
         }
     }
@@ -540,7 +537,7 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
 
     /* ── Display name ───────────────────────────────────────────────── */
     NSString *displayName = item.name;
-    NSString *subtitle    = nil;
+    NSString *subtitle = nil;
 
     switch (item.type) {
         case SFPItemTypeFile:
@@ -555,7 +552,6 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
             NSString *target = item.symlinkTarget ?: @"?";
             displayName = [NSString stringWithFormat:@"%@  \xE2\x86\x92 %@",
                            item.name, target];
-            /* \xE2\x86\x92 = U+2192 RIGHTWARDS ARROW */
             subtitle = [NSString stringWithFormat:@"Symlink  %@",
                         SFP_FormatFileSize(item.fileSize)];
             break;
@@ -587,15 +583,19 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
             textColor   = SFP_ErrorTextColor();
             detailColor = SFP_ErrorTextColor();
             break;
+
         case SFPItemTypeDirectory:
             textColor = SFP_DirectoryColor();
             break;
+
         case SFPItemTypeSymlinkToDirectory:
             textColor = SFP_SymlinkTextColor();
             break;
+
         case SFPItemTypeSymlinkToFile:
             textColor = item.selectable ? SFP_SymlinkTextColor() : SFP_GrayTextColor();
             break;
+
         default: /* SFPItemTypeFile */
             textColor = item.selectable ? [UIColor blackColor] : SFP_GrayTextColor();
             break;
@@ -605,24 +605,22 @@ static UIColor *SFP_SymlinkTextColor(void)  { return [UIColor colorWithRed:0.38f
     BOOL isDir = (item.type == SFPItemTypeDirectory ||
                   item.type == SFPItemTypeSymlinkToDirectory);
     cell.accessoryType = isDir
-        ? UITableViewCellAccessoryDisclosureIndicator
-        : UITableViewCellAccessoryNone;
+                       ? UITableViewCellAccessoryDisclosureIndicator
+                       : UITableViewCellAccessoryNone;
 
     /* ── Apply to cell — handle both iOS 2 and iOS 3+ APIs ──────────── */
     if ([cell respondsToSelector:@selector(textLabel)]) {
-        /* iOS 3.0+ */
-
         if (isDir) {
-            cell.textLabel.text = [NSString stringWithFormat:@"\xE2\x96\xB6 %@", displayName]; /* ▶ icon */
+            cell.textLabel.text = [NSString stringWithFormat:@"\xE2\x96\xB6 %@", displayName]; /* ▶ */
         } else {
-            cell.textLabel.text = displayName; 
+            cell.textLabel.text = displayName;
         }
-        
+
         cell.textLabel.textColor = textColor;
         cell.textLabel.font = [UIFont boldSystemFontOfSize:17.0f];
         cell.textLabel.shadowColor = [UIColor whiteColor];
         cell.textLabel.shadowOffset = CGSizeMake(0, 1.0f);
-        
+
         if (cell.detailTextLabel) {
             cell.detailTextLabel.text = subtitle;
             cell.detailTextLabel.textColor = detailColor;
@@ -670,28 +668,30 @@ heightForRowAtIndexPath:(NSIndexPath *)indexPath {
     return 48.0f;
 }
 
-- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+- (CGFloat)tableView:(UITableView *)tableView
+heightForHeaderInSection:(NSInteger)section {
     return 28.0f;
 }
 
-- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+- (UIView *)tableView:(UITableView *)tableView
+viewForHeaderInSection:(NSInteger)section {
     UIView *header = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 28.0f)] autorelease];
-    
+
     /* Slightly translucent so scrolling rows subtly show underneath */
     header.backgroundColor = [UIColor colorWithWhite:0.96f alpha:0.95f];
-    
+
     /* Top white bevel */
     UIView *topLine = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 1.0f)] autorelease];
     topLine.backgroundColor = [UIColor whiteColor];
     topLine.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [header addSubview:topLine];
-    
+
     /* Bottom dark border (etched look) */
     UIView *bottomLine = [[[UIView alloc] initWithFrame:CGRectMake(0, 27.0f, tableView.bounds.size.width, 1.0f)] autorelease];
     bottomLine.backgroundColor = [UIColor colorWithWhite:0.65f alpha:1.0f];
     bottomLine.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [header addSubview:bottomLine];
-    
+
     /* Path label */
     UILabel *label = [[[UILabel alloc] initWithFrame:CGRectMake(12.0f, 0, tableView.bounds.size.width - 24.0f, 28.0f)] autorelease];
     label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -702,35 +702,40 @@ heightForRowAtIndexPath:(NSIndexPath *)indexPath {
     label.shadowOffset = CGSizeMake(0, 1.0f);
     label.lineBreakMode = (NSLineBreakMode)3;
     label.text = _directoryPath;
-    
     [header addSubview:label];
-    
+
     return header;
 }
 
 - (void)_toolbarActionTapped {
-    /* Ignore if a panel is already on screen. */
-    if (_uploadPanel) return;
+    SFPUploadViewController *uploadVC =
+        [[[SFPUploadViewController alloc] initWithDirectory:_directoryPath] autorelease];
 
-    /*
-     * Use the navigation controller's view rather than keyWindow so the panel
-     * is constrained to the preference-bundle container — on iPad the bundle
-     * may occupy only part of the screen (e.g. in a Settings split view or
-     * popover), and a keyWindow-anchored panel would appear in the wrong place.
-     */
-    UIView *container = self.navigationController
-                        ? self.navigationController.view
-                        : self.view;
+    UINavigationController *nav =
+        [[[UINavigationController alloc] initWithRootViewController:uploadVC] autorelease];
 
-    _uploadPanel = [[SFPUploadPanel alloc] initWithDirectory:_directoryPath];
-    [_uploadPanel setDismissTarget:self selector:@selector(_uploadPanelDismissed)];
-    [_uploadPanel showInView:container];
-}
 
-- (void)_uploadPanelDismissed {
-    /* Called by SFPUploadPanel after its dismiss animation completes. */
-    [_uploadPanel release];
-    _uploadPanel = nil;
+
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        if ([nav respondsToSelector:@selector(setModalPresentationStyle:)]) {
+            nav.modalPresentationStyle = UIModalPresentationFormSheet;
+        }
+    }
+
+    if ([nav respondsToSelector:@selector(setModalTransitionStyle:)]) {
+        nav.modalTransitionStyle = UIModalTransitionStyleCoverVertical;
+    }
+
+    UIViewController *presenter = self.navigationController ?: self;
+
+    if ([presenter respondsToSelector:@selector(presentViewController:animated:completion:)]) {
+        [presenter presentViewController:nav animated:YES completion:nil];
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        [presenter presentModalViewController:nav animated:YES];
+#pragma clang diagnostic pop
+    }
 }
 
 @end

@@ -1,5 +1,5 @@
 /*
- * SFHTTPServer.m — minimal, secure file-upload HTTP server.
+ * SFHTTPServer.m
  * Compile with -fno-objc-arc (MRC).
  */
 
@@ -58,20 +58,25 @@ static const char *SFHTTP_HTML =
 
 /* ── Connection context ───────────────────────────────────────────────────── */
 typedef struct {
-    int         fd;
-    id          server;   /* SFHTTPServer*, retained */
+    int fd;
+    id  server;   /* SFHTTPServer*, retained */
 } sfhttp_conn_t;
+
+/* Forward declarations for helpers used before definition */
+static void sfhttp_progress(id server, float progress);
+static int sfhttp_write_all(int fd, const char *buf, size_t len);
 
 /* ── C helpers ────────────────────────────────────────────────────────────── */
 
-/* Safe binary substring search (replaces platform memmem). */
 static const void *sfhttp_memmem(const void *hay, size_t hLen,
                                  const void *ndl, size_t nLen) {
     if (nLen == 0) return hay;
     if (hLen < nLen) return NULL;
+
     const unsigned char *h = (const unsigned char *)hay;
     const unsigned char *n = (const unsigned char *)ndl;
     size_t limit = hLen - nLen;
+
     for (size_t i = 0; i <= limit; i++) {
         if (h[i] == n[0] && memcmp(h + i, n, nLen) == 0)
             return h + i;
@@ -79,153 +84,182 @@ static const void *sfhttp_memmem(const void *hay, size_t hLen,
     return NULL;
 }
 
-/*
- * Reads from fd until \r\n\r\n is seen or limits are exceeded.
- * Returns total bytes in buf (including any body prefix bytes after the blank
- * line), or -1 on error/timeout/overflow.
- * *hdrEnd is set to the offset of the first byte after \r\n\r\n (start of body).
- */
 static ssize_t sfhttp_read_headers(int fd, char *buf, size_t bufmax,
                                    size_t *hdrEnd) {
     size_t total = 0;
     static const char sep[] = "\r\n\r\n";
+
     while (total < bufmax) {
         ssize_t n = recv(fd, buf + total, bufmax - total, 0);
         if (n <= 0) return -1;
+
         total += (size_t)n;
-        const char *found = (const char *)sfhttp_memmem(buf, total, sep, 4);
-        if (found) {
-            *hdrEnd = (size_t)(found - buf) + 4;
-            return (ssize_t)total;
+
+        {
+            const char *found = (const char *)sfhttp_memmem(buf, total, sep, 4);
+            if (found) {
+                *hdrEnd = (size_t)(found - buf) + 4;
+                return (ssize_t)total;
+            }
         }
     }
-    return -1; /* header too large */
+
+    return -1;
 }
 
-/* Reads exactly len bytes from fd into buf. Returns 1 on success, 0 on failure. */
-static int sfhttp_read_exact(int fd, char *buf, size_t len) {
+static int sfhttp_read_exact_progress(int fd,
+                                      char *buf,
+                                      size_t len,
+                                      size_t alreadyHave,
+                                      size_t totalExpected,
+                                      id server) {
     size_t got = 0;
+
     while (got < len) {
         ssize_t n = recv(fd, buf + got, len - got, 0);
         if (n <= 0) return 0;
+
         got += (size_t)n;
+
+        if (totalExpected > 0) {
+            size_t totalSoFar = alreadyHave + got;
+            float progress = (float)totalSoFar / (float)totalExpected;
+            sfhttp_progress(server, progress);
+        }
     }
+
     return 1;
 }
 
-/*
- * Extracts a header value from the null-terminated header block.
- * Case-insensitive name match.  Value written to out (null-terminated).
- * Returns 1 on success.
- */
+static int sfhttp_write_all(int fd, const char *buf, size_t len) {
+    size_t total = 0;
+
+    while (total < len) {
+        ssize_t n = write(fd, buf + total, len - total);
+        if (n <= 0) return 0;
+        total += (size_t)n;
+    }
+
+    return 1;
+}
+
 static int sfhttp_get_header(const char *block, const char *name,
                              char *out, size_t outLen) {
     size_t nLen = strlen(name);
     const char *p = block;
+
     while (*p) {
         const char *eol = strstr(p, "\r\n");
         if (!eol) eol = p + strlen(p);
+
         if ((size_t)(eol - p) > nLen + 1) {
             if (strncasecmp(p, name, nLen) == 0 && p[nLen] == ':') {
                 const char *v = p + nLen + 1;
                 while (*v == ' ') v++;
+
                 size_t vLen = (size_t)(eol - v);
                 if (vLen >= outLen) vLen = outLen - 1;
+
                 memcpy(out, v, vLen);
                 out[vLen] = '\0';
                 return 1;
             }
         }
+
         if (*eol == '\0') break;
         p = eol + 2;
     }
+
     return 0;
 }
 
-/*
- * Extracts param="value" or param=value from a header value string.
- * Writes result to out (null-terminated).  Returns 1 on success.
- */
 static int sfhttp_get_param(const char *val, const char *param,
                             char *out, size_t outLen) {
     size_t pLen = strlen(param);
     const char *p = val;
+
     while (*p) {
         while (*p == ' ' || *p == ';') p++;
+
         if (strncasecmp(p, param, pLen) == 0 && p[pLen] == '=') {
             const char *v = p + pLen + 1;
+
             if (*v == '"') {
                 v++;
-                const char *end = strchr(v, '"');
-                if (!end) return 0;
-                size_t len = (size_t)(end - v);
-                if (len >= outLen) len = outLen - 1;
-                memcpy(out, v, len);
-                out[len] = '\0';
+                {
+                    const char *end = strchr(v, '"');
+                    if (!end) return 0;
+
+                    size_t len = (size_t)(end - v);
+                    if (len >= outLen) len = outLen - 1;
+                    memcpy(out, v, len);
+                    out[len] = '\0';
+                }
             } else {
                 size_t len = 0;
                 while (v[len] && v[len] != ';' && v[len] != ' ') len++;
+
                 if (len >= outLen) len = outLen - 1;
                 memcpy(out, v, len);
                 out[len] = '\0';
             }
+
             return 1;
         }
-        /* Skip to next ; */
+
         while (*p && *p != ';') p++;
     }
+
     return 0;
 }
 
-/* Percent-decode a filename component. */
 static void sfhttp_url_decode(const char *in, char *out, size_t outLen) {
     size_t j = 0;
+
     for (size_t i = 0; in[i] && j + 1 < outLen; i++) {
-        if (in[i] == '%' && in[i+1] && in[i+2]) {
-            char hex[3] = { in[i+1], in[i+2], '\0' };
+        if (in[i] == '%' && in[i + 1] && in[i + 2]) {
+            char hex[3] = { in[i + 1], in[i + 2], '\0' };
             char *endp = NULL;
             long v = strtol(hex, &endp, 16);
+
             if (endp == hex + 2) {
                 out[j++] = (char)v;
                 i += 2;
                 continue;
             }
         }
+
         out[j++] = in[i];
     }
+
     out[j] = '\0';
 }
 
-/*
- * Sanitises a raw filename from the upload:
- *  1. URL-decode
- *  2. Take lastPathComponent (kills path traversal)
- *  3. Reject names with control characters
- * Returns 1 on success, 0 if the name is unusable.
- */
 static int sfhttp_sanitize_fname(const char *raw, char *out, size_t outLen) {
     char decoded[SFHTTP_FNAME_MAX];
     sfhttp_url_decode(raw, decoded, sizeof(decoded));
 
-    /* Replicate -[NSString lastPathComponent] in C */
-    const char *last = strrchr(decoded, '/');
-    const char *base = last ? last + 1 : decoded;
-    if (base[0] == '\0' || strcmp(base, ".") == 0 || strcmp(base, "..") == 0)
-        return 0;
+    {
+        const char *last = strrchr(decoded, '/');
+        const char *base = last ? last + 1 : decoded;
 
-    /* Reject control characters (0x00–0x1F, 0x7F) */
-    for (const char *c = base; *c; c++) {
-        unsigned char u = (unsigned char)*c;
-        if (u < 0x20 || u == 0x7F) return 0;
+        if (base[0] == '\0' || strcmp(base, ".") == 0 || strcmp(base, "..") == 0)
+            return 0;
+
+        for (const char *c = base; *c; c++) {
+            unsigned char u = (unsigned char)*c;
+            if (u < 0x20 || u == 0x7F) return 0;
+        }
+
+        {
+            size_t len = strlen(base);
+            if (len == 0 || len >= outLen) return 0;
+            memcpy(out, base, len + 1);
+            return 1;
+        }
     }
-
-    size_t len = strlen(base);
-    if (len == 0 || len >= outLen) return 0;
-    memcpy(out, base, len + 1);
-    return 1;
 }
 
-/* Writes a complete HTTP response header. */
 static void sfhttp_send_header(int fd, int code, const char *status,
                                const char *ctype, size_t bodyLen) {
     char buf[256];
@@ -251,28 +285,43 @@ static void sfhttp_success(int fd, const char *msg) {
     send(fd, msg, len, 0);
 }
 
-/*
- * Declare @public ivars HERE — before any C function that accesses them via
- * server->_ivar.  The compiler must see the struct layout before those uses.
- */
 @interface SFHTTPServer () {
 @public
-    int              _serverFd;
-    uint16_t         _boundPort;
-    volatile BOOL    _running;
-    pthread_t        _acceptThread;
-    pthread_mutex_t  _mutex;
-    int              _activeConns;
+    int _serverFd;
+    uint16_t _boundPort;
+    volatile BOOL _running;
+    pthread_t _acceptThread;
+    pthread_mutex_t _mutex;
+    int _activeConns;
     id<SFHTTPServerDelegate> _delegate; /* weak */
-    NSString        *_directory;
+    NSString *_directory;
 }
 @end
 
-/* Forward-declare private ObjC methods called via performSelectorOnMainThread: */
 @interface SFHTTPServer (Private)
 - (void)_deliverLog:(NSString *)msg;
 - (void)_connectionFinished;
+- (void)_deliverProgress:(NSNumber *)progress;
 @end
+
+static NSString *sfhttp_string_from_cstr(const char *cstr) {
+    if (!cstr) return @"";
+
+    {
+        NSString *s = [NSString stringWithCString:cstr encoding:NSUTF8StringEncoding];
+        if (s) return s;
+    }
+    {
+        NSString *s = [NSString stringWithCString:cstr encoding:NSISOLatin1StringEncoding];
+        if (s) return s;
+    }
+    {
+        NSString *s = [NSString stringWithCString:cstr encoding:NSWindowsCP1252StringEncoding];
+        if (s) return s;
+    }
+
+    return @"";
+}
 
 static void sfhttp_log(id server, const char *fmt, ...) {
     char buf[512];
@@ -281,206 +330,290 @@ static void sfhttp_log(id server, const char *fmt, ...) {
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
 
-    /* Timestamp */
-    time_t t = time(NULL);
-    struct tm *tm = localtime(&t);
-    char ts[32];
-    strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+    {
+        time_t t = time(NULL);
+        struct tm *tm = localtime(&t);
+        char ts[32];
+        strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-    NSString *line = [NSString stringWithFormat:@"[%s] %s", ts, buf];
-    [(SFHTTPServer *)server performSelectorOnMainThread:@selector(_deliverLog:)
-                                            withObject:line
-                                         waitUntilDone:NO];
+        NSString *msg = sfhttp_string_from_cstr(buf);
+        NSString *line = [NSString stringWithFormat:@"[%s] %@", ts, msg];
+
+        [(SFHTTPServer *)server performSelectorOnMainThread:@selector(_deliverLog:)
+                                                withObject:line
+                                             waitUntilDone:NO];
+    }
+}
+
+static void sfhttp_progress(id server, float progress) {
+    if (progress < 0.0f) progress = 0.0f;
+    if (progress > 1.0f) progress = 1.0f;
+
+    {
+        NSNumber *num = [NSNumber numberWithFloat:progress];
+        [(SFHTTPServer *)server performSelectorOnMainThread:@selector(_deliverProgress:)
+                                                 withObject:num
+                                              waitUntilDone:NO];
+    }
 }
 
 static void sfhttp_handle_upload(int fd,
                                  const char *hdrs,
-                                 size_t hdrLen,
                                  const char *bodyPrefixBuf,
                                  size_t bodyPrefixLen,
                                  const char *destDir,
-                                 id server)
-{
-    /* Content-Length */
+                                 id server) {
     char clStr[32] = {0};
+
     if (!sfhttp_get_header(hdrs, "Content-Length", clStr, sizeof(clStr))) {
         sfhttp_error(fd, 400, "Bad Request", "Missing Content-Length");
         sfhttp_log(server, "Upload rejected: missing Content-Length");
+        sfhttp_progress(server, 0.0f);
         return;
     }
+
     errno = 0;
-    long long bodyLen64 = strtoll(clStr, NULL, 10);
-    if (errno != 0 || bodyLen64 <= 0 || bodyLen64 > SFHTTP_BODY_MAX) {
-        sfhttp_error(fd, 413, "Request Entity Too Large", "Body too large (max 8 MB)");
-        sfhttp_log(server, "Upload rejected: body too large (%lld)", bodyLen64);
-        return;
-    }
-    size_t bodyLen = (size_t)bodyLen64;
-
-    /* Content-Type: multipart/form-data; boundary=... */
-    char ctVal[256] = {0};
-    if (!sfhttp_get_header(hdrs, "Content-Type", ctVal, sizeof(ctVal))) {
-        sfhttp_error(fd, 400, "Bad Request", "Missing Content-Type");
-        return;
-    }
-    if (strncasecmp(ctVal, "multipart/form-data", 19) != 0) {
-        sfhttp_error(fd, 400, "Bad Request", "Expected multipart/form-data");
-        return;
-    }
-    char boundary[128] = {0};
-    if (!sfhttp_get_param(ctVal, "boundary", boundary, sizeof(boundary))) {
-        sfhttp_error(fd, 400, "Bad Request", "Missing boundary");
-        return;
-    }
-
-    /* Read entire body */
-    char *body = (char *)malloc(bodyLen + 1);
-    if (!body) {
-        sfhttp_error(fd, 500, "Internal Server Error", "Out of memory");
-        return;
-    }
-
-    /* Copy any bytes already buffered with the header read */
-    size_t prefixCopy = (bodyPrefixLen < bodyLen) ? bodyPrefixLen : bodyLen;
-    if (prefixCopy > 0)
-        memcpy(body, bodyPrefixBuf, prefixCopy);
-
-    if (prefixCopy < bodyLen &&
-        !sfhttp_read_exact(fd, body + prefixCopy, bodyLen - prefixCopy)) {
-        sfhttp_error(fd, 400, "Bad Request", "Incomplete body");
-        free(body);
-        sfhttp_log(server, "Upload rejected: incomplete body");
-        return;
-    }
-    body[bodyLen] = '\0';
-
-    /* Find opening boundary  --boundary\r\n */
-    char delim[132];
-    snprintf(delim, sizeof(delim), "--%s\r\n", boundary);
-    const char *partStart = (const char *)sfhttp_memmem(body, bodyLen,
-                                                         delim, strlen(delim));
-    if (!partStart) {
-        sfhttp_error(fd, 400, "Bad Request", "Boundary not found");
-        free(body);
-        return;
-    }
-    partStart += strlen(delim);
-
-    /* Find end of part headers */
-    const char *partHdrEnd = (const char *)sfhttp_memmem(
-        partStart, bodyLen - (size_t)(partStart - body), "\r\n\r\n", 4);
-    if (!partHdrEnd) {
-        sfhttp_error(fd, 400, "Bad Request", "Part headers not found");
-        free(body);
-        return;
-    }
-
-    /* Null-terminate part headers for sfhttp_get_header */
-    size_t partHdrLen = (size_t)(partHdrEnd - partStart);
-    char *partHdrs = (char *)malloc(partHdrLen + 1);
-    if (!partHdrs) {
-        sfhttp_error(fd, 500, "Internal Server Error", "Out of memory");
-        free(body);
-        return;
-    }
-    memcpy(partHdrs, partStart, partHdrLen);
-    partHdrs[partHdrLen] = '\0';
-
-    /* Extract filename from Content-Disposition */
-    char cdVal[256] = {0};
-    if (!sfhttp_get_header(partHdrs, "Content-Disposition", cdVal, sizeof(cdVal))) {
-        sfhttp_error(fd, 400, "Bad Request", "Missing part Content-Disposition");
-        free(partHdrs); free(body);
-        return;
-    }
-    char rawName[SFHTTP_FNAME_MAX] = {0};
-    if (!sfhttp_get_param(cdVal, "filename", rawName, sizeof(rawName))) {
-        sfhttp_error(fd, 400, "Bad Request", "No filename in disposition");
-        free(partHdrs); free(body);
-        return;
-    }
-    free(partHdrs);
-
-    char safeName[SFHTTP_FNAME_MAX];
-    if (!sfhttp_sanitize_fname(rawName, safeName, sizeof(safeName))) {
-        sfhttp_error(fd, 400, "Bad Request", "Invalid filename");
-        sfhttp_log(server, "Upload rejected: invalid filename '%s'", rawName);
-        free(body);
-        return;
-    }
-
-    /* File data starts after \r\n\r\n */
-    const char *fileData = partHdrEnd + 4;
-    size_t remaining = bodyLen - (size_t)(fileData - body);
-
-    /* Find closing boundary --boundary-- or --boundary\r\n */
-    char closingDelim[132];
-    snprintf(closingDelim, sizeof(closingDelim), "\r\n--%s", boundary);
-    const char *fileEnd = (const char *)sfhttp_memmem(fileData, remaining,
-                                                       closingDelim,
-                                                       strlen(closingDelim));
-    size_t fileLen = fileEnd ? (size_t)(fileEnd - fileData) : remaining;
-
-    /* Build destination path */
-    char destPath[PATH_MAX];
-    snprintf(destPath, sizeof(destPath), "%s/%s", destDir, safeName);
-
-    /* Verify the resolved path stays within destDir (path traversal guard) */
     {
-        char resolved[PATH_MAX];
-        /* We can't realpath a not-yet-existing file, so resolve the parent. */
-        char resolvedDir[PATH_MAX];
-        if (realpath(destDir, resolvedDir) == NULL) {
-            sfhttp_error(fd, 500, "Internal Server Error", "Cannot resolve destination");
-            free(body);
+        long long bodyLen64 = strtoll(clStr, NULL, 10);
+        if (errno != 0 || bodyLen64 <= 0 || bodyLen64 > SFHTTP_BODY_MAX) {
+            sfhttp_error(fd, 413, "Request Entity Too Large", "Body too large (max 8 MB)");
+            sfhttp_log(server, "Upload rejected: body too large (%lld)", bodyLen64);
+            sfhttp_progress(server, 0.0f);
             return;
         }
-        /* Build expected prefix: resolvedDir + "/" + safeName */
-        snprintf(resolved, sizeof(resolved), "%s/%s", resolvedDir, safeName);
-        size_t dirLen = strlen(resolvedDir);
-        if (strncmp(resolved, resolvedDir, dirLen) != 0 || resolved[dirLen] != '/') {
-            sfhttp_error(fd, 400, "Bad Request", "Path traversal detected");
-            sfhttp_log(server, "Upload rejected: path traversal '%s'", safeName);
-            free(body);
-            return;
+
+        {
+            size_t bodyLen = (size_t)bodyLen64;
+            char ctVal[256] = {0};
+
+            if (!sfhttp_get_header(hdrs, "Content-Type", ctVal, sizeof(ctVal))) {
+                sfhttp_error(fd, 400, "Bad Request", "Missing Content-Type");
+                sfhttp_progress(server, 0.0f);
+                return;
+            }
+
+            if (strncasecmp(ctVal, "multipart/form-data", 19) != 0) {
+                sfhttp_error(fd, 400, "Bad Request", "Expected multipart/form-data");
+                sfhttp_progress(server, 0.0f);
+                return;
+            }
+
+            {
+                char boundary[128] = {0};
+                if (!sfhttp_get_param(ctVal, "boundary", boundary, sizeof(boundary))) {
+                    sfhttp_error(fd, 400, "Bad Request", "Missing boundary");
+                    sfhttp_progress(server, 0.0f);
+                    return;
+                }
+
+                {
+                    char *body = (char *)malloc(bodyLen + 1);
+                    if (!body) {
+                        sfhttp_error(fd, 500, "Internal Server Error", "Out of memory");
+                        sfhttp_progress(server, 0.0f);
+                        return;
+                    }
+
+                    {
+                        size_t prefixCopy = (bodyPrefixLen < bodyLen) ? bodyPrefixLen : bodyLen;
+                        if (prefixCopy > 0)
+                            memcpy(body, bodyPrefixBuf, prefixCopy);
+
+                        sfhttp_progress(server, (bodyLen > 0) ? ((float)prefixCopy / (float)bodyLen) : 0.0f);
+
+                        if (prefixCopy < bodyLen &&
+                            !sfhttp_read_exact_progress(fd,
+                                                        body + prefixCopy,
+                                                        bodyLen - prefixCopy,
+                                                        prefixCopy,
+                                                        bodyLen,
+                                                        server)) {
+                            sfhttp_error(fd, 400, "Bad Request", "Incomplete body");
+                            free(body);
+                            sfhttp_log(server, "Upload rejected: incomplete body");
+                            sfhttp_progress(server, 0.0f);
+                            return;
+                        }
+
+                        body[bodyLen] = '\0';
+
+                        {
+                            char delim[132];
+                            snprintf(delim, sizeof(delim), "--%s\r\n", boundary);
+
+                            {
+                                const char *partStart = (const char *)sfhttp_memmem(body, bodyLen,
+                                                                                    delim, strlen(delim));
+                                if (!partStart) {
+                                    sfhttp_error(fd, 400, "Bad Request", "Boundary not found");
+                                    free(body);
+                                    sfhttp_progress(server, 0.0f);
+                                    return;
+                                }
+
+                                partStart += strlen(delim);
+
+                                {
+                                    const char *partHdrEnd = (const char *)sfhttp_memmem(
+                                        partStart,
+                                        bodyLen - (size_t)(partStart - body),
+                                        "\r\n\r\n",
+                                        4);
+
+                                    if (!partHdrEnd) {
+                                        sfhttp_error(fd, 400, "Bad Request", "Part headers not found");
+                                        free(body);
+                                        sfhttp_progress(server, 0.0f);
+                                        return;
+                                    }
+
+                                    {
+                                        size_t partHdrLen = (size_t)(partHdrEnd - partStart);
+                                        char *partHdrs = (char *)malloc(partHdrLen + 1);
+                                        if (!partHdrs) {
+                                            sfhttp_error(fd, 500, "Internal Server Error", "Out of memory");
+                                            free(body);
+                                            sfhttp_progress(server, 0.0f);
+                                            return;
+                                        }
+
+                                        memcpy(partHdrs, partStart, partHdrLen);
+                                        partHdrs[partHdrLen] = '\0';
+
+                                        {
+                                            char cdVal[256] = {0};
+                                            if (!sfhttp_get_header(partHdrs, "Content-Disposition", cdVal, sizeof(cdVal))) {
+                                                sfhttp_error(fd, 400, "Bad Request", "Missing part Content-Disposition");
+                                                free(partHdrs);
+                                                free(body);
+                                                sfhttp_progress(server, 0.0f);
+                                                return;
+                                            }
+
+                                            {
+                                                char rawName[SFHTTP_FNAME_MAX] = {0};
+                                                if (!sfhttp_get_param(cdVal, "filename", rawName, sizeof(rawName))) {
+                                                    sfhttp_error(fd, 400, "Bad Request", "No filename in disposition");
+                                                    free(partHdrs);
+                                                    free(body);
+                                                    sfhttp_progress(server, 0.0f);
+                                                    return;
+                                                }
+
+                                                free(partHdrs);
+
+                                                {
+                                                    char safeName[SFHTTP_FNAME_MAX];
+                                                    if (!sfhttp_sanitize_fname(rawName, safeName, sizeof(safeName))) {
+                                                        sfhttp_error(fd, 400, "Bad Request", "Invalid filename");
+                                                        sfhttp_log(server, "Upload rejected: invalid filename '%s'", rawName);
+                                                        free(body);
+                                                        sfhttp_progress(server, 0.0f);
+                                                        return;
+                                                    }
+
+                                                    {
+                                                        const char *fileData = partHdrEnd + 4;
+                                                        size_t remaining = bodyLen - (size_t)(fileData - body);
+
+                                                        char closingDelim[132];
+                                                        snprintf(closingDelim, sizeof(closingDelim), "\r\n--%s", boundary);
+
+                                                        {
+                                                            const char *fileEnd = (const char *)sfhttp_memmem(fileData,
+                                                                                                              remaining,
+                                                                                                              closingDelim,
+                                                                                                              strlen(closingDelim));
+                                                            size_t fileLen = fileEnd ? (size_t)(fileEnd - fileData) : remaining;
+
+                                                            char destPath[PATH_MAX];
+                                                            snprintf(destPath, sizeof(destPath), "%s/%s", destDir, safeName);
+
+                                                            {
+                                                                char resolved[PATH_MAX];
+                                                                char resolvedDir[PATH_MAX];
+
+                                                                if (realpath(destDir, resolvedDir) == NULL) {
+                                                                    sfhttp_error(fd, 500, "Internal Server Error", "Cannot resolve destination");
+                                                                    free(body);
+                                                                    sfhttp_progress(server, 0.0f);
+                                                                    return;
+                                                                }
+
+                                                                snprintf(resolved, sizeof(resolved), "%s/%s", resolvedDir, safeName);
+
+                                                                {
+                                                                    size_t dirLen = strlen(resolvedDir);
+                                                                    if (strncmp(resolved, resolvedDir, dirLen) != 0 ||
+                                                                        resolved[dirLen] != '/') {
+                                                                        sfhttp_error(fd, 400, "Bad Request", "Path traversal detected");
+                                                                        sfhttp_log(server, "Upload rejected: path traversal '%s'", safeName);
+                                                                        free(body);
+                                                                        sfhttp_progress(server, 0.0f);
+                                                                        return;
+                                                                    }
+                                                                }
+
+                                                                strlcpy(destPath, resolved, sizeof(destPath));
+                                                            }
+
+                                                            {
+                                                                int outFd = open(destPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                                                                if (outFd < 0) {
+                                                                    sfhttp_error(fd, 500, "Internal Server Error", "Cannot create file");
+                                                                    sfhttp_log(server, "Upload failed: cannot create '%s': %s",
+                                                                               safeName, strerror(errno));
+                                                                    free(body);
+                                                                    sfhttp_progress(server, 0.0f);
+                                                                    return;
+                                                                }
+
+                                                                {
+                                                                    int okWrite = sfhttp_write_all(outFd, fileData, fileLen);
+                                                                    close(outFd);
+                                                                    free(body);
+
+                                                                    if (!okWrite) {
+                                                                        sfhttp_error(fd, 500, "Internal Server Error", "Write failed");
+                                                                        sfhttp_log(server, "Upload failed: write error for '%s'", safeName);
+                                                                        sfhttp_progress(server, 0.0f);
+                                                                        return;
+                                                                    }
+                                                                }
+                                                            }
+
+                                                            sfhttp_progress(server, 1.0f);
+                                                            sfhttp_log(server, "Uploaded '%s' (%zu bytes)", safeName, fileLen);
+
+                                                            {
+                                                                static const char *successHtml =
+                                                                    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                                                                    "<meta http-equiv='refresh' content='2;url=/'>"
+                                                                    "<style>body{font-family:-apple-system,sans-serif;background:#1a1a2e;"
+                                                                    "color:#e0e0e0;display:flex;justify-content:center;align-items:center;"
+                                                                    "min-height:100vh;margin:0}"
+                                                                    ".card{background:#16213e;border-radius:12px;padding:32px;text-align:center}"
+                                                                    "h2{color:#4caf50}</style></head><body>"
+                                                                    "<div class='card'><h2>&#10003; Upload successful!</h2>"
+                                                                    "<p>Redirecting back...</p></div></body></html>";
+                                                                sfhttp_success(fd, successHtml);
+                                                            }
+
+                                                            return;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
-        /* Use the fully-resolved path */
-        strlcpy(destPath, resolved, sizeof(destPath));
     }
-
-    /* Write the file */
-    int outFd = open(destPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (outFd < 0) {
-        sfhttp_error(fd, 500, "Internal Server Error", "Cannot create file");
-        sfhttp_log(server, "Upload failed: cannot create '%s': %s",
-                   safeName, strerror(errno));
-        free(body);
-        return;
-    }
-
-    ssize_t written = write(outFd, fileData, fileLen);
-    close(outFd);
-    free(body);
-
-    if (written < 0 || (size_t)written != fileLen) {
-        sfhttp_error(fd, 500, "Internal Server Error", "Write failed");
-        sfhttp_log(server, "Upload failed: write error for '%s'", safeName);
-        return;
-    }
-
-    sfhttp_log(server, "Uploaded '%s' (%zu bytes)", safeName, fileLen);
-
-    static const char *successHtml =
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<meta http-equiv='refresh' content='2;url=/'>"
-        "<style>body{font-family:-apple-system,sans-serif;background:#1a1a2e;"
-        "color:#e0e0e0;display:flex;justify-content:center;align-items:center;"
-        "min-height:100vh;margin:0}"
-        ".card{background:#16213e;border-radius:12px;padding:32px;text-align:center}"
-        "h2{color:#4caf50}</style></head><body>"
-        "<div class='card'><h2>&#10003; Upload successful!</h2>"
-        "<p>Redirecting back...</p></div></body></html>";
-    sfhttp_success(fd, successHtml);
 }
 
 /* ── Per-connection thread ────────────────────────────────────────────────── */
@@ -490,65 +623,77 @@ static void *sfhttp_connection_thread(void *arg) {
     SFHTTPServer *server = (SFHTTPServer *)ctx->server;
     free(ctx);
 
-    /* Read request headers (body prefix bytes may be in the buffer too) */
-    char hdrBuf[SFHTTP_HDR_MAX];
-    size_t bodyStart = 0;
-    ssize_t total = sfhttp_read_headers(fd, hdrBuf, sizeof(hdrBuf) - 1, &bodyStart);
-    if (total < 0) {
-        close(fd);
-        [server performSelectorOnMainThread:@selector(_connectionFinished)
-                                 withObject:nil waitUntilDone:NO];
-        [server release];
-        return NULL;
-    }
-    hdrBuf[total] = '\0';
+    {
+        char hdrBuf[SFHTTP_HDR_MAX];
+        size_t bodyStart = 0;
+        ssize_t total = sfhttp_read_headers(fd, hdrBuf, sizeof(hdrBuf) - 1, &bodyStart);
 
-    /* Parse request line */
-    char method[8] = {0}, path[256] = {0};
-    sscanf(hdrBuf, "%7s %255s", method, path);
-
-    /* Body prefix: bytes already read past the header separator */
-    const char *bodyPrefixBuf = hdrBuf + bodyStart;
-    size_t bodyPrefixLen = (total > (ssize_t)bodyStart)
-                           ? (size_t)((ssize_t)total - (ssize_t)bodyStart) : 0;
-
-    /* Null-terminate just the header block for header parsing */
-    char *headerBlock = (char *)malloc((size_t)bodyStart + 1);
-    if (headerBlock) {
-        memcpy(headerBlock, hdrBuf, bodyStart);
-        headerBlock[bodyStart] = '\0';
-    }
-
-    if (strcmp(method, "GET") == 0 && strcmp(path, "/") == 0) {
-        /* Serve upload form */
-        char html[4096];
-        snprintf(html, sizeof(html), SFHTTP_HTML,
-                 server->_directory ? [server->_directory UTF8String] : "/");
-        sfhttp_send_header(fd, 200, "OK", "text/html; charset=utf-8", strlen(html));
-        send(fd, html, strlen(html), 0);
-        sfhttp_log(server, "GET / — served upload form");
-
-    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/upload") == 0) {
-        if (headerBlock) {
-            sfhttp_handle_upload(fd,
-                                 headerBlock, bodyStart,
-                                 bodyPrefixBuf, bodyPrefixLen,
-                                 [server->_directory UTF8String],
-                                 server);
-        } else {
-            sfhttp_error(fd, 500, "Internal Server Error", "Out of memory");
+        if (total < 0) {
+            close(fd);
+            [server performSelectorOnMainThread:@selector(_connectionFinished)
+                                     withObject:nil
+                                  waitUntilDone:NO];
+            [server release];
+            return NULL;
         }
 
-    } else {
-        sfhttp_error(fd, 404, "Not Found", "Not found");
-        sfhttp_log(server, "%s %s — 404", method, path);
+        hdrBuf[total] = '\0';
+
+        {
+            char method[8] = {0};
+            char path[256] = {0};
+            sscanf(hdrBuf, "%7s %255s", method, path);
+
+            {
+                const char *bodyPrefixBuf = hdrBuf + bodyStart;
+                size_t bodyPrefixLen = (total > (ssize_t)bodyStart)
+                                     ? (size_t)((ssize_t)total - (ssize_t)bodyStart)
+                                     : 0;
+
+                char *headerBlock = (char *)malloc((size_t)bodyStart + 1);
+                if (headerBlock) {
+                    memcpy(headerBlock, hdrBuf, bodyStart);
+                    headerBlock[bodyStart] = '\0';
+                }
+
+                if (strcmp(method, "GET") == 0 && strcmp(path, "/") == 0) {
+                    char html[4096];
+                    snprintf(html, sizeof(html), SFHTTP_HTML,
+                             server->_directory ? [server->_directory UTF8String] : "/");
+                    sfhttp_send_header(fd, 200, "OK", "text/html; charset=utf-8", strlen(html));
+                    send(fd, html, strlen(html), 0);
+                    sfhttp_progress(server, 0.0f);
+                    sfhttp_log(server, "GET / — served upload form");
+
+                } else if (strcmp(method, "POST") == 0 && strcmp(path, "/upload") == 0) {
+                    if (headerBlock) {
+                        sfhttp_handle_upload(fd,
+                                             headerBlock,
+                                             bodyPrefixBuf,
+                                             bodyPrefixLen,
+                                             [server->_directory UTF8String],
+                                             server);
+                    } else {
+                        sfhttp_error(fd, 500, "Internal Server Error", "Out of memory");
+                        sfhttp_progress(server, 0.0f);
+                    }
+
+                } else {
+                    sfhttp_error(fd, 404, "Not Found", "Not found");
+                    sfhttp_progress(server, 0.0f);
+                    sfhttp_log(server, "%s %s — 404", method, path);
+                }
+
+                if (headerBlock) free(headerBlock);
+            }
+        }
     }
 
-    if (headerBlock) free(headerBlock);
     close(fd);
 
     [server performSelectorOnMainThread:@selector(_connectionFinished)
-                             withObject:nil waitUntilDone:NO];
+                             withObject:nil
+                          waitUntilDone:NO];
     [server release];
     return NULL;
 }
@@ -560,61 +705,70 @@ static void *sfhttp_accept_loop(void *arg) {
     while (server->_running) {
         struct sockaddr_in clientAddr;
         socklen_t clientLen = sizeof(clientAddr);
+
         int clientFd = accept(server->_serverFd,
-                              (struct sockaddr *)&clientAddr, &clientLen);
+                              (struct sockaddr *)&clientAddr,
+                              &clientLen);
         if (clientFd < 0) {
             if (!server->_running) break;
             continue;
         }
 
-        /* Connection limit */
         pthread_mutex_lock(&server->_mutex);
-        int active = server->_activeConns;
-        pthread_mutex_unlock(&server->_mutex);
+        {
+            int active = server->_activeConns;
+            pthread_mutex_unlock(&server->_mutex);
 
-        if (active >= SFHTTP_MAX_CONNS) {
-            sfhttp_error(clientFd, 503, "Service Unavailable", "Too many connections");
-            close(clientFd);
-            sfhttp_log(server, "Connection rejected (limit %d reached)", SFHTTP_MAX_CONNS);
-            continue;
+            if (active >= SFHTTP_MAX_CONNS) {
+                sfhttp_error(clientFd, 503, "Service Unavailable", "Too many connections");
+                close(clientFd);
+                sfhttp_log(server, "Connection rejected (limit %d reached)", SFHTTP_MAX_CONNS);
+                continue;
+            }
         }
 
-        /* Socket timeouts */
-        struct timeval tv;
-        tv.tv_sec  = SFHTTP_RECV_TIMEOUT;
-        tv.tv_usec = 0;
-        setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        setsockopt(clientFd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        {
+            struct timeval tv;
+            tv.tv_sec  = SFHTTP_RECV_TIMEOUT;
+            tv.tv_usec = 0;
+            setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            setsockopt(clientFd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        }
 
         pthread_mutex_lock(&server->_mutex);
         server->_activeConns++;
         pthread_mutex_unlock(&server->_mutex);
 
-        sfhttp_conn_t *ctx = (sfhttp_conn_t *)malloc(sizeof(sfhttp_conn_t));
-        if (!ctx) {
-            pthread_mutex_lock(&server->_mutex);
-            server->_activeConns--;
-            pthread_mutex_unlock(&server->_mutex);
-            close(clientFd);
-            continue;
-        }
-        ctx->fd     = clientFd;
-        ctx->server = [server retain]; /* released by the connection thread */
+        {
+            sfhttp_conn_t *ctx = (sfhttp_conn_t *)malloc(sizeof(sfhttp_conn_t));
+            if (!ctx) {
+                pthread_mutex_lock(&server->_mutex);
+                server->_activeConns--;
+                pthread_mutex_unlock(&server->_mutex);
+                close(clientFd);
+                continue;
+            }
 
-        pthread_t thr;
-        if (pthread_create(&thr, NULL, sfhttp_connection_thread, ctx) != 0) {
-            free(ctx);
-            [server release];
-            pthread_mutex_lock(&server->_mutex);
-            server->_activeConns--;
-            pthread_mutex_unlock(&server->_mutex);
-            close(clientFd);
-            continue;
+            ctx->fd = clientFd;
+            ctx->server = [server retain];
+
+            {
+                pthread_t thr;
+                if (pthread_create(&thr, NULL, sfhttp_connection_thread, ctx) != 0) {
+                    free(ctx);
+                    [server release];
+                    pthread_mutex_lock(&server->_mutex);
+                    server->_activeConns--;
+                    pthread_mutex_unlock(&server->_mutex);
+                    close(clientFd);
+                    continue;
+                }
+                pthread_detach(thr);
+            }
         }
-        pthread_detach(thr);
     }
 
-    [server release]; /* balances the retain done in -startInDirectory:... */
+    [server release];
     return NULL;
 }
 
@@ -645,76 +799,102 @@ static void *sfhttp_accept_loop(void *arg) {
     [super dealloc];
 }
 
-- (uint16_t)boundPort { return _boundPort; }
+- (uint16_t)boundPort {
+    return _boundPort;
+}
 
 - (BOOL)startInDirectory:(NSString *)dir
                startPort:(uint16_t)port
                 delegate:(id<SFHTTPServerDelegate>)del {
     if (_running) return NO;
 
-    _delegate  = del;  /* weak — caller keeps alive */
+    _delegate = del;
     [_directory release];
     _directory = [dir copy];
 
-    /* Try up to 10 consecutive ports */
-    int fd = -1;
-    uint16_t boundPort = 0;
-    for (int i = 0; i < 10; i++) {
-        fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (fd < 0) continue;
+    {
+        int fd = -1;
+        uint16_t boundPort = 0;
 
-        int yes = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+        for (int i = 0; i < 10; i++) {
+            fd = socket(AF_INET, SOCK_STREAM, 0);
+            if (fd < 0) continue;
 
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family      = AF_INET;
-        addr.sin_addr.s_addr = INADDR_ANY;
-        addr.sin_port        = htons(port + (uint16_t)i);
+            {
+                int yes = 1;
+                setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+            }
 
-        if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-            boundPort = port + (uint16_t)i;
-            break;
+            {
+                struct sockaddr_in addr;
+                memset(&addr, 0, sizeof(addr));
+                addr.sin_family      = AF_INET;
+                addr.sin_addr.s_addr = INADDR_ANY;
+                addr.sin_port        = htons(port + (uint16_t)i);
+
+                if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+                    boundPort = port + (uint16_t)i;
+                    break;
+                }
+            }
+
+            close(fd);
+            fd = -1;
         }
-        close(fd);
-        fd = -1;
+
+        if (fd < 0) return NO;
+        if (listen(fd, 5) != 0) {
+            close(fd);
+            return NO;
+        }
+
+        _serverFd  = fd;
+        _boundPort = boundPort;
+        _running   = YES;
     }
 
-    if (fd < 0) return NO;
-    if (listen(fd, 5) != 0) { close(fd); return NO; }
-
-    _serverFd  = fd;
-    _boundPort = boundPort;
-    _running   = YES;
-
-    /* Launch accept loop — retain self for the thread lifetime */
     [self retain];
-    pthread_t thr;
-    if (pthread_create(&thr, NULL, sfhttp_accept_loop, self) != 0) {
-        [self release];
-        _running = NO;
-        close(_serverFd);
-        _serverFd = -1;
-        return NO;
+
+    {
+        pthread_t thr;
+        if (pthread_create(&thr, NULL, sfhttp_accept_loop, self) != 0) {
+            [self release];
+            _running = NO;
+            close(_serverFd);
+            _serverFd = -1;
+            _boundPort = 0;
+            return NO;
+        }
+        _acceptThread = thr;
+        pthread_detach(thr);
     }
-    _acceptThread = thr;
-    pthread_detach(thr);
+
     return YES;
 }
 
 - (void)stop {
     if (!_running) return;
+
     _running = NO;
+
     if (_serverFd >= 0) {
         close(_serverFd);
         _serverFd = -1;
     }
-    /* Accept loop will exit on the next accept() returning -1, then release. */
+
+    _boundPort = 0;
 }
 
 - (void)_deliverLog:(NSString *)msg {
-    if ([_delegate respondsToSelector:@selector(httpServer:didLog:)])
+    if ([_delegate respondsToSelector:@selector(httpServer:didLog:)]) {
         [_delegate httpServer:self didLog:msg];
+    }
+}
+
+- (void)_deliverProgress:(NSNumber *)progress {
+    if ([_delegate respondsToSelector:@selector(httpServer:didUpdateUploadProgress:)]) {
+        [_delegate httpServer:self didUpdateUploadProgress:[progress floatValue]];
+    }
 }
 
 - (void)_connectionFinished {
@@ -728,18 +908,23 @@ static void *sfhttp_accept_loop(void *arg) {
     if (getifaddrs(&ifas) != 0) return nil;
 
     NSString *result = nil;
+
     for (struct ifaddrs *ifa = ifas; ifa; ifa = ifa->ifa_next) {
         if (!ifa->ifa_addr) continue;
         if (ifa->ifa_addr->sa_family != AF_INET) continue;
-        /* Skip loopback */
         if (strcmp(ifa->ifa_name, "lo0") == 0) continue;
-        struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
-        char ipStr[INET_ADDRSTRLEN];
-        if (inet_ntop(AF_INET, &sin->sin_addr, ipStr, sizeof(ipStr))) {
-            result = [NSString stringWithUTF8String:ipStr];
-            break;
+
+        {
+            struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
+            char ipStr[INET_ADDRSTRLEN];
+
+            if (inet_ntop(AF_INET, &sin->sin_addr, ipStr, sizeof(ipStr))) {
+                result = [NSString stringWithUTF8String:ipStr];
+                break;
+            }
         }
     }
+
     freeifaddrs(ifas);
     return result;
 }
