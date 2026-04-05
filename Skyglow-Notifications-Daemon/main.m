@@ -63,21 +63,14 @@ int main(int argc, char *argv[]) {
 
         SGConfiguration *config = [SGConfiguration sharedConfiguration];
 
-        BOOL isEnabled = config.isEnabled;
-        
-        if (!isEnabled) {
-            NSLog(@"[Skyglow] Daemon is disabled. Exiting.");
-            exit(EXIT_SUCCESS);
-        }
-        
         int pid_fd = open([SGPath(@"/var/run/skyglow_daemon.pid") UTF8String], O_RDWR | O_CREAT, 0666);
         if (pid_fd < 0) {
             NSLog(@"[Skyglow] FATAL: Could not create or open PID file.");
             exit(EXIT_FAILURE);
         }
-        
+
         fchmod(pid_fd, 0666);
-        
+
         if (flock(pid_fd, LOCK_EX | LOCK_NB) != 0) {
             NSLog(@"[Skyglow] FATAL: Another instance of Skyglow Notifications Daemon is already running! Aborting.");
             close(pid_fd);
@@ -86,11 +79,28 @@ int main(int argc, char *argv[]) {
 
         ftruncate(pid_fd, 0);
         dprintf(pid_fd, "%d\n", getpid());
-        
+
         NSLog(@"Speedy Execution Is The Mother Of Good Fortune");
         NSLog(@"[Skyglow] Daemon starting");
 
-        SGStatusServer_Start([SGPath(@"/var/run/skyglow_status.sock") UTF8String], (int64_t)time(NULL));
+        /**
+         * Start the status server BEFORE the enabled check so the preference
+         * bundle always gets a definitive SGStateDisabled instead of having to
+         * rely on the ambiguous PID-file-alive heuristic.
+         */
+        int64_t startTime = (int64_t)time(NULL);
+        SGStatusServer_Start([SGPath(@"/var/run/skyglow_status.sock") UTF8String], startTime);
+
+        if (!config.isEnabled) {
+            NSLog(@"[Skyglow] Daemon is disabled. Broadcasting state and exiting.");
+            SGStatusServer_Post(SGStateDisabled, 0, 0, NULL, "Daemon is disabled", 0);
+            usleep(200000); /* 200ms — let any watchers read the state */
+            SGStatusServer_Shutdown();
+            unlink([SGPath(@"/var/run/skyglow_daemon.pid") UTF8String]);
+            flock(pid_fd, LOCK_UN);
+            close(pid_fd);
+            exit(EXIT_SUCCESS);
+        }
         
         /**
          * Graceful SIGTERM handler.

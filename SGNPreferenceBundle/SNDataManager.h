@@ -22,14 +22,23 @@
 - (void)removeAppStatusForBundleId:(NSString *)bundleId;
 - (void)setMainPrefValue:(id)value forKey:(NSString *)key;
 - (NSString *)serverAddressInput;
-- (BOOL)importProfileFromPEMAtPath:(NSString *)path serverAddress:(NSString *)serverAddress;
 
-/** Profile */
+/** Profile — active profile shortcuts (delegates to active profile index) */
 - (NSDictionary *)profile;
 - (NSString *)serverAddress;
 - (NSString *)deviceAddress;
 - (NSString *)serverPubKeyPEM;
 - (BOOL)isRegistered;
+
+/** Multi-Profile API */
+- (NSInteger)activeProfileIndex;
+- (void)setActiveProfileIndex:(NSInteger)index;
+- (NSString *)profilePathForIndex:(NSInteger)index;
+- (NSDictionary *)profileForIndex:(NSInteger)index;
+- (BOOL)profileExistsAtIndex:(NSInteger)index;
+- (BOOL)deleteProfileAtIndex:(NSInteger)index;
+- (BOOL)importProfileFromPEMAtPath:(NSString *)path serverAddress:(NSString *)serverAddress profileIndex:(NSInteger)index;
+- (BOOL)importProfileFromPEMAtPath:(NSString *)path serverAddress:(NSString *)serverAddress;
 
 /** Daemon Status */
 - (SGStatusPayload)queryDaemonStatus;
@@ -52,10 +61,12 @@
 
 /** Unregistration */
 - (void)unregisterDevice;
+- (void)unregisterProfileAtIndex:(NSInteger)index;
 
 /** Utilities */
 - (NSString *)hexStringFromData:(NSData *)data;
 - (NSString *)friendlyStringForState:(SGState)state;
 - (UIColor *)colorForState:(SGState)state;
+- (NSString *)recoverySuggestionForState:(SGState)state;
 
 @end

@@ -39,6 +39,11 @@ static inline NSString * SGPath(NSString *path) {
 @property (nonatomic, copy) NSString *serverPubKeyPEM;
 
 /**
+ * 1-based index of the active profile (1–5).  Defaults to 1.
+ */
+@property (nonatomic, readonly) NSInteger activeProfileIndex;
+
+/**
  * Reloads all configuration values from the on-disk preference plists.
  */
 - (void)reloadFromDisk;

@@ -16,10 +16,17 @@ static inline NSString * SGPath(NSString *path) {
 }
 
 static inline NSString * SGMainPrefsPath() { return SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp.plist"); }
-static inline NSString * SGProfilePath()   { return SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp-profile1.plist"); }
+static inline NSString * SGProfilePathForIndex(NSInteger idx) {
+    return SGPath([NSString stringWithFormat:@"/var/mobile/Library/Preferences/com.skyglow.sndp-profile%ld.plist", (long)idx]);
+}
+static inline NSString * SGProfilePath() {
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()];
+    NSNumber *num = [prefs objectForKey:@"activeProfile"];
+    NSInteger idx = (num && [num integerValue] >= 1 && [num integerValue] <= 5) ? [num integerValue] : 1;
+    return SGProfilePathForIndex(idx);
+}
 static inline NSString * SGDBPath()        { return SGPath(@"/var/mobile/Library/SkyglowNotifications/sqlite.db"); }
 static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_status.sock") UTF8String]; }
-static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_daemon.pid") UTF8String]; }
 
 @interface SNDataManager ()
 @property (nonatomic, assign) int watchSocketFD;
@@ -99,18 +106,14 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
 - (SGStatusPayload)queryDaemonStatus {
     SGStatusPayload empty;
     memset(&empty, 0, sizeof(empty));
-    
-    BOOL isEnabled = NO;
-    FILE *pidFile = fopen(SGPIDPath(), "r");
-    if (pidFile) {
-        int pid = 0;
-        if (fscanf(pidFile, "%d", &pid) == 1 && pid > 0) {
-            if (kill(pid, 0) == 0) isEnabled = YES;
-        }
-        fclose(pidFile);
+
+    /* If the socket file doesn't exist, the daemon is not running. */
+    if (access(SGPocketPath(), F_OK) != 0) {
+        empty.state = SGStateDisabled;
+        return empty;
     }
-    
-    empty.state = isEnabled ? SGStateStarting : SGStateDisabled;
+
+    empty.state = SGStateStarting;
 
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return empty;
@@ -205,16 +208,7 @@ static inline const char * SGPIDPath()     { return [SGPath(@"/var/run/skyglow_d
                     if (self.watchGeneration != gen) return;
                     SGStatusPayload empty;
                     memset(&empty, 0, sizeof(empty));
-                    BOOL isEnabled = NO;
-                    FILE *pidFile = fopen(SGPIDPath(), "r");
-                    if (pidFile) {
-                        int pid = 0;
-                        if (fscanf(pidFile, "%d", &pid) == 1 && pid > 0) {
-                            if (kill(pid, 0) == 0) isEnabled = YES;
-                        }
-                        fclose(pidFile);
-                    }
-                    empty.state = isEnabled ? SGStateStarting : SGStateDisabled;
+                    empty.state = SGStateDisabled;
                     self.latestPayload = empty;
                     [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
                 });
@@ -445,8 +439,13 @@ static sqlite3 *openDBReadOnly(void) {
 }
 
 - (BOOL)importProfileFromPEMAtPath:(NSString *)path serverAddress:(NSString *)serverAddress {
+    return [self importProfileFromPEMAtPath:path serverAddress:serverAddress profileIndex:[self activeProfileIndex]];
+}
+
+- (BOOL)importProfileFromPEMAtPath:(NSString *)path serverAddress:(NSString *)serverAddress profileIndex:(NSInteger)index {
     if (!path || path.length == 0) return NO;
     if (!serverAddress || serverAddress.length == 0) return NO;
+    if (index < 1 || index > 5) return NO;
 
     NSFileManager *fm = [NSFileManager defaultManager];
 
@@ -462,7 +461,8 @@ static sqlite3 *openDBReadOnly(void) {
         }
     }
 
-    /* Copy the PEM to our storage directory, replacing any existing file. */
+    /* Copy the PEM to our storage directory, replacing any existing file.
+     * The certificate is shared across profiles — only one copy. */
     NSString *destPath = [destDir stringByAppendingPathComponent:@"server.pem"];
     if ([fm fileExistsAtPath:destPath]) {
         [fm removeItemAtPath:destPath error:nil];
@@ -488,20 +488,22 @@ static sqlite3 *openDBReadOnly(void) {
      *
      * Do NOT write device_address or privateKey — the daemon generates both
      * during first-time registration (protocolDidCompleteRegistrationWithAddress:).
-     * Writing a device_address here without a privateKey causes the daemon to find
-     * a credential it cannot use, fire SGEventAuthFailed, wipe the profile, and
-     * back off before eventually succeeding on the next attempt. */
+     */
     NSString *storedPath = @"/var/mobile/Library/SkyglowNotifications/server.pem";
 
     NSMutableDictionary *profile = [NSMutableDictionary dictionary];
     [profile setObject:serverAddress forKey:@"server_address"];
     [profile setObject:storedPath    forKey:@"server_pub_key"];
 
-    return [profile writeToFile:[self profilePath] atomically:YES];
+    return [profile writeToFile:SGProfilePathForIndex(index) atomically:YES];
 }
 
 - (void)unregisterDevice {
-    [[NSFileManager defaultManager] removeItemAtPath:SGProfilePath() error:nil];
+    [self unregisterProfileAtIndex:[self activeProfileIndex]];
+}
+
+- (void)unregisterProfileAtIndex:(NSInteger)index {
+    [self deleteProfileAtIndex:index];
 
     sqlite3 *db = NULL;
     if (sqlite3_open([SGDBPath() UTF8String], &db) == SQLITE_OK) {
@@ -509,6 +511,45 @@ static sqlite3 *openDBReadOnly(void) {
         sqlite3_exec(db, "DELETE FROM dns_cache;", NULL, NULL, NULL);
     }
     if (db) sqlite3_close(db);
+}
+
+#pragma mark - Multi-Profile API
+
+- (NSInteger)activeProfileIndex {
+    NSDictionary *prefs = [self mainPrefs];
+    NSNumber *num = [prefs objectForKey:@"activeProfile"];
+    return (num && [num integerValue] >= 1 && [num integerValue] <= 5) ? [num integerValue] : 1;
+}
+
+- (void)setActiveProfileIndex:(NSInteger)index {
+    if (index < 1 || index > 5) return;
+    [self setMainPrefValue:@(index) forKey:@"activeProfile"];
+}
+
+- (NSString *)profilePathForIndex:(NSInteger)index {
+    return SGProfilePathForIndex(index);
+}
+
+- (NSDictionary *)profileForIndex:(NSInteger)index {
+    return [NSDictionary dictionaryWithContentsOfFile:SGProfilePathForIndex(index)] ?: @{};
+}
+
+- (BOOL)profileExistsAtIndex:(NSInteger)index {
+    return [[NSFileManager defaultManager] fileExistsAtPath:SGProfilePathForIndex(index)];
+}
+
+- (BOOL)deleteProfileAtIndex:(NSInteger)index {
+    if (index < 1 || index > 5) return NO;
+    NSString *profilePath = SGProfilePathForIndex(index);
+    NSDictionary *profile = [NSDictionary dictionaryWithContentsOfFile:profilePath];
+
+    /* Remove the profile-specific private key file */
+    NSString *privKeyPath = [profile objectForKey:@"privateKey"];
+    if (privKeyPath) {
+        [[NSFileManager defaultManager] removeItemAtPath:SGPath(privKeyPath) error:nil];
+    }
+
+    return [[NSFileManager defaultManager] removeItemAtPath:profilePath error:nil];
 }
 
 - (NSString *)hexStringFromData:(NSData *)data {
@@ -548,6 +589,25 @@ static sqlite3 *openDBReadOnly(void) {
         case SGStateIdleNoNetwork: case SGStateIdleCircuitOpen: case SGStateIdleDNSFailed: return [UIColor colorWithRed:0.9 green:0.6 blue:0.1 alpha:1.0];
         case SGStateErrorAuth: case SGStateErrorBadConfig: case SGStateError: return [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:1.0];
         default: return [UIColor grayColor];
+    }
+}
+
+- (NSString *)recoverySuggestionForState:(SGState)state {
+    switch (state) {
+        case SGStateErrorAuth:
+            return @"Try re-importing your server certificate.";
+        case SGStateErrorBadConfig:
+            return @"Check your server address and certificate in profile settings.";
+        case SGStateIdleDNSFailed:
+            return @"Check your server address or DNS settings.";
+        case SGStateIdleCircuitOpen:
+            return @"The daemon will retry on network change, or restart it manually.";
+        case SGStateError:
+            return @"Try restarting the daemon from Debug Tools.";
+        case SGStateIdleNoNetwork:
+            return @"Check your Wi-Fi or cellular connection.";
+        default:
+            return nil;
     }
 }
 
