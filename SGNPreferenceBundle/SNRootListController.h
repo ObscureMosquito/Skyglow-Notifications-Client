@@ -17,7 +17,4 @@ extern char **environ;
     UIActivityIndicatorView *activityIndicatorView;
 }
 
-/** Pushes the debug/diagnostics view controller. */
-- (void)pushDebugView;
-
 @end

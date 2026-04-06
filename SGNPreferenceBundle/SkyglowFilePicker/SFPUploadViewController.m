@@ -85,7 +85,7 @@
         _logLabel.font = [UIFont systemFontOfSize:13.0f];
     }
     _logLabel.numberOfLines = 0;
-    _logLabel.lineBreakMode = UILineBreakModeCharacterWrap;
+    _logLabel.lineBreakMode = (NSLineBreakMode)UILineBreakModeCharacterWrap;
     _logLabel.text = @"";
     [_scrollView addSubview:_logLabel];
 
@@ -108,7 +108,7 @@
     _percentLabel.backgroundColor = [UIColor clearColor];
     _percentLabel.textColor = [UIColor blackColor];
     _percentLabel.font = [UIFont boldSystemFontOfSize:13.0f];
-    _percentLabel.textAlignment = UITextAlignmentRight;
+    _percentLabel.textAlignment = (NSTextAlignment)UITextAlignmentRight;
     _percentLabel.text = @"0%";
 
     UIBarButtonItem *percentItem = [[[UIBarButtonItem alloc] initWithCustomView:_percentLabel] autorelease];

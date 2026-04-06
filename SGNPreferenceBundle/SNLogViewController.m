@@ -21,7 +21,9 @@
     self.statusLabel = [[UILabel alloc] initWithFrame:self.view.bounds];
     self.statusLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
-    self.statusLabel.layer.cornerRadius = 7.0;
+    if ([[UIDevice currentDevice].systemVersion floatValue] < 7.0) {
+        self.statusLabel.layer.cornerRadius = 7.0;
+    }
     self.statusLabel.clipsToBounds = YES;
     self.statusLabel.font = [UIFont boldSystemFontOfSize:13.0];
     self.statusLabel.textColor = [UIColor whiteColor];
@@ -37,9 +39,10 @@
     [self.statusLabel.layer addSublayer:self.gradientLayer];
 
     self.statusLabel.numberOfLines = 2;
-    self.statusLabel.userInteractionEnabled = YES;
+    self.statusLabel.userInteractionEnabled = NO;
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
         initWithTarget:self action:@selector(_statusLabelTapped)];
+    tap.cancelsTouchesInView = NO;
     [self.statusLabel addGestureRecognizer:tap];
 
     self.lastKnownState = (SGState)-1;

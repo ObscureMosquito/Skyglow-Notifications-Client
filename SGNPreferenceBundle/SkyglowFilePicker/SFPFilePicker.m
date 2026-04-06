@@ -809,7 +809,7 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
     label.numberOfLines = 0;
     #pragma clang diagnostic push
     #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    label.textAlignment = UITextAlignmentCenter;
+    label.textAlignment = (NSTextAlignment)UITextAlignmentCenter;
     #pragma clang diagnostic pop
     label.backgroundColor = [UIColor clearColor];
 
@@ -1051,7 +1051,7 @@ viewForHeaderInSection:(NSInteger)section {
     label.shadowOffset = CGSizeMake(0, 1.0f);
     #pragma clang diagnostic push
     #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    label.lineBreakMode = UILineBreakModeTailTruncation;
+    label.lineBreakMode = (NSLineBreakMode)UILineBreakModeTailTruncation;
     #pragma clang diagnostic pop
     label.text = _directoryPath;
     [header addSubview:label];
