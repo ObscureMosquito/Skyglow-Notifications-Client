@@ -4,7 +4,6 @@
 #import "SGTokenManager.h"
 #import "SGProtocolHandler.h"
 #import "SGServerLocator.h"
-#import "SGKeepAliveStrategy.h"
 #import "SGMachServer.h"
 #import "SGPayloadParser.h"
 #import "SGCryptoEngine.h"
@@ -120,8 +119,7 @@ static BOOL isValidPort(NSString *port) {
 @implementation SGDaemon {
     NSLock                *_stateLock;
     int                    _consecutiveFailures;
-    SGKeepAliveAlgorithm   _keepAliveAlgo;        // Fallback for iOS 5
-    id                     _growthAlgorithm;       // PCMultiStageGrowthAlgorithm, nil on iOS 5
+    id                     _growthAlgorithm;       // Always non-nil — private or builtin fallback
     NSMutableOrderedSet   *_seenMessageIDs;
     uint32_t               _fsmGeneration;
     BOOL                   _workerActive;
@@ -164,22 +162,12 @@ static BOOL isValidPort(NSString *port) {
     [_stateLock lock];
     _isWiFi = YES; // Default assumption until reachability callback fires
     double savedInterval = [[SGDatabaseManager sharedManager] loadKeepAliveIntervalForWiFi:YES];
+    double initialInterval = (savedInterval > 0.0) ? savedInterval : 600.0;
 
-    /**
-     * Use Apple's PCMultiStageGrowthAlgorithm on iOS 6+ (PersistentConnection.framework).
-     * Falls back to our C implementation (SGKeepAliveStrategy) on iOS 5.
-     */
-    SGAvailability *avail = [SGAvailability shared];
-    if (avail.growthAlgorithmAvailable) {
-        double initialInterval = (savedInterval > 0.0) ? savedInterval : 600.0;
-        _growthAlgorithm = [avail createGrowthAlgorithmWithInterval:initialInterval
-                                                    minimumInterval:600.0
-                                                    maximumInterval:1680.0];
-        NSLog(@"[SGDaemon] Using PCMultiStageGrowthAlgorithm (iOS 6+) — initial: %.0fs", initialInterval);
-    } else {
-        SGKeepAlive_Initialize(&_keepAliveAlgo, true, savedInterval);
-        NSLog(@"[SGDaemon] Using SGKeepAliveStrategy fallback (iOS 5)");
-    }
+    _growthAlgorithm = [[SGAvailability shared]
+        createGrowthAlgorithmWithInterval:initialInterval
+                          minimumInterval:600.0
+                          maximumInterval:1680.0];
     [_stateLock unlock];
     
     [self handleEvent:SGEventStartRequested payload:nil];
@@ -852,47 +840,33 @@ static BOOL isValidPort(NSString *port) {
     }
 }
 
-#pragma mark - Keepalive Algorithm Helpers (unified iOS 5/6+)
+#pragma mark - Keepalive Algorithm Helpers
 
 /**
- * Returns the current keepalive interval from whichever algorithm is active.
+ * Returns the current keepalive interval.
  * MUST be called while holding _stateLock.
  */
 - (double)_currentKeepAliveInterval {
-    if (_growthAlgorithm) {
-        return [[SGAvailability shared] currentIntervalForGrowthAlgorithm:_growthAlgorithm];
-    }
-    return SGKeepAlive_GetCurrentInterval(&_keepAliveAlgo);
+    return [[SGAvailability shared] currentIntervalForGrowthAlgorithm:_growthAlgorithm];
 }
 
 /**
- * Informs the active algorithm of a keepalive result.
+ * Informs the algorithm of a keepalive result.
  * MUST be called while holding _stateLock.
  */
 - (void)_processKeepAliveResult:(BOOL)success {
-    if (_growthAlgorithm) {
-        [[SGAvailability shared] processResult:success forGrowthAlgorithm:_growthAlgorithm];
-    } else {
-        SGKeepAlive_ProcessHeartbeatResult(&_keepAliveAlgo, success);
-    }
+    [[SGAvailability shared] processResult:success forGrowthAlgorithm:_growthAlgorithm];
 }
 
 /**
- * Reinitializes the active algorithm for a network type change.
+ * Reinitializes the algorithm for a network type change.
  * MUST be called while holding _stateLock.
  */
 - (void)_reinitializeKeepAliveForWiFi:(BOOL)isWiFi savedInterval:(double)savedInterval {
-    if (_growthAlgorithm) {
-        double minKA = isWiFi ? 900.0 : 600.0;
-        double maxKA = isWiFi ? 3600.0 : 1680.0;
-        double initial = (savedInterval >= minKA && savedInterval <= maxKA) ? savedInterval : minKA;
-        [_growthAlgorithm release];
-        _growthAlgorithm = [[SGAvailability shared] createGrowthAlgorithmWithInterval:initial
-                                                                     minimumInterval:minKA
-                                                                     maximumInterval:maxKA];
-    } else {
-        SGKeepAlive_Initialize(&_keepAliveAlgo, isWiFi, savedInterval);
-    }
+    [_growthAlgorithm release];
+    _growthAlgorithm = [[SGAvailability shared]
+        reinitializeGrowthAlgorithmForWiFi:isWiFi
+                             savedInterval:savedInterval];
 }
 
 #pragma mark - PCPersistentTimer Keepalive (Survives Deep Sleep)

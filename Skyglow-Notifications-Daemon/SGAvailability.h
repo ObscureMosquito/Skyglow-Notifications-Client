@@ -4,33 +4,63 @@
 #import <Foundation/Foundation.h>
 
 /**
- * SGAvailability — Runtime capability detection singleton.
+ * Each entry represents one system capability (private or public) that
+ * is gated by iOS version in SGAvailability.m.
  *
- * Probes once at startup for private framework availability, then
- * provides simple boolean queries and factory methods for the rest
- * of the codebase. No NSClassFromString, dlopen, or version checks
- * should appear anywhere outside this class.
+ * To add a new capability:
+ *   1. Add an entry here (before SGCapabilityCount).
+ *   2. Add one line to kCapabilityTable in SGAvailability.m.
+ *   3. Add factory/wrapper methods in SGAvailability if needed.
+ *
+ * To disable a capability: set its maxVersion in the table to 0
+ *   (effectively below any minVersion).  The builtin fallback — if one
+ *   exists — will activate automatically.
+ */
+typedef NS_ENUM(NSInteger, SGCapability) {
+    SGCapabilityPersistentTimer,
+    SGCapabilityGrowthAlgorithm,
+    SGCapabilityPowerAssertion,
+    SGCapabilityCount  /* sentinel — must be last */
+};
+
+/**
+ * SGAvailability — Centralised runtime capability detection and factory.
+ *
+ * Every private (and select public) API the daemon uses is probed once
+ * at startup, gated by iOS version, and exposed through factory methods
+ * that return a working implementation — either the system class or a
+ * builtin fallback.  Callers never branch on availability; they just
+ * request an object and use it.
+ *
+ * No NSClassFromString, dlopen, or version checks should appear
+ * anywhere outside this class.
  *
  * Usage:
- *   if ([SGAvailability shared].persistentTimerAvailable) {
- *       id timer = [[SGAvailability shared] createPersistentTimerWithInterval:...];
- *   }
+ *   id algo = [[SGAvailability shared]
+ *       createGrowthAlgorithmWithInterval:600 minimumInterval:600 maximumInterval:1680];
+ *   // Always non-nil — private API or builtin fallback.
  */
 @interface SGAvailability : NSObject
 
 + (SGAvailability *)shared;
 
-/** YES if PersistentConnection.framework is loaded and usable (iOS 6+). */
+/** Version-aware capability check — the single source of truth. */
+- (BOOL)isCapabilityAvailable:(SGCapability)cap;
+
+/** Convenience — equivalent to [self isCapabilityAvailable:SGCapabilityPersistentTimer]. */
 @property (nonatomic, readonly) BOOL persistentTimerAvailable;
 
-/** YES if PCMultiStageGrowthAlgorithm is available (iOS 6+). */
+/** Convenience — equivalent to [self isCapabilityAvailable:SGCapabilityGrowthAlgorithm]. */
 @property (nonatomic, readonly) BOOL growthAlgorithmAvailable;
 
-#pragma mark - PCPersistentTimer Factory
+/** Convenience — equivalent to [self isCapabilityAvailable:SGCapabilityPowerAssertion]. */
+@property (nonatomic, readonly) BOOL powerAssertionAvailable;
+
+#pragma mark - PCPersistentTimer
 
 /**
  * Creates and returns a PCPersistentTimer configured for keepalive use.
- * Returns nil if persistentTimerAvailable is NO.
+ * Returns nil if the capability is unavailable (no builtin fallback).
  * Caller owns the returned object (retain count +1).
  */
 - (id)createPersistentTimerWithInterval:(double)interval
@@ -43,16 +73,21 @@
  */
 - (void)schedulePersistentTimer:(id)timer inRunLoop:(NSRunLoop *)runLoop;
 
-#pragma mark - PCMultiStageGrowthAlgorithm Factory
+#pragma mark - Growth Algorithm
 
 /**
- * Creates and returns a PCMultiStageGrowthAlgorithm configured for keepalive use.
- * Returns nil if growthAlgorithmAvailable is NO.
+ * Creates and returns a growth algorithm — always non-nil.
+ *
+ * Returns the system PCMultiStageGrowthAlgorithm when the capability
+ * is available, otherwise a builtin implementation backed by
+ * SGKeepAliveStrategy.  The returned object responds to the same
+ * selectors in both cases; use the wrapper methods below to interact.
+ *
  * Caller owns the returned object (retain count +1).
  */
 - (id)createGrowthAlgorithmWithInterval:(double)interval
-                    minimumInterval:(double)minInterval
-                    maximumInterval:(double)maxInterval;
+                        minimumInterval:(double)minInterval
+                        maximumInterval:(double)maxInterval;
 
 /**
  * Returns the current interval from a growth algorithm instance.
@@ -62,15 +97,16 @@
 
 /**
  * Feeds a success/failure result into a growth algorithm instance.
- * action: 0 = success, 1 = failure.
  */
 - (void)processResult:(BOOL)success forGrowthAlgorithm:(id)algo;
 
 /**
- * Sets min/max on an existing growth algorithm instance.
+ * Reinitialises a growth algorithm for a network-type change.
+ * Releases the old instance and returns a new one.
+ * Caller owns the returned object (retain count +1).
  */
-- (void)setMinimumInterval:(double)min maximumInterval:(double)max
-       forGrowthAlgorithm:(id)algo;
+- (id)reinitializeGrowthAlgorithmForWiFi:(BOOL)isWiFi
+                           savedInterval:(double)savedInterval;
 
 #pragma mark - Power Assertion Management
 
@@ -79,7 +115,7 @@
  * during notification processing. Returns an opaque assertion ID
  * that must be released with releasePowerAssertion:.
  * A dispatch_after auto-releases after timeout seconds as a safety net.
- * Returns 0 on failure.
+ * Returns 0 on failure or if the capability is unavailable.
  */
 - (uint32_t)createTimedPowerAssertionWithName:(NSString *)name
                                       timeout:(NSTimeInterval)timeout;
