@@ -18,6 +18,21 @@ enum {
     SectionTotal    = 2
 };
 
+@interface ProfileCell : UITableViewCell
+@end
+
+@implementation ProfileCell
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+
+    CGRect detailFrame = self.detailTextLabel.frame;
+    detailFrame.origin.y -= 2.0f;   // move detail text upward
+    self.detailTextLabel.frame = detailFrame;
+}
+
+@end
+
 @implementation SNProfileListController {
     NSMutableArray *_profileIndices;   /* e.g. @[@1, @3, @5] — existing profiles */
 }
@@ -82,10 +97,10 @@ enum {
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
 
     if (indexPath.section == SectionProfiles) {
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ProfileCell"];
+        ProfileCell *cell = (ProfileCell *)[tableView dequeueReusableCellWithIdentifier:@"ProfileCell"];
         if (!cell) {
-            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                          reuseIdentifier:@"ProfileCell"];
+            cell = [[ProfileCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                    reuseIdentifier:@"ProfileCell"];
         }
 
         NSInteger idx = [[_profileIndices objectAtIndex:indexPath.row] integerValue];

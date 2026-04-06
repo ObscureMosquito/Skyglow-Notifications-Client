@@ -21,6 +21,60 @@ typedef enum {
     SFPItemTypeSymlinkBroken,
 } SFPItemType;
 
+typedef enum {
+    SFPFileIconEmpty = 0,
+    SFPFileIconFolder,
+
+    SFPFileIcon3GPP,
+    SFPFileIconAAC,
+    SFPFileIconAIFF,
+    SFPFileIconBMP,
+    SFPFileIconBZ2,
+    SFPFileIconC,
+    SFPFileIconCompressed,
+    SFPFileIconConfig,
+    SFPFileIconCPP,
+    SFPFileIconCSS,
+    SFPFileIconDiskImage,
+    SFPFileIconDOC,
+    SFPFileIconFlash,
+    SFPFileIconGIF,
+    SFPFileIconGZ,
+    SFPFileIconH,
+    SFPFileIconHTML,
+    SFPFileIconICO,
+    SFPFileIconImage,
+    SFPFileIconJava,
+    SFPFileIconJPEG,
+    SFPFileIconJS,
+    SFPFileIconKeynote,
+    SFPFileIconLog,
+    SFPFileIconM,
+    SFPFileIconM3U,
+    SFPFileIconM4R,
+    SFPFileIconMP2,
+    SFPFileIconMP3,
+    SFPFileIconMPEG,
+    SFPFileIconNumbers,
+    SFPFileIconPages,
+    SFPFileIconPDF,
+    SFPFileIconPNG,
+    SFPFileIconPPT,
+    SFPFileIconRTF,
+    SFPFileIconSound,
+    SFPFileIconSpreadsheet,
+    SFPFileIconSQLite3,
+    SFPFileIconTar,
+    SFPFileIconTBZ2,
+    SFPFileIconText,
+    SFPFileIconTGZ,
+    SFPFileIconTIFF,
+    SFPFileIconVideo,
+    SFPFileIconWAV,
+    SFPFileIconXIB,
+    SFPFileIconZIP
+} SFPFileIconType;
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * SFPFileItem — internal model object for one filesystem entry
  * ═══════════════════════════════════════════════════════════════════════════ */
@@ -89,6 +143,183 @@ static NSString *SFP_FormatFileSize(unsigned long long bytes) {
     return [NSString stringWithFormat:@"%.1f GB", bytes / (1024.0 * 1024.0 * 1024.0)];
 }
 
+static UIImage *SFP_LoadBundledIconNamed(NSString *filename) {
+    NSBundle *bundle = [NSBundle bundleForClass:[SFPFilePickerViewController class]];
+    NSString *name = [filename stringByDeletingPathExtension];
+    NSString *ext  = [filename pathExtension];
+
+    NSString *path = [bundle pathForResource:[@"assets/" stringByAppendingString:name]
+                                      ofType:ext];
+    UIImage *image = [UIImage imageWithContentsOfFile:path];
+    if (!image && ![filename isEqualToString:@"empty.png"]) {
+        path = [bundle pathForResource:@"assets/empty" ofType:@"png"];
+        image = [UIImage imageWithContentsOfFile:path];
+    }
+    return image;
+}
+
+static SFPFileIconType SFP_IconTypeForFilename(NSString *name, SFPItemType itemType) {
+    if (itemType == SFPItemTypeSymlinkBroken) {
+        return SFPFileIconEmpty;
+    }
+    if (itemType == SFPItemTypeDirectory || itemType == SFPItemTypeSymlinkToDirectory) {
+        return SFPFileIconFolder;
+    }
+
+    NSString *ext = [[name pathExtension] lowercaseString];
+    if (!ext || [ext length] == 0) {
+        return SFPFileIconEmpty;
+    }
+
+    /* Exact matches first */
+    if ([ext isEqualToString:@"3gpp"] || [ext isEqualToString:@"3gp"]) return SFPFileIcon3GPP;
+    if ([ext isEqualToString:@"aac"])  return SFPFileIconAAC;
+    if ([ext isEqualToString:@"aiff"] || [ext isEqualToString:@"aif"]) return SFPFileIconAIFF;
+    if ([ext isEqualToString:@"bmp"])  return SFPFileIconBMP;
+    if ([ext isEqualToString:@"bz2"])  return SFPFileIconBZ2;
+    if ([ext isEqualToString:@"c"])    return SFPFileIconC;
+    if ([ext isEqualToString:@"cfg"] || [ext isEqualToString:@"conf"] ||
+        [ext isEqualToString:@"config"] || [ext isEqualToString:@"plist"] ||
+        [ext isEqualToString:@"ini"])  return SFPFileIconConfig;
+    if ([ext isEqualToString:@"cpp"] || [ext isEqualToString:@"cc"] ||
+        [ext isEqualToString:@"cxx"])  return SFPFileIconCPP;
+    if ([ext isEqualToString:@"css"])  return SFPFileIconCSS;
+    if ([ext isEqualToString:@"dmg"] || [ext isEqualToString:@"img"] ||
+        [ext isEqualToString:@"iso"])  return SFPFileIconDiskImage;
+    if ([ext isEqualToString:@"doc"] || [ext isEqualToString:@"docx"]) return SFPFileIconDOC;
+    if ([ext isEqualToString:@"swf"] || [ext isEqualToString:@"flv"])  return SFPFileIconFlash;
+    if ([ext isEqualToString:@"gif"])  return SFPFileIconGIF;
+    if ([ext isEqualToString:@"gz"])   return SFPFileIconGZ;
+    if ([ext isEqualToString:@"h"])    return SFPFileIconH;
+    if ([ext isEqualToString:@"htm"] || [ext isEqualToString:@"html"]) return SFPFileIconHTML;
+    if ([ext isEqualToString:@"ico"] || [ext isEqualToString:@"icns"]) return SFPFileIconICO;
+    if ([ext isEqualToString:@"java"]) return SFPFileIconJava;
+    if ([ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"]) return SFPFileIconJPEG;
+    if ([ext isEqualToString:@"js"])   return SFPFileIconJS;
+    if ([ext isEqualToString:@"key"] || [ext isEqualToString:@"keynote"]) return SFPFileIconKeynote;
+    if ([ext isEqualToString:@"log"])  return SFPFileIconLog;
+    if ([ext isEqualToString:@"m"])    return SFPFileIconM;
+    if ([ext isEqualToString:@"m3u"])  return SFPFileIconM3U;
+    if ([ext isEqualToString:@"m4r"])  return SFPFileIconM4R;
+    if ([ext isEqualToString:@"mp2"])  return SFPFileIconMP2;
+    if ([ext isEqualToString:@"mp3"])  return SFPFileIconMP3;
+    if ([ext isEqualToString:@"mpeg"] || [ext isEqualToString:@"mpg"]) return SFPFileIconMPEG;
+    if ([ext isEqualToString:@"numbers"]) return SFPFileIconNumbers;
+    if ([ext isEqualToString:@"pages"])   return SFPFileIconPages;
+    if ([ext isEqualToString:@"pdf"])  return SFPFileIconPDF;
+    if ([ext isEqualToString:@"png"])  return SFPFileIconPNG;
+    if ([ext isEqualToString:@"ppt"] || [ext isEqualToString:@"pptx"]) return SFPFileIconPPT;
+    if ([ext isEqualToString:@"rtf"])  return SFPFileIconRTF;
+    if ([ext isEqualToString:@"sqlite"] || [ext isEqualToString:@"sqlite3"] ||
+        [ext isEqualToString:@"db"])   return SFPFileIconSQLite3;
+    if ([ext isEqualToString:@"tar"])  return SFPFileIconTar;
+    if ([ext isEqualToString:@"tbz"] || [ext isEqualToString:@"tbz2"]) return SFPFileIconTBZ2;
+    if ([ext isEqualToString:@"tgz"])  return SFPFileIconTGZ;
+    if ([ext isEqualToString:@"tif"] || [ext isEqualToString:@"tiff"]) return SFPFileIconTIFF;
+    if ([ext isEqualToString:@"wav"])  return SFPFileIconWAV;
+    if ([ext isEqualToString:@"xib"] || [ext isEqualToString:@"nib"])  return SFPFileIconXIB;
+    if ([ext isEqualToString:@"zip"])  return SFPFileIconZIP;
+
+    /* Category matches */
+    if ([ext isEqualToString:@"txt"] || [ext isEqualToString:@"text"] ||
+        [ext isEqualToString:@"md"]  || [ext isEqualToString:@"json"] ||
+        [ext isEqualToString:@"xml"] || [ext isEqualToString:@"strings"] ||
+        [ext isEqualToString:@"yaml"] || [ext isEqualToString:@"yml"] ||
+        [ext isEqualToString:@"sh"]) {
+        return SFPFileIconText;
+    }
+
+    if ([ext isEqualToString:@"xls"] || [ext isEqualToString:@"xlsx"] ||
+        [ext isEqualToString:@"csv"] || [ext isEqualToString:@"tsv"]) {
+        return SFPFileIconSpreadsheet;
+    }
+
+    if ([ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] ||
+        [ext isEqualToString:@"m4v"] || [ext isEqualToString:@"avi"]) {
+        return SFPFileIconVideo;
+    }
+
+    if ([ext isEqualToString:@"mpa"] || [ext isEqualToString:@"caf"] ||
+        [ext isEqualToString:@"ogg"] || [ext isEqualToString:@"wma"]) {
+        return SFPFileIconSound;
+    }
+
+    if ([ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"] ||
+        [ext isEqualToString:@"png"] || [ext isEqualToString:@"gif"] ||
+        [ext isEqualToString:@"bmp"] || [ext isEqualToString:@"tif"] ||
+        [ext isEqualToString:@"tiff"] || [ext isEqualToString:@"ico"]) {
+        return SFPFileIconImage;
+    }
+
+    if ([ext isEqualToString:@"rar"] || [ext isEqualToString:@"7z"] ||
+        [ext isEqualToString:@"zip"] || [ext isEqualToString:@"gz"] ||
+        [ext isEqualToString:@"bz2"] || [ext isEqualToString:@"tar"] ||
+        [ext isEqualToString:@"tgz"] || [ext isEqualToString:@"tbz2"]) {
+        return SFPFileIconCompressed;
+    }
+
+    return SFPFileIconEmpty;
+}
+
+static NSString *SFP_IconFilenameForType(SFPFileIconType type) {
+    switch (type) {
+        case SFPFileIconFolder:      return @"folder.png";
+
+        case SFPFileIcon3GPP:        return @"3gpp.png";
+        case SFPFileIconAAC:         return @"aac.png";
+        case SFPFileIconAIFF:        return @"aiff.png";
+        case SFPFileIconBMP:         return @"bmp.png";
+        case SFPFileIconBZ2:         return @"bz2.png";
+        case SFPFileIconC:           return @"c.png";
+        case SFPFileIconCompressed:  return @"compressed.png";
+        case SFPFileIconConfig:      return @"config.png";
+        case SFPFileIconCPP:         return @"cpp.png";
+        case SFPFileIconCSS:         return @"css.png";
+        case SFPFileIconDiskImage:   return @"diskimage.png";
+        case SFPFileIconDOC:         return @"doc.png";
+        case SFPFileIconFlash:       return @"flash.png";
+        case SFPFileIconGIF:         return @"gif.png";
+        case SFPFileIconGZ:          return @"gz.png";
+        case SFPFileIconH:           return @"h.png";
+        case SFPFileIconHTML:        return @"html.png";
+        case SFPFileIconICO:         return @"ico.png";
+        case SFPFileIconImage:       return @"image.png";
+        case SFPFileIconJava:        return @"java.png";
+        case SFPFileIconJPEG:        return @"jpeg.png";
+        case SFPFileIconJS:          return @"js.png";
+        case SFPFileIconKeynote:     return @"keynote.png";
+        case SFPFileIconLog:         return @"log.png";
+        case SFPFileIconM:           return @"m.png";
+        case SFPFileIconM3U:         return @"m3u.png";
+        case SFPFileIconM4R:         return @"m4r.png";
+        case SFPFileIconMP2:         return @"mp2.png";
+        case SFPFileIconMP3:         return @"mp3.png";
+        case SFPFileIconMPEG:        return @"mpeg.png";
+        case SFPFileIconNumbers:     return @"numbers.png";
+        case SFPFileIconPages:       return @"pages.png";
+        case SFPFileIconPDF:         return @"pdf.png";
+        case SFPFileIconPNG:         return @"png.png";
+        case SFPFileIconPPT:         return @"ppt.png";
+        case SFPFileIconRTF:         return @"rtf.png";
+        case SFPFileIconSound:       return @"sound.png";
+        case SFPFileIconSpreadsheet: return @"spreadsheet.png";
+        case SFPFileIconSQLite3:     return @"sqlite3.png";
+        case SFPFileIconTar:         return @"tar.png";
+        case SFPFileIconTBZ2:        return @"tbz2.png";
+        case SFPFileIconText:        return @"text.png";
+        case SFPFileIconTGZ:         return @"tgz.png";
+        case SFPFileIconTIFF:        return @"tiff.png";
+        case SFPFileIconVideo:       return @"video.png";
+        case SFPFileIconWAV:         return @"wav.png";
+        case SFPFileIconXIB:         return @"xib.png";
+        case SFPFileIconZIP:         return @"zip.png";
+
+        case SFPFileIconEmpty:
+        default:
+            return @"empty.png";
+    }
+}
+
 /*
  * Returns YES if fullPath/name satisfies the filter.
  * Nil filter or all-empty filter → all files match.
@@ -145,10 +376,13 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
 /* ═══════════════════════════════════════════════════════════════════════════
  * SFPFilePickerViewController — private interface
  * ═══════════════════════════════════════════════════════════════════════════ */
-@interface SFPFilePickerViewController () {
+@interface SFPFilePickerViewController () <UISearchBarDelegate> {
     NSString                  *_directoryPath;
-    NSMutableArray            *_items;            /* array of SFPFileItem */
-    id<SFPFilePickerDelegate>  _pickerDelegate;   /* weak — caller owns */
+    NSMutableArray            *_items;
+    NSMutableArray            *_visibleItems;
+    NSString                  *_searchText;
+    UISearchBar               *_searchBar;
+    id<SFPFilePickerDelegate>  _pickerDelegate;
     SFPFilePickerFilter       *_filter;
     BOOL                       _showsHidden;
     BOOL                       _showsCancel;
@@ -174,6 +408,66 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
 
 @synthesize filter = _filter;
 
+- (NSArray *)_displayItems {
+    return (_searchText && [_searchText length] > 0) ? _visibleItems : _items;
+}
+
+- (void)_applySearchFilter {
+    [_visibleItems removeAllObjects];
+
+    NSString *query = [_searchText stringByTrimmingCharactersInSet:
+                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+    if (!query || [query length] == 0) {
+        [self.tableView reloadData];
+        [self _updateEmptyStateView];
+        return;
+    }
+
+    NSString *lowerQuery = [query lowercaseString];
+
+    for (SFPFileItem *item in _items) {
+        NSString *name = item.name ? [item.name lowercaseString] : @"";
+        NSString *target = item.symlinkTarget ? [item.symlinkTarget lowercaseString] : @"";
+
+        if ([name rangeOfString:lowerQuery].location != NSNotFound ||
+            [target rangeOfString:lowerQuery].location != NSNotFound) {
+            [_visibleItems addObject:item];
+        }
+    }
+
+    [self.tableView reloadData];
+    [self _updateEmptyStateView];
+}
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    [_searchText release];
+    _searchText = [searchText copy];
+    [self _applySearchFilter];
+}
+
+- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    [searchBar resignFirstResponder];
+}
+
+- (void)searchBarTextDidBeginEditing:(UISearchBar *)searchBar {
+    [searchBar setShowsCancelButton:YES animated:YES];
+}
+
+- (void)searchBarTextDidEndEditing:(UISearchBar *)searchBar {
+    [searchBar setShowsCancelButton:NO animated:YES];
+}
+
+- (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
+    searchBar.text = @"";
+
+    [_searchText release];
+    _searchText = nil;
+
+    [searchBar resignFirstResponder];
+    [self _applySearchFilter];
+}
+
 /* ── Lifecycle ────────────────────────────────────────────────────────────── */
 
 - (instancetype)initWithPath:(NSString *)path
@@ -181,14 +475,17 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
                     delegate:(id<SFPFilePickerDelegate>)delegate {
     self = [super initWithStyle:UITableViewStylePlain];
     if (self) {
-        _directoryPath  = [(path && path.length > 0 ? path : @"/var/mobile") copy];
-        _filter         = [filter retain];
+        _directoryPath = [(path && path.length > 0 ? path : @"/var/mobile") copy];
+        _filter = [filter retain];
         _pickerDelegate = delegate; /* intentionally weak */
-        _showsHidden    = NO;
-        _showsCancel    = YES;
-        _items          = [[NSMutableArray alloc] init];
+        _showsHidden = NO;
+        _showsCancel = YES;
 
-        /* Title: last component, or "/" for the filesystem root. */
+        _items = [[NSMutableArray alloc] init];
+        _visibleItems = [[NSMutableArray alloc] init];
+        _searchText = nil;
+        _searchBar = nil;
+
         NSString *last = [_directoryPath lastPathComponent];
         self.title = (last.length > 0 && ![last isEqualToString:@"/"]) ? last : @"/";
     }
@@ -206,6 +503,9 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
     [_directoryPath release];
     [_filter release];
     [_items release];
+    [_visibleItems release];
+    [_searchText release];
+    [_searchBar release];
     [super dealloc];
 }
 
@@ -213,9 +513,37 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+
+    _searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 44.0f)];
+    _searchBar.delegate = self;
+    _searchBar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    _searchBar.placeholder = @"Search files";
+    self.tableView.tableHeaderView = _searchBar;
+
     [self _updateNavButtons];
     [self _updateToolbarButtons];
     [self _loadContents];
+}
+
+- (BOOL)_navigationStackContainsAnyFilePicker {
+    UINavigationController *nav = self.navigationController;
+    if (!nav) return NO;
+
+    NSArray *controllers = nav.viewControllers;
+    for (UIViewController *vc in controllers) {
+        if ([vc isKindOfClass:[SFPFilePickerViewController class]]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+- (void)_updateSharedToolbarVisibility {
+    UINavigationController *nav = self.navigationController;
+    if (!nav) return;
+
+    BOOL shouldShow = [self _navigationStackContainsAnyFilePicker];
+    [nav setToolbarHidden:!shouldShow animated:NO];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -224,12 +552,17 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
     NSIndexPath *sel = [self.tableView indexPathForSelectedRow];
     if (sel) [self.tableView deselectRowAtIndexPath:sel animated:animated];
 
-    [self.navigationController setToolbarHidden:NO animated:animated];
+    [self _updateSharedToolbarVisibility];
 }
 
-- (void)viewWillDisappear:(BOOL)animated {
-    [super viewWillDisappear:animated];
-    [self.navigationController setToolbarHidden:YES animated:animated];
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [self _updateSharedToolbarVisibility];
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    [self _updateSharedToolbarVisibility];
 }
 
 /* ── Public properties ────────────────────────────────────────────────────── */
@@ -365,8 +698,7 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
                    withObject:nil
                    afterDelay:0.0];
 
-        [self.tableView reloadData];
-        [self _updateEmptyStateView];
+        [self _applySearchFilter];
         return;
     }
 
@@ -436,8 +768,7 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
     /* Sort: directories first, then alphabetical within each group. */
     [_items sortUsingFunction:SFP_ItemComparator context:NULL];
 
-    [self.tableView reloadData];
-    [self _updateEmptyStateView];
+    [self _applySearchFilter];
 }
 
 /*
@@ -447,7 +778,7 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
 - (void)_updateEmptyStateView {
     if (![self.tableView respondsToSelector:@selector(setBackgroundView:)]) return;
 
-    if (_items.count > 0) {
+    if ([[self _displayItems] count] > 0) {
         self.tableView.backgroundView = nil;
         return;
     }
@@ -459,17 +790,26 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
                       (_filter.allowedExtensions.count > 0 ||
                        _filter.allowedFilenames.count  > 0 ||
                        _filter.allowedPaths.count      > 0));
+    BOOL isSearching = (_searchText && [_searchText length] > 0);
+    NSString *msg = nil;
 
-    NSString *msg = hasFilter ? @"No matching files in this directory."
-                              : @"This directory is empty.";
+    if (isSearching) {
+        msg = @"No matching files.";
+    } else if (hasFilter) {
+        msg = @"No matching files in this directory.";
+    } else {
+        msg = @"This directory is empty.";
+    }
 
     UILabel *label = [[[UILabel alloc] init] autorelease];
     label.text = msg;
     label.textColor = SFP_GrayTextColor();
     label.font = [UIFont systemFontOfSize:15.0f];
     label.numberOfLines = 0;
-    /* NSTextAlignmentCenter == UITextAlignmentCenter == 1 on all iOS versions. */
-    label.textAlignment = (NSTextAlignment)1;
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    label.textAlignment = UITextAlignmentCenter;
+    #pragma clang diagnostic pop
     label.backgroundColor = [UIColor clearColor];
 
     self.tableView.backgroundView = label;
@@ -504,7 +844,7 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
 
 - (NSInteger)tableView:(UITableView *)tableView
  numberOfRowsInSection:(NSInteger)section {
-    return (NSInteger)_items.count;
+    return (NSInteger)[[self _displayItems] count];
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
@@ -533,7 +873,11 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
         }
     }
 
-    SFPFileItem *item = (SFPFileItem *)[_items objectAtIndex:(NSUInteger)indexPath.row];
+    NSArray *displayItems = [self _displayItems];
+    SFPFileItem *item = (SFPFileItem *)[displayItems objectAtIndex:(NSUInteger)indexPath.row];
+    SFPFileIconType iconType = SFP_IconTypeForFilename(item.name, item.type);
+    NSString *iconFilename = SFP_IconFilenameForType(iconType);
+    UIImage *iconImage = SFP_LoadBundledIconNamed(iconFilename);
 
     /* ── Display name ───────────────────────────────────────────────── */
     NSString *displayName = item.name;
@@ -611,7 +955,7 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
     /* ── Apply to cell — handle both iOS 2 and iOS 3+ APIs ──────────── */
     if ([cell respondsToSelector:@selector(textLabel)]) {
         if (isDir) {
-            cell.textLabel.text = [NSString stringWithFormat:@"\xE2\x96\xB6 %@", displayName]; /* ▶ */
+            cell.textLabel.text = [NSString stringWithFormat:@"%@", displayName];
         } else {
             cell.textLabel.text = displayName;
         }
@@ -636,6 +980,9 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
 #pragma clang diagnostic pop
     }
 
+    cell.imageView.image = iconImage;
+    cell.imageView.contentMode = UIViewContentModeCenter;
+
     return cell;
 }
 
@@ -644,7 +991,8 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
 
 - (void)tableView:(UITableView *)tableView
 didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    SFPFileItem *item = (SFPFileItem *)[_items objectAtIndex:(NSUInteger)indexPath.row];
+    NSArray *displayItems = [self _displayItems];
+    SFPFileItem *item = (SFPFileItem *)[displayItems objectAtIndex:(NSUInteger)indexPath.row];
 
     if (item.type == SFPItemTypeDirectory ||
         item.type == SFPItemTypeSymlinkToDirectory) {
@@ -665,12 +1013,12 @@ didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
 
 - (CGFloat)tableView:(UITableView *)tableView
 heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return 48.0f;
+    return 45.0f;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView
 heightForHeaderInSection:(NSInteger)section {
-    return 28.0f;
+    return 26.0f;
 }
 
 - (UIView *)tableView:(UITableView *)tableView
@@ -678,29 +1026,32 @@ viewForHeaderInSection:(NSInteger)section {
     UIView *header = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 28.0f)] autorelease];
 
     /* Slightly translucent so scrolling rows subtly show underneath */
-    header.backgroundColor = [UIColor colorWithWhite:0.96f alpha:0.95f];
+    header.backgroundColor = [UIColor colorWithWhite:0.9f alpha:1.0f];
 
     /* Top white bevel */
-    UIView *topLine = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 1.0f)] autorelease];
-    topLine.backgroundColor = [UIColor whiteColor];
+    UIView *topLine = [[[UIView alloc] initWithFrame:CGRectMake(0, 0.0f, tableView.bounds.size.width, 1.0f)] autorelease];
+    topLine.backgroundColor = [UIColor colorWithWhite:0.65f alpha:1.0f];
     topLine.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [header addSubview:topLine];
 
     /* Bottom dark border (etched look) */
-    UIView *bottomLine = [[[UIView alloc] initWithFrame:CGRectMake(0, 27.0f, tableView.bounds.size.width, 1.0f)] autorelease];
+    UIView *bottomLine = [[[UIView alloc] initWithFrame:CGRectMake(0, 25.0f, tableView.bounds.size.width, 1.0f)] autorelease];
     bottomLine.backgroundColor = [UIColor colorWithWhite:0.65f alpha:1.0f];
     bottomLine.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [header addSubview:bottomLine];
 
     /* Path label */
-    UILabel *label = [[[UILabel alloc] initWithFrame:CGRectMake(12.0f, 0, tableView.bounds.size.width - 24.0f, 28.0f)] autorelease];
+    UILabel *label = [[[UILabel alloc] initWithFrame:CGRectMake(12.0f, 0, tableView.bounds.size.width - 24.0f, 26.0f)] autorelease];
     label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     label.backgroundColor = [UIColor clearColor];
-    label.font = [UIFont boldSystemFontOfSize:14.0f];
+    label.font = [UIFont boldSystemFontOfSize:13.5f];
     label.textColor = [UIColor colorWithRed:0.29f green:0.34f blue:0.42f alpha:1.0f];
     label.shadowColor = [UIColor whiteColor];
     label.shadowOffset = CGSizeMake(0, 1.0f);
-    label.lineBreakMode = (NSLineBreakMode)3;
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    label.lineBreakMode = UILineBreakModeTailTruncation;
+    #pragma clang diagnostic pop
     label.text = _directoryPath;
     [header addSubview:label];
 
