@@ -525,26 +525,6 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
     [self _loadContents];
 }
 
-- (BOOL)_navigationStackContainsAnyFilePicker {
-    UINavigationController *nav = self.navigationController;
-    if (!nav) return NO;
-
-    NSArray *controllers = nav.viewControllers;
-    for (UIViewController *vc in controllers) {
-        if ([vc isKindOfClass:[SFPFilePickerViewController class]]) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
-- (void)_updateSharedToolbarVisibility {
-    UINavigationController *nav = self.navigationController;
-    if (!nav) return;
-
-    BOOL shouldShow = [self _navigationStackContainsAnyFilePicker];
-    [nav setToolbarHidden:!shouldShow animated:NO];
-}
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
@@ -552,17 +532,38 @@ static UIColor *SFP_SymlinkTextColor(void) { return [UIColor colorWithRed:0.38f 
     NSIndexPath *sel = [self.tableView indexPathForSelectedRow];
     if (sel) [self.tableView deselectRowAtIndexPath:sel animated:animated];
 
-    [self _updateSharedToolbarVisibility];
+    /* Show the toolbar if it isn't already visible.  Only animate the
+       first appearance — navigating deeper into directories should not
+       cause the toolbar to re-animate (it's already on screen). */
+    if (self.navigationController.toolbarHidden) {
+        [self.navigationController setToolbarHidden:NO animated:animated];
+    }
 }
 
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-    [self _updateSharedToolbarVisibility];
-}
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
 
-- (void)viewDidDisappear:(BOOL)animated {
-    [super viewDidDisappear:animated];
-    [self _updateSharedToolbarVisibility];
+    UINavigationController *nav = self.navigationController;
+    if (!nav) return;
+
+    /*
+     * Detect whether we are being popped (vs. just covered by a push).
+     * UINavigationController removes the VC from viewControllers immediately
+     * on pop, so if we're not in the array, we're being popped.
+     */
+    if ([nav.viewControllers containsObject:self]) return; /* covered by push — leave toolbar */
+
+    /* We are being popped. Check if any file picker remains in the stack. */
+    BOOL anyPickerRemains = NO;
+    for (UIViewController *vc in nav.viewControllers) {
+        if ([vc isKindOfClass:[SFPFilePickerViewController class]]) {
+            anyPickerRemains = YES;
+            break;
+        }
+    }
+    if (!anyPickerRemains) {
+        [nav setToolbarHidden:YES animated:animated];
+    }
 }
 
 /* ── Public properties ────────────────────────────────────────────────────── */

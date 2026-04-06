@@ -200,12 +200,12 @@ enum {
     }
 
     [_profileIndices removeObjectAtIndex:indexPath.row];
-    [tableView deleteRowsAtIndexPaths:@[indexPath]
-                     withRowAnimation:UITableViewRowAnimationAutomatic];
 
-    /* Refresh the Add section visibility and footer text */
-    [tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, SectionTotal)]
-             withRowAnimation:UITableViewRowAnimationAutomatic];
+    /* Reload the whole table — mixing deleteRows + reloadSections on
+       overlapping sections triggers UITableView internal-consistency
+       assertions.  A plain reloadData is safe and keeps footer text,
+       Add-row visibility, and checkmark state all in sync. */
+    [tableView reloadData];
 }
 
 #pragma mark - Action sheet for non-active profile

@@ -42,7 +42,7 @@
             self->_isEnabled = NO;
         }
 
-        NSNumber *profileNum = mainPrefs[@"activeProfile"];
+        NSNumber *profileNum = mainPrefs ? mainPrefs[@"activeProfile"] : nil;
         NSInteger idx = (profileNum && [profileNum integerValue] >= 1 && [profileNum integerValue] <= 5)
                         ? [profileNum integerValue] : 1;
         self->_activeProfileIndex = idx;
