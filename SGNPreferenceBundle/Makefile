@@ -14,21 +14,16 @@ SGNPreferenceBundle_FILES = \
     SNProfileListController.m \
     SNCustomViewCell.m \
     SNDebugViewController.m \
-    SNDataManager.m \
-    SkyglowFilePicker/SFPFilePicker.m \
-    SkyglowFilePicker/SFPUploadViewController.m \
-    SkyglowFilePicker/HTTP/SFHTTPServer.m
+    SNDataManager.m 
 SGNPreferenceBundle_FRAMEWORKS = UIKit CoreGraphics CFNetwork CoreFoundation QuartzCore
 SGNPreferenceBundle_PRIVATE_FRAMEWORKS = Preferences
 SGNPreferenceBundle_LDFLAGS = \
   $(THEOS_PROJECT_DIR)/openssl/lib/libssl.a \
   $(THEOS_PROJECT_DIR)/openssl/lib/libcrypto.a \
+  SFPFilePicker/lib/SFPFilePicker.a \
   -lsqlite3
 SGNPreferenceBundle_INSTALL_PATH = /Library/PreferenceBundles
 SGNPreferenceBundle_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -I$(THEOS_PROJECT_DIR)/openssl/include
-SkyglowFilePicker/SFPFilePicker.m_CFLAGS = -fno-objc-arc
-SkyglowFilePicker/SFPUploadViewController.m_CFLAGS = -fno-objc-arc
-SkyglowFilePicker/HTTP/SFHTTPServer.m_CFLAGS = -fno-objc-arc
 ADDITIONAL_CFLAGS += -D"API_AVAILABLE(...)= " -D"API_DEPRECATED(...)= " -D"API_UNAVAILABLE(...)= " -D"instancetype=id"
 
 include $(THEOS_MAKE_PATH)/bundle.mk

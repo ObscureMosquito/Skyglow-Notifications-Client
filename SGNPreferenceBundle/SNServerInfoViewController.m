@@ -1,6 +1,6 @@
 #import "SNServerInfoViewController.h"
 #import "SNDataManager.h"
-#import "SkyglowFilePicker/SFPFilePicker.h"
+#import "SFPFilePicker/include/SFPFilePicker.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
