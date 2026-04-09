@@ -1,6 +1,10 @@
 TARGET := iphone:clang:7.0:7.0
 ARCHS = armv7 armv7s arm64
 
+export ADDITIONAL_CFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -fno-builtin -fno-stack-protector
+export ADDITIONAL_OBJCFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -fno-builtin -fno-stack-protector
+export ADDITIONAL_CCFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -fno-builtin -fno-stack-protector
+
 include $(THEOS)/makefiles/common.mk
 
 THEOS_DEVICE_IP = iPod

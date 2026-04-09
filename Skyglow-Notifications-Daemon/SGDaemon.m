@@ -811,6 +811,7 @@ static BOOL isValidPort(NSString *port) {
 
 - (void)handleConfigurationReloadRequest {
     [[SGConfiguration sharedConfiguration] reloadFromDisk];
+    [[SGDatabaseManager sharedManager] resetAllTokensToRequireUpload];
     [self reconcileTokensWithPlist];
     [self handleEvent:SGEventConfigReloaded payload:nil];
 }
