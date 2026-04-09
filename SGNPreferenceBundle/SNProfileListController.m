@@ -118,7 +118,6 @@ enum {
         return cell;
     }
 
-    /* SectionAdd */
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"AddCell"];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
@@ -156,11 +155,9 @@ enum {
     BOOL isActive = ([dm activeProfileIndex] == idx);
 
     if (isActive) {
-        /* Already active — go straight to detail */
         SNServerInfoViewController *vc = [[SNServerInfoViewController alloc] initWithProfileIndex:idx];
         [self.navigationController pushViewController:vc animated:YES];
     } else {
-        /* Non-active profile — show action sheet with Set Active + View */
         [self _showActionSheetForProfileIndex:idx];
     }
 }
@@ -179,7 +176,6 @@ enum {
 
     [dm deleteProfileAtIndex:idx];
 
-    /* If we deleted the active profile, pick the next available one */
     if ([dm activeProfileIndex] == idx) {
         NSInteger nextActive = 0;
         for (NSInteger i = 1; i <= 5; i++) {
@@ -191,7 +187,6 @@ enum {
         if (nextActive > 0) {
             [dm setActiveProfileIndex:nextActive];
         } else {
-            /* No profiles left — disable daemon */
             [dm setMainPrefValue:@NO forKey:@"enabled"];
         }
         SNPostReloadConfig();
@@ -252,7 +247,6 @@ enum {
         void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
         present(self, presentSel, sheet, YES, nil);
     } else {
-        /* iOS 6 — UIActionSheet */
         UIActionSheet *as = [[UIActionSheet alloc]
                              initWithTitle:[NSString stringWithFormat:@"Profile %ld", (long)idx]
                                   delegate:(id<UIActionSheetDelegate>)self
@@ -264,16 +258,13 @@ enum {
     }
 }
 
-/* UIActionSheetDelegate (iOS 6) */
 - (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
     NSInteger idx = actionSheet.tag;
     if (buttonIndex == 0) {
-        /* Set Active */
         [[SNDataManager shared] setActiveProfileIndex:idx];
         SNPostReloadConfig();
         [self.tableView reloadData];
     } else if (buttonIndex == 1) {
-        /* View Details */
         SNServerInfoViewController *vc =
             [[SNServerInfoViewController alloc] initWithProfileIndex:idx];
         [self.navigationController pushViewController:vc animated:YES];

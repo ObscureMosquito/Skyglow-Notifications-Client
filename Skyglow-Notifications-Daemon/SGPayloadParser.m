@@ -7,13 +7,13 @@ NSDictionary *SG_PayloadParseBinaryData(const uint8_t *buffer, uint32_t length) 
     uint32_t offset = 0;
 
     while (offset < length) {
-        if ((uint64_t)offset + 3 > length) return nil; // Header truncated
+        if ((uint64_t)offset + 3 > length) return nil;
 
         uint8_t type = buffer[offset];
         uint16_t valLen = (buffer[offset + 1] << 8) | buffer[offset + 2];
         offset += 3;
 
-        if ((uint64_t)offset + valLen > length) return nil; // Value out of bounds
+        if ((uint64_t)offset + valLen > length) return nil;
 
         if (valLen > 0) {
             if (type == SG_TLV_TYPE_TITLE || type == SG_TLV_TYPE_BODY || type == SG_TLV_TYPE_SOUND) {

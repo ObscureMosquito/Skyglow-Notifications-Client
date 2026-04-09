@@ -59,7 +59,6 @@
     memcpy(ptr, [addrData bytes], MIN([addrData length], (NSUInteger)16));
     memcpy(ptr + 16, K, 16);
 
-    // Store with isUploaded=NO — server upload happens async via uploadTokenIfNeededForBundleIdentifier:
     [[SGDatabaseManager sharedManager] storeDeviceTokenData:routingKey
                                                    e2eeKey:e2eeKey
                                                   bundleID:bundleIdentifier

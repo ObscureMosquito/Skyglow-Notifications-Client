@@ -74,7 +74,6 @@ static void DNSSD_API query_callback(DNSServiceRef sdRef, DNSServiceFlags flags,
     NSMutableDictionary *results = [NSMutableDictionary dictionary];
     DNSServiceRef sdRef = NULL;
     
-    // Pass the dictionary directly as the context
     if (DNSServiceQueryRecord(&sdRef, 0, 0, [dnsName UTF8String], kDNSServiceType_TXT, kDNSServiceClass_IN, query_callback, results) != kDNSServiceErr_NoError) {
         return nil;
     }
@@ -90,15 +89,14 @@ static void DNSSD_API query_callback(DNSServiceRef sdRef, DNSServiceFlags flags,
     
     while (!done && [[NSDate date] compare:timeoutDate] == NSOrderedAscending) {
         fd_set readfds; FD_ZERO(&readfds); FD_SET(dns_fd, &readfds);
-        struct timeval tv = {1, 0}; // 1 second intervals
+        struct timeval tv = {1, 0};
         
         int sel = select(dns_fd + 1, &readfds, NULL, NULL, &tv);
         if (sel > 0 && FD_ISSET(dns_fd, &readfds)) {
             DNSServiceProcessResult(sdRef);
-            // If the callback populated results, we are done
             if (results.count > 0) done = YES; 
         } else if (sel < 0 && errno != EINTR) {
-            break; // Socket error
+            break;
         }
     }
     

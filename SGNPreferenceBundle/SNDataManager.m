@@ -107,7 +107,6 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
     SGStatusPayload empty;
     memset(&empty, 0, sizeof(empty));
 
-    /* If the socket file doesn't exist, the daemon is not running. */
     if (access(SGPocketPath(), F_OK) != 0) {
         empty.state = SGStateDisabled;
         return empty;
@@ -182,7 +181,6 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         if (!self.isWatching || self.watchGeneration != gen) return;
 
-        /* --- Open socket --- */
         int fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd < 0) {
             [self _scheduleConnectionAttemptForGeneration:gen delay:1.0];
@@ -198,7 +196,6 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
         struct timeval connectTv = {1, 0};
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &connectTv, sizeof(connectTv));
 
-        /* --- Connect --- */
         if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
             close(fd);
             self.watchSocketFD = -1;
@@ -217,7 +214,6 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
             return;
         }
 
-        /* --- Write watch-mode byte --- */
         uint8_t mode = 0x57;
         if (write(fd, &mode, 1) != 1) {
             close(fd);
@@ -271,7 +267,6 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
         close(fd);
         self.watchSocketFD = -1;
 
-        /* Brief reconnect pause — replaced usleep(500000) with dispatch_after */
         [self _scheduleConnectionAttemptForGeneration:gen delay:0.5];
     });
 }
@@ -532,7 +527,6 @@ static sqlite3 *openDBReadOnly(void) {
     NSString *profilePath = SGProfilePathForIndex(index);
     NSDictionary *profile = [NSDictionary dictionaryWithContentsOfFile:profilePath];
 
-    /* Remove the profile-specific private key file */
     NSString *privKeyPath = [profile objectForKey:@"privateKey"];
     if (privKeyPath) {
         [[NSFileManager defaultManager] removeItemAtPath:SGPath(privKeyPath) error:nil];

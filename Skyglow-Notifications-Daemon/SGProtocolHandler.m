@@ -227,7 +227,7 @@ static uint8_t *SG_SignPSS(RSA *rsa, const uint8_t *d1, size_t l1, const uint8_t
     if (!sig) { free(em); return NULL; }
 
     int sigLen = RSA_private_encrypt(size, em, sig, rsa, RSA_NO_PADDING);
-    memset(em, 0, size); // Zero padding buffer
+    memset(em, 0, size);
     free(em);
 
     if (sigLen <= 0) {
@@ -863,7 +863,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             break;
         }
         case SGP_S_TIME_SYNC: {
-            // len == 8 guaranteed by bounds check.
             int64_t serverTime = SG_DecodeBE64(raw);
             int64_t localTime  = (int64_t)time(NULL);
             int64_t offset     = serverTime - localTime;

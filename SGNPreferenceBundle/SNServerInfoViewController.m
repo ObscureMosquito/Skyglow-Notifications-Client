@@ -32,7 +32,7 @@ static const NSInteger kAlertTagUnregister  = 2;
 @interface SNServerInfoViewController () <UIAlertViewDelegate, UITextFieldDelegate, SFPFilePickerDelegate>
 
 @property (nonatomic, strong) NSString    *pendingServerAddress;
-@property (nonatomic, strong) NSString    *pendingPEMPath;       /* set when file chosen, cleared after import */
+@property (nonatomic, strong) NSString    *pendingPEMPath;
 @property (nonatomic, weak)   UITextField *serverAddressField;
 @property (nonatomic, weak)   UITextField *registeredAddressField;
 
@@ -59,9 +59,6 @@ static const NSInteger kAlertTagUnregister  = 2;
     [self.tableView reloadData];
 }
 
-/* Builds and sets (or clears) tableView.tableHeaderView based on registration
- * state. The unregistered header mimics the iOS 6 Settings first-run aesthetic:
- * centred icon, bold app name, and a brief instruction line beneath it. */
 - (void)_updateTableHeaderView {
     if (![self isRegistered]) {
         CGFloat w = self.tableView.bounds.size.width;
@@ -162,7 +159,7 @@ static const NSInteger kAlertTagUnregister  = 2;
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (![self isRegistered]) return 1;
     switch (section) {
-        case SectionServer:  return 3; /* Domain (editable), Resolved IP, Port */
+        case SectionServer:  return 3;
         case SectionDevice:  return 1;
         case SectionActions: return 1;
         default: return 0;
@@ -227,7 +224,6 @@ static const NSInteger kAlertTagUnregister  = 2;
             return cell;
         }
 
-        /* WizardSectionCert */
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"CertCell"];
         if (!cell) {
             cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
@@ -238,7 +234,6 @@ static const NSInteger kAlertTagUnregister  = 2;
         cell.textLabel.textColor  = canSelect
             ? [UIColor colorWithRed:0.05f green:0.42f blue:0.86f alpha:1.0f]
             : [UIColor grayColor];
-        //cell.detailTextLabel.text = @"Choose .pem file";
         cell.detailTextLabel.textColor = [UIColor grayColor];
         cell.accessoryType  = canSelect ? UITableViewCellAccessoryDisclosureIndicator
                                         : UITableViewCellAccessoryNone;
@@ -427,7 +422,6 @@ static const NSInteger kAlertTagUnregister  = 2;
 
         SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
         void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
-        /* Present on the picker (topmost VC), not self (buried in nav stack). */
         present(picker, presentSel, alert, YES, nil);
     } else {
         UIAlertView *av = [[UIAlertView alloc]
@@ -441,11 +435,6 @@ static const NSInteger kAlertTagUnregister  = 2;
     }
 }
 
-/*
- * Performs the actual file import. Called after user confirms.
- * If import succeeds: pops all file picker levels back to self, no reload posted.
- * If import fails: shows error (still on file picker — user can pick again).
- */
 - (void)_confirmImportFromPath:(NSString *)path serverAddress:(NSString *)serverAddress {
     BOOL success = [[SNDataManager shared] importProfileFromPEMAtPath:path
                                                         serverAddress:serverAddress
@@ -463,7 +452,7 @@ static const NSInteger kAlertTagUnregister  = 2;
                                 delegate:nil
                        cancelButtonTitle:@"OK"
                        otherButtonTitles:nil];
-        [av show]; /* Stay on file picker — user can try another file. */
+        [av show];
     }
 }
 
@@ -482,7 +471,6 @@ static const NSInteger kAlertTagUnregister  = 2;
 
     [dm unregisterProfileAtIndex:self.profileIndex];
 
-    /* If we just deleted the active profile, pick the next available one. */
     if ([dm activeProfileIndex] == self.profileIndex) {
         NSInteger nextActive = 0;
         for (NSInteger i = 1; i <= 5; i++) {
@@ -494,7 +482,6 @@ static const NSInteger kAlertTagUnregister  = 2;
         if (nextActive > 0) {
             [dm setActiveProfileIndex:nextActive];
         } else {
-            /* No profiles left — disable daemon. */
             [dm setMainPrefValue:@NO forKey:@"enabled"];
             CFPreferencesSetAppValue(CFSTR("enabled"),
                                      (__bridge CFPropertyListRef)@NO,
@@ -550,14 +537,14 @@ static const NSInteger kAlertTagUnregister  = 2;
 
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
     if (alertView.tag == kAlertTagPEMConfirm) {
-        if (buttonIndex == 1) { /* "Import" */
+        if (buttonIndex == 1) {
             [self _confirmImportFromPath:self.pendingPEMPath
                            serverAddress:self.pendingServerAddress];
         } else {
             self.pendingPEMPath = nil;
         }
     } else if (alertView.tag == kAlertTagUnregister) {
-        if (buttonIndex == 1) { /* "Unregister" */
+        if (buttonIndex == 1) {
             [self _performUnregister];
         }
     }

@@ -119,15 +119,15 @@ static BOOL isValidPort(NSString *port) {
 @implementation SGDaemon {
     NSLock                *_stateLock;
     int                    _consecutiveFailures;
-    id                     _growthAlgorithm;       // Always non-nil — private or builtin fallback
+    id                     _growthAlgorithm;
     NSMutableOrderedSet   *_seenMessageIDs;
     uint32_t               _fsmGeneration;
     BOOL                   _workerActive;
     dispatch_queue_t       _entryActionQueue;
     SGMachServer          *_machServer;
-    id                     _keepAliveTimer;        // PCPersistentTimer, nil on iOS 5
+    id                     _keepAliveTimer;
     BOOL                   _isWiFi;
-    char                   _lastErrorDetail[128];  // Human-readable error for status broadcast
+    char                   _lastErrorDetail[128];
 }
 
 - (id)init {
@@ -153,14 +153,12 @@ static BOOL isValidPort(NSString *port) {
 }
 
 - (void)start {
-    // Start the Mach bootstrap service first so SpringBoard can query tokens
-    // immediately — before any network activity or reconciliation.
     [_machServer startMachBootstrapServices];
 
     [self reconcileTokensWithPlist];
     
     [_stateLock lock];
-    _isWiFi = YES; // Default assumption until reachability callback fires
+    _isWiFi = YES;
     double savedInterval = [[SGDatabaseManager sharedManager] loadKeepAliveIntervalForWiFi:YES];
     double initialInterval = (savedInterval > 0.0) ? savedInterval : 600.0;
 
@@ -413,7 +411,6 @@ static BOOL isValidPort(NSString *port) {
     NSString *currentIPStr = [[SGConfiguration sharedConfiguration] serverIPAddress];
     const char *resolvedIP = ip ? ip : (currentIPStr ? [currentIPStr UTF8String] : NULL);
 
-    /* Clear error detail for non-error/non-backoff states */
     if (newState == SGStateConnected || newState == SGStateResolvingDNS ||
         newState == SGStateConnecting || newState == SGStateAuthenticating ||
         newState == SGStateRegistering) {
@@ -431,13 +428,11 @@ static BOOL isValidPort(NSString *port) {
         [self->_stateLock unlock];
         if (isStale) return;
 
-        // Invalidate the keepalive timer on every transition.
-        // Only SGStateConnected reschedules it.
         [self _invalidateKeepAliveTimer];
 
         switch (newState) {
             case SGStateResolvingDNS:
-                SGP_AbortConnection(); /* Tear down any previous connection (idempotent) */
+                SGP_AbortConnection();
                 [self performDNSResolution];
                 break;
             case SGStateConnecting:
@@ -469,7 +464,7 @@ static BOOL isValidPort(NSString *port) {
                 [self scheduleTimerForEvent:SGEventBackoffTimerFired delay:backoff generation:capturedGen];
                 break;
             case SGStateIdleCircuitOpen:
-                SGP_AbortConnection();  // Clean up, then wait for NetworkUp
+                SGP_AbortConnection();
                 break;
             case SGStateDisabled:
             case SGStateIdleNoNetwork:
@@ -827,7 +822,6 @@ static BOOL isValidPort(NSString *port) {
             @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile%ld.plist", (long)profileIdx]);
         NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePath] ?: [NSMutableDictionary dictionary];
 
-        /* Remove the profile-specific private key file */
         NSString *privKeyRelPath = profile[@"privateKey"];
         if (privKeyRelPath) {
             [[NSFileManager defaultManager] removeItemAtPath:SGPath(privKeyRelPath) error:nil];

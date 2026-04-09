@@ -107,12 +107,10 @@
     self.currentErrorDetail = errDetail;
     self.currentRecoverySuggestion = [[SNDataManager shared] recoverySuggestionForState:payload.state];
 
-    /* Append a hint line when there's detail to show */
     if (errDetail.length > 0) {
         labelText = [NSString stringWithFormat:@"%@\n%@", labelText, errDetail];
     }
 
-    /* Show active profile index when connected */
     if (payload.state == SGStateConnected && payload.activeProfileIndex > 0) {
         labelText = [NSString stringWithFormat:@"%@ (Profile %u)", labelText, payload.activeProfileIndex];
     }

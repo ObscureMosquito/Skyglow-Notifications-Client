@@ -11,8 +11,6 @@ static NSString *const kSkyglowID       = @"SkyglowNotificationsID";
 static NSString *const kSGNBundleObjKey = @"sgn_bundle_obj";
 static NSString *const kSGNPlistNameKey = @"sgn_plist_name";
 
-/* ── Custom controller used by PreferenceLoader ──────────────────────────── */
-
 @interface SGNCustomListController : PSListController
 @end
 
@@ -37,8 +35,6 @@ static NSString *const kSGNPlistNameKey = @"sgn_plist_name";
 }
 
 @end
-
-/* ── Shared helpers ──────────────────────────────────────────────────────── */
 
 static NSBundle *_sgLoadBundle(void) {
     static NSBundle *bundle = nil;
@@ -80,17 +76,6 @@ static PSSpecifier *_sgBuildSkyglowSpecifier(void) {
     return spec;
 }
 
-/* ── Notification-controller hook (installed at runtime) ─────────────────
- *
- * When PrefsListController loads, we discover the detail controller class
- * for the Notifications link cell and hook its -specifiers to inject
- * Skyglow at the top of the Notifications pane.
- *
- * If discovery fails for any reason, the fallback path in
- * PrefsListController injects Skyglow next to Notifications in the main
- * list (the old behavior).
- * ──────────────────────────────────────────────────────────────────────── */
-
 static IMP  _sgOrigNotifSpecifiers = NULL;
 static BOOL _sgNotifHookInstalled  = NO;
 
@@ -100,7 +85,6 @@ static NSMutableArray * _sgNotifSpecifiersHook(id self, SEL _cmd) {
     if (!specifiers) return specifiers;
 
     @try {
-        /* Already injected? */
         for (PSSpecifier *s in specifiers) {
             if ([[s identifier] isEqualToString:kSkyglowID]) return specifiers;
         }
@@ -125,7 +109,6 @@ static NSMutableArray * _sgNotifSpecifiersHook(id self, SEL _cmd) {
             }
         }
 
-        /* Fallback: after the first group header. */
         if (insertIdx == NSNotFound) {
             if (specifiers.count > 0 &&
                 [(PSSpecifier *)specifiers[0] cellType] == 0 /* PSGroupCell */) {
@@ -143,15 +126,10 @@ static NSMutableArray * _sgNotifSpecifiersHook(id self, SEL _cmd) {
     return specifiers;
 }
 
-/*
- * Called once from PrefsListController.specifiers to discover the class
- * that manages the Notifications pane and hook its -specifiers method.
- */
 static void _sgTryHookNotifController(NSMutableArray *specifiers) {
     if (_sgNotifHookInstalled) return;
 
     @try {
-        /* 1. Find the NOTIFICATIONS section marker. */
         NSUInteger notifIdx = NSNotFound;
         for (NSUInteger i = 0; i < specifiers.count; i++) {
             NSString *ident = [(PSSpecifier *)specifiers[i] identifier];
@@ -163,11 +141,6 @@ static void _sgTryHookNotifController(NSMutableArray *specifiers) {
         }
         if (notifIdx == NSNotFound) return;
 
-        /*
-         * 2. Walk forward from the marker to find the first specifier
-         *    that has a detail controller class — that's the Notifications
-         *    link cell.
-         */
         Class detailCls = Nil;
         for (NSUInteger j = notifIdx; j < specifiers.count && j < notifIdx + 3; j++) {
             PSSpecifier *spec = (PSSpecifier *)specifiers[j];
@@ -178,10 +151,8 @@ static void _sgTryHookNotifController(NSMutableArray *specifiers) {
         }
         if (!detailCls) return;
 
-        /* 3. Verify the class has a -specifiers method we can hook. */
         if (!class_getInstanceMethod(detailCls, @selector(specifiers))) return;
 
-        /* 4. Hook it. MSHookMessageEx correctly handles inherited methods. */
         MSHookMessageEx(detailCls, @selector(specifiers),
                         (IMP)_sgNotifSpecifiersHook, &_sgOrigNotifSpecifiers);
 
@@ -193,26 +164,16 @@ static void _sgTryHookNotifController(NSMutableArray *specifiers) {
     }
 }
 
-/* ── PrefsListController hook ────────────────────────────────────────────
- *
- * Primary purpose: discover and hook the Notifications controller.
- * Fallback: if the hook fails, inject Skyglow into the main list
- * right after the NOTIFICATIONS section (the old behavior).
- * ──────────────────────────────────────────────────────────────────────── */
-
 %hook PrefsListController
 
 - (NSMutableArray *)specifiers {
     NSMutableArray *specifiers = %orig;
     if (!specifiers) return specifiers;
 
-    /* Try to hook the Notifications controller (one-time, idempotent). */
     _sgTryHookNotifController(specifiers);
 
-    /* If the hook succeeded, Skyglow appears inside Notifications — done. */
     if (_sgNotifHookInstalled) return specifiers;
 
-    /* ── Fallback: inject into main list after NOTIFICATIONS ────────── */
     for (PSSpecifier *spec in specifiers) {
         if ([[spec identifier] isEqualToString:kSkyglowID]) return specifiers;
     }

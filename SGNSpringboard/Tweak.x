@@ -1,18 +1,3 @@
-/*
- * Tweak.x — Skyglow Notifications SpringBoard Hook
- *
- * 1. Run a Mach server to receive push messages from the daemon.
- * 2. Intercept remote-notification registration to route through Skyglow.
- * 3. Send uninstall feedback to the daemon when apps are removed.
- *
- * iOS Version Support:
- *   Notification Delivery: iOS 3–9 (versioned paths)
- *   Registration Hook:     iOS 3–8 (SBRemoteNotificationServer)
- *                          iOS 9   (UNNotificationRegistrarConnectionListener)
- *   Uninstall Hook:        iOS 3–7 (SBApplicationUninstallationOperation)
- *                          iOS 8–9 (SBApplicationController -uninstallApplication:)
- */
-
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <mach/mach.h>
@@ -183,10 +168,6 @@ static void SendFeedbackToDaemon(NSString *bundleId, NSString *reason) {
     mach_port_deallocate(mach_task_self(), daemonPort);
 }
 
-/**
- * Shared token delivery logic: requests a token from the daemon and delivers
- * it back to the app via its remoteApplication proxy.
- */
 static void DeliverSkyglowToken(NSString *bundleId) {
     NSString *safeBundleId = [bundleId copy];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -385,23 +366,16 @@ static BOOL StartPushReceiver(void) {
 
 #pragma mark - Token Registration
 
-// Forward declaration — SGN_InstallTokenGuard is defined in the Token Guard section below
 static void SGN_InstallTokenGuard(void);
 
-// Complete a push registration entirely within SpringBoard, delivering `token`
-// to the app without involving APNs at all. The app receives the token via its
-// normal -didRegisterForRemoteNotificationsWithDeviceToken: callback.
 static void CompleteRegistrationWithSkyglowToken(id application, id environment, int notificationTypes, NSData *token) {
     NSString *bundleId = [application bundleIdentifier];
     if (!bundleId.length || !token) return;
 
-    // Install the token guard now — SpringBoard is fully loaded at this point,
-    // so all private classes are registered and objc_getClassList will find them.
     SGN_InstallTokenGuard();
 
     SBRemoteNotificationServer *server = [%c(SBRemoteNotificationServer) sharedInstance];
 
-    // Get or create the SBRemoteNotificationClient
     NSMutableDictionary *clientsDict = [server valueForKey:@"_bundleIdentifiersToClients"];
     SBRemoteNotificationClient *client = clientsDict[bundleId];
     BOOL needsPersist = NO;
@@ -420,7 +394,6 @@ static void CompleteRegistrationWithSkyglowToken(id application, id environment,
         needsPersist = YES;
     }
 
-    // Show the iOS permission alert (badges/sounds/alerts) if not yet presented
     int settingsPresentedTypes = [client settingsPresentedTypes];
     if (notificationTypes & ~settingsPresentedTypes & 0xF) {
         int alertTypes = (notificationTypes & 0x8) ? 0xF : 0x7;
@@ -444,7 +417,6 @@ static void CompleteRegistrationWithSkyglowToken(id application, id environment,
 
     [client setLastKnownDeviceToken:token];
 
-    // Deliver token to app — triggers -didRegisterForRemoteNotificationsWithDeviceToken:
     if ([application respondsToSelector:@selector(remoteApplication)]) {
         SBRemoteApplication *remoteApp = [application remoteApplication];
         if ([remoteApp respondsToSelector:@selector(remoteNotificationRegistrationSucceededWithDeviceToken:)]) {
@@ -474,7 +446,6 @@ static BOOL sPassThrough      = NO;
 
 - (void)alertView:(id)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
     if (buttonIndex == 1) {
-        // ── "Use Skyglow" ──────────────────────────────────────────────
         NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath] mutableCopy] ?: [NSMutableDictionary dictionary];
         NSMutableDictionary *appStatus = [[prefs objectForKey:@"appStatus"] mutableCopy] ?: [NSMutableDictionary dictionary];
         [appStatus setObject:@YES forKey:sPendingBundleId];
@@ -484,17 +455,14 @@ static BOOL sPassThrough      = NO;
         [prefs release];
 
         if (sPendingIsModern) {
-            // iOS 9+: token delivery is handled by the result block path
             DeliverSkyglowToken(sPendingBundleId);
         } else {
-            // iOS 6-8: complete registration entirely ourselves, no APNs involved
             NSData *token = RequestTokenFromDaemon(sPendingBundleId);
             if (token) {
                 CompleteRegistrationWithSkyglowToken(sPendingApp, sPendingEnv, sPendingTypes, token);
             } else {
                 NSLog(@"[SGN] Alert: failed to get token for %@", sPendingBundleId);
                 ShowTokenFailureAlert(sPendingBundleId);
-                // Undo the plist write so the alert re-appears next launch
                 NSMutableDictionary *revertPrefs = [[NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath] mutableCopy] ?: [NSMutableDictionary dictionary];
                 NSMutableDictionary *revertStatus = [[revertPrefs objectForKey:@"appStatus"] mutableCopy] ?: [NSMutableDictionary dictionary];
                 [revertStatus removeObjectForKey:sPendingBundleId];
@@ -505,8 +473,6 @@ static BOOL sPassThrough      = NO;
             }
         }
     } else {
-        // ── "Use Apple Push" ───────────────────────────────────────────
-        // Remove key so alert re-appears next launch (don't permanently suppress)
         NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:kPrefsPlistPath] mutableCopy] ?: [NSMutableDictionary dictionary];
         NSMutableDictionary *appStatus = [[prefs objectForKey:@"appStatus"] mutableCopy] ?: [NSMutableDictionary dictionary];
         [appStatus removeObjectForKey:sPendingBundleId];
@@ -569,25 +535,20 @@ static void ShowRegistrationChoiceAlert(NSString *bundleId) {
 
     if (existing) {
         if ([existing boolValue]) {
-            // Known Skyglow app — complete registration ourselves, never touch APNs
             NSData *token = RequestTokenFromDaemon(bundleId);
             if (token) {
                 NSLog(@"[SGN] Classic hook: completing Skyglow registration for %@", bundleId);
                 CompleteRegistrationWithSkyglowToken(application, environment, notificationTypes, token);
                 return 1;
             }
-            // Token fetch failed — log and deliver nothing. App won't get a token
-            // this launch; it will retry on next launch via the hook.
             NSLog(@"[SGN] Classic hook: token fetch failed for %@, delivering nothing", bundleId);
             return 0;
         } else {
-            // Opted for APNs
             NSLog(@"[SGN] Classic hook: APNs pass-through for %@", bundleId);
             return %orig;
         }
     }
 
-    // First time — show choice alert, suppress APNs entirely
     NSLog(@"[SGN] Classic hook: showing choice alert for %@", bundleId);
     [sPendingServer release];   sPendingServer = [self retain];
     [sPendingApp release];      sPendingApp = [application retain];
@@ -707,7 +668,6 @@ static NSString *SGN_BundleIdForRemoteAppProxy(id proxy) {
     return nil;
 }
 
-// Original IMP saved by MSHookMessageEx
 static void (*SGN_Original_TokenDelivery)(id, SEL, NSData *) = NULL;
 
 static void SGN_Hook_TokenDelivery(id self, SEL _cmd, NSData *token) {
@@ -743,21 +703,18 @@ static void SGN_InstallTokenGuard(void) {
     classCount = objc_getClassList(classes, classCount);
 
     for (int i = 0; i < classCount; i++) {
-        // Only look at classes that directly implement this method (not inherited)
         Method m = class_getInstanceMethod(classes[i], sel);
         if (!m) continue;
-        // Verify it's defined on this class, not a superclass
         if (class_getInstanceMethod(class_getSuperclass(classes[i]), sel) == m) continue;
 
         NSLog(@"[SGN] TokenGuard: hooking %s for token delivery interception",
               class_getName(classes[i]));
         MSHookMessageEx(classes[i], sel, (IMP)SGN_Hook_TokenDelivery,
                         (IMP *)&SGN_Original_TokenDelivery);
-        // Only hook the first matching class — there should only be one
         break;
     }
     free(classes);
-    }); // dispatch_once
+    });
 }
 
 #pragma mark - Constructor
