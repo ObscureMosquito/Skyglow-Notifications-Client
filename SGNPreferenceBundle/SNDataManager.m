@@ -226,7 +226,6 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
             return;
         }
 
-        /* --- Read loop: blocks on I/O, no idle sleep --- */
         struct timeval readTv = {5, 0};
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &readTv, sizeof(readTv));
 
@@ -449,7 +448,6 @@ static sqlite3 *openDBReadOnly(void) {
 
     NSFileManager *fm = [NSFileManager defaultManager];
 
-    /* Destination directory — create if needed. */
     NSString *destDir = SGPath(@"/var/mobile/Library/SkyglowNotifications");
     if (![fm fileExistsAtPath:destDir]) {
         NSError *mkErr = nil;
@@ -461,8 +459,6 @@ static sqlite3 *openDBReadOnly(void) {
         }
     }
 
-    /* Copy the PEM to our storage directory, replacing any existing file.
-     * The certificate is shared across profiles — only one copy. */
     NSString *destPath = [destDir stringByAppendingPathComponent:@"server.pem"];
     if ([fm fileExistsAtPath:destPath]) {
         [fm removeItemAtPath:destPath error:nil];
@@ -472,7 +468,6 @@ static sqlite3 *openDBReadOnly(void) {
         return NO;
     }
 
-    /* Sanity check: the file must be readable PEM content. */
     NSError *readErr = nil;
     NSString *pemString = [NSString stringWithContentsOfFile:destPath
                                                     encoding:NSUTF8StringEncoding
@@ -483,12 +478,6 @@ static sqlite3 *openDBReadOnly(void) {
         return NO;
     }
 
-    /* The daemon stores/reads server_pub_key as a FILE PATH (no /var/jb prefix).
-     * It applies SGPath() itself at load time. Do NOT store PEM content.
-     *
-     * Do NOT write device_address or privateKey — the daemon generates both
-     * during first-time registration (protocolDidCompleteRegistrationWithAddress:).
-     */
     NSString *storedPath = @"/var/mobile/Library/SkyglowNotifications/server.pem";
 
     NSMutableDictionary *profile = [NSMutableDictionary dictionary];

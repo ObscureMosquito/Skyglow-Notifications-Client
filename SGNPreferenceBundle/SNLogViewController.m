@@ -47,9 +47,6 @@
 
     self.lastKnownState = (SGState)-1;
 
-    /* Start watching here so status updates even when viewWillAppear is never
-     * called (SNCustomTableViewCell embeds this VC via addSubview: without
-     * addChildViewController:, so UIKit does not forward lifecycle events). */
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(refreshDaemonStatus)
                                                  name:@"SNDaemonStatusUpdated"
@@ -67,8 +64,7 @@
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     self.lastKnownState = (SGState)-1;
-    /* Remove before re-adding prevents duplicate observer registrations when
-     * both viewDidLoad and viewWillAppear fire (properly-parented VC case). */
+
     [[NSNotificationCenter defaultCenter] removeObserver:self name:@"SNDaemonStatusUpdated" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refreshDaemonStatus) name:@"SNDaemonStatusUpdated" object:nil];
     [[SNDataManager shared] startWatchingDaemonStatus];
@@ -103,10 +99,9 @@
         labelText = [NSString stringWithFormat:@"%@ (Attempt %u)", labelText, payload.consecutiveFailures + 1];
     }
 
-    /* Extract error detail from payload */
     NSString *errDetail = nil;
     if (payload.errorDetail[0] != '\0') {
-        payload.errorDetail[sizeof(payload.errorDetail) - 1] = '\0'; /* safety */
+        payload.errorDetail[sizeof(payload.errorDetail) - 1] = '\0';
         errDetail = [NSString stringWithUTF8String:payload.errorDetail];
     }
     self.currentErrorDetail = errDetail;
@@ -168,8 +163,6 @@
         void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
         addAction(alert, addSel, okAction);
 
-        /* Walk up the responder chain to find a presenting VC since this VC
-         * may be embedded as a child without a proper parentViewController. */
         UIViewController *presenter = self;
         while (presenter.parentViewController) presenter = presenter.parentViewController;
         if (!presenter.view.window) {

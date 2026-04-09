@@ -27,14 +27,14 @@ enum {
     [super layoutSubviews];
 
     CGRect detailFrame = self.detailTextLabel.frame;
-    detailFrame.origin.y -= 2.0f;   // move detail text upward
+    detailFrame.origin.y -= 2.0f;
     self.detailTextLabel.frame = detailFrame;
 }
 
 @end
 
 @implementation SNProfileListController {
-    NSMutableArray *_profileIndices;   /* e.g. @[@1, @3, @5] — existing profiles */
+    NSMutableArray *_profileIndices;
 }
 
 - (id)init {
@@ -137,7 +137,6 @@ enum {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
     if (indexPath.section == SectionAdd) {
-        /* Find the lowest unused index 1-5 */
         NSInteger newIdx = 0;
         for (NSInteger i = 1; i <= 5; i++) {
             if (![[SNDataManager shared] profileExistsAtIndex:i]) {
@@ -145,14 +144,13 @@ enum {
                 break;
             }
         }
-        if (newIdx == 0) return; /* shouldn't happen — row is hidden when full */
+        if (newIdx == 0) return;
 
         SNServerInfoViewController *vc = [[SNServerInfoViewController alloc] initWithProfileIndex:newIdx];
         [self.navigationController pushViewController:vc animated:YES];
         return;
     }
 
-    /* SectionProfiles — tap a profile row */
     NSInteger idx = [[_profileIndices objectAtIndex:indexPath.row] integerValue];
     SNDataManager *dm = [SNDataManager shared];
     BOOL isActive = ([dm activeProfileIndex] == idx);

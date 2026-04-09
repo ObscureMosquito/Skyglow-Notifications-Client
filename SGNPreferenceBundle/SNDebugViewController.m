@@ -153,7 +153,6 @@ typedef enum {
                 cell.textLabel.text = @"Register Bundle ID";
                 cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
             } /*else if (indexPath.row == 2) { 
-                // Only configure visuals here!
                 cell.textLabel.text = @"Send Test Notification";
                 if ([UIColor respondsToSelector:@selector(systemPurpleColor)]) {
                     cell.textLabel.textColor = [UIColor performSelector:@selector(systemPurpleColor)];

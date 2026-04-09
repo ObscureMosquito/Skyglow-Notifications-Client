@@ -13,8 +13,6 @@
 #define SG_GROWTH_ACTION_SUCCESS 0
 #define SG_GROWTH_ACTION_FAILURE 1
 
-/* ── Capability Table ──────────────────────────────────────────────── */
-
 /**
  * Each row maps one SGCapability value to:
  *   - className:   the Objective-C class to probe via NSClassFromString,
@@ -37,8 +35,6 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
     [SGCapabilityPowerAssertion]   = { NULL,                          2.0, 0.0  },
 };
 
-/* ── Private API Selector Declarations ─────────────────────────────── */
-
 @interface NSObject (PCPrivateTimerAPI)
 - (id)initWithTimeInterval:(NSTimeInterval)interval serviceIdentifier:(NSString *)sid target:(id)target selector:(SEL)sel userInfo:(id)userInfo;
 - (void)setMinimumEarlyFireProportion:(double)proportion;
@@ -52,8 +48,6 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
 - (double)currentKeepAliveInterval;
 - (void)processNextAction:(int)action;
 @end
-
-/* ── Builtin Growth Algorithm (fallback) ───────────────────────────── */
 
 /**
  * SGBuiltinGrowthAlgorithm — thin ObjC wrapper around SGKeepAliveStrategy.
@@ -111,8 +105,6 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
 }
 
 @end
-
-/* ── SGAvailability ────────────────────────────────────────────────── */
 
 @implementation SGAvailability {
     Class         _capabilityClasses[SGCapabilityCount];

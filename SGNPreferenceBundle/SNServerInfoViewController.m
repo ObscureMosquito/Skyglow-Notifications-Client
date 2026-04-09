@@ -5,15 +5,12 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-/* ── Darwin notification helper ─────────────────────────────────────────────── */
 static void SNPostReloadConfig(void) {
     CFNotificationCenterPostNotificationWithOptions(
         CFNotificationCenterGetDarwinNotifyCenter(),
         CFSTR("com.skyglow.sgn.reload_config"),
         NULL, NULL, kCFNotificationDeliverImmediately);
 }
-
-/* ── Section/row layout ──────────────────────────────────────────────────────── */
 
 typedef enum {
     WizardSectionServer = 0,
@@ -28,25 +25,16 @@ typedef enum {
     SectionCount   = 3
 } ServerInfoSection;
 
-/* Alert tags */
 static const NSInteger kAlertTagPEMConfirm  = 1;
 static const NSInteger kAlertTagUnregister  = 2;
 
 
 @interface SNServerInfoViewController () <UIAlertViewDelegate, UITextFieldDelegate, SFPFilePickerDelegate>
 
-/* Wizard state */
 @property (nonatomic, strong) NSString    *pendingServerAddress;
 @property (nonatomic, strong) NSString    *pendingPEMPath;       /* set when file chosen, cleared after import */
-@property (nonatomic, weak)   UITextField *serverAddressField;   /* owned by cell */
-
-/* Registered: inline server address editing */
-@property (nonatomic, weak)   UITextField *registeredAddressField; /* owned by cell */
-
-/* Required by PreferenceLoader */
-@property (nonatomic, strong) id rootController;
-@property (nonatomic, strong) id parentController;
-@property (nonatomic, strong) id specifier;
+@property (nonatomic, weak)   UITextField *serverAddressField;
+@property (nonatomic, weak)   UITextField *registeredAddressField;
 
 @end
 
@@ -65,15 +53,11 @@ static const NSInteger kAlertTagUnregister  = 2;
     return self;
 }
 
-/* ── Lifecycle ───────────────────────────────────────────────────────────────── */
-
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self _updateTableHeaderView];
     [self.tableView reloadData];
 }
-
-/* ── Welcome header ──────────────────────────────────────────────────────────── */
 
 /* Builds and sets (or clears) tableView.tableHeaderView based on registration
  * state. The unregistered header mimics the iOS 6 Settings first-run aesthetic:
@@ -341,8 +325,6 @@ static const NSInteger kAlertTagUnregister  = 2;
     return cell;
 }
 
-/* ── UITableViewDelegate ─────────────────────────────────────────────────────── */
-
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
@@ -367,8 +349,6 @@ static const NSInteger kAlertTagUnregister  = 2;
         [self _showUnregisterConfirmation];
     }
 }
-
-/* ── UITextFieldDelegate ─────────────────────────────────────────────────────── */
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {
     [textField resignFirstResponder];
@@ -410,10 +390,7 @@ static const NSInteger kAlertTagUnregister  = 2;
     return YES;
 }
 
-/* ── SFPFilePickerDelegate ───────────────────────────────────────────────────── */
-
 - (void)filePicker:(SFPFilePickerViewController *)picker didSelectFileAtPath:(NSString *)path {
-    /* Store the path and ask for confirmation before importing. */
     self.pendingPEMPath = path;
     NSString *filename  = [path lastPathComponent];
     NSString *message   = [NSString stringWithFormat:
@@ -435,8 +412,6 @@ static const NSInteger kAlertTagUnregister  = 2;
 
         id cancelAction = makeAction(actionClass, actionSel, @"Cancel", 1, nil);
 
-        /* Capture values before block creation — pendingServerAddress could change
-         * if viewWillAppear fires while the alert is on screen. */
         NSString *capturedAddress = self.pendingServerAddress;
         NSString *capturedPath    = path;
         __weak typeof(self) weakSelf = self;
@@ -465,8 +440,6 @@ static const NSInteger kAlertTagUnregister  = 2;
         [av show];
     }
 }
-
-/* ── Private helpers ─────────────────────────────────────────────────────────── */
 
 /*
  * Performs the actual file import. Called after user confirms.
@@ -574,8 +547,6 @@ static const NSInteger kAlertTagUnregister  = 2;
         [av show];
     }
 }
-
-/* ── UIAlertViewDelegate ─────────────────────────────────────────────────────── */
 
 - (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
     if (alertView.tag == kAlertTagPEMConfirm) {

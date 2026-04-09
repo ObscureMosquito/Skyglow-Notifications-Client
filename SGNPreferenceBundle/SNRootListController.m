@@ -23,9 +23,6 @@
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    /* Reload specifiers so programmatic preference changes (e.g. the enabled toggle
-     * being set to NO on unregister) are reflected immediately when returning to
-     * this view, without requiring a manual Settings.app relaunch. */
     [self reloadSpecifiers];
 }
 
@@ -107,7 +104,6 @@
 }
 
 - (CGFloat)preferredHeightForWidth:(CGFloat)width {
-    // Return the total required height for your footer (Image Height + Label Height + Padding)
     return 135.0f; 
 }
 
