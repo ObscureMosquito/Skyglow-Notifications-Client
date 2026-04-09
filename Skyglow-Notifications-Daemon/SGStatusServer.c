@@ -108,10 +108,11 @@ static void* SGStatusServer_AcceptLoop(void* arg) {
 void SGStatusServer_Start(const char *socketPath, int64_t startTime) {
     pthread_mutex_lock(&_lock);
     if (_running) { pthread_mutex_unlock(&_lock); return; }
-    
+
+    memset(&_current, 0, sizeof(_current));
+    _current.state = SGStateStarting;
     _current.daemonStartTime = startTime;
     _current.lastStateTransitionTime = startTime;
-    _current.state = SGStateStarting;
     
     for (int i = 0; i < SS_MAX_WATCHERS; i++) _watchers[i] = -1;
     strncpy(_socketPath, socketPath, sizeof(_socketPath)-1);
@@ -146,9 +147,16 @@ void SGStatusServer_Post(SGState state, uint32_t failures, uint32_t backoff,
     _current.consecutiveFailures = failures;
     _current.currentBackoffSec = backoff;
     _current.lastStateTransitionTime = (int64_t)time(NULL);
-    if (ip) strncpy(_current.serverIP, ip, sizeof(_current.serverIP)-1);
-    if (errorDetail) strlcpy(_current.errorDetail, errorDetail, sizeof(_current.errorDetail));
-    else _current.errorDetail[0] = '\0';
+    if (ip) {
+        strlcpy(_current.serverIP, ip, sizeof(_current.serverIP));
+    } else {
+        _current.serverIP[0] = '\0';
+    }
+    if (errorDetail) {
+        strlcpy(_current.errorDetail, errorDetail, sizeof(_current.errorDetail));
+    } else {
+        _current.errorDetail[0] = '\0';
+    }
     _current.activeProfileIndex = activeProfile;
     
     SGStatusPayload snapshot = _current;

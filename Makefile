@@ -6,8 +6,6 @@ export ADDITIONAL_OBJCFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -fno-builti
 export ADDITIONAL_CCFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -fno-builtin -fno-stack-protector
 
 include $(THEOS)/makefiles/common.mk
-
-THEOS_DEVICE_IP = iPod
  
 TOOL_NAME = SkyglowNotificationsDaemon
 SkyglowNotificationsDaemon_FILES = \
