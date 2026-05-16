@@ -3,7 +3,7 @@
 <h1>Skyglow Notifications Daemon</h1>
 </div>
 
-Simple Cydia Tweak that will open a low power TCP socket and constantly listen for push notifications when deemed appropriate (when network is available as an example), this is made us an alternative to Apple Push Notification Service, adding just a tiny bit of unnoticeable battery overhead, allowing you to host your own free notification server.
+Simple Cydia Tweak that will open a low power TCP socket and constantly listen for push notifications when deemed appropriate (when network is available as an example), this is made as an alternative to Apple Push Notification Service, adding just a tiny bit of unnoticeable battery overhead, allowing you to host your own free notification server.
 
 ## Usage
 
