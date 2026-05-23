@@ -1,9 +1,26 @@
 #import "SGDatabaseManager.h"
 #import "SGConfiguration.h"
 #import "SGProtocolHandler.h"
+#import "SGLog.h"
 #include <sqlite3.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+/**
+ * SQLite schema version of this build.  Incremented whenever a migration is
+ * added below.  Pre-versioning databases (anything older than v1) are tagged
+ * as v1 in-place — the inline CREATE IF NOT EXISTS calls in -init already
+ * produce that exact schema for both fresh and upgraded databases.
+ */
+#define SG_SCHEMA_LATEST_VERSION 3
+
+/**
+ * Local retention floor for the seen_messages dedup table.  Notifications
+ * without a server-supplied expires_at, or whose expiry has already passed by
+ * the time we record them, are kept for this long so a late retransmit from
+ * the server can still be recognised as a duplicate.
+ */
+#define SG_DEDUP_DEFAULT_RETENTION_SEC ((int64_t)86400)
 
 @implementation SGDatabaseManager {
     sqlite3 *_database;
@@ -33,7 +50,7 @@
         chown([dbDir UTF8String], 501, 501);
 
         if (sqlite3_open([dbPath UTF8String], &_database) != SQLITE_OK) {
-            NSLog(@"[SGDatabaseManager] Failed to open database at %@", dbPath);
+            SGLOGE(SGDatabaseManager, "Failed to open database at %s", [dbPath UTF8String]);
             [self release];
             return nil;
         }
@@ -49,7 +66,7 @@
                                  "(routing_key BLOB PRIMARY KEY, e2ee_key BLOB, bundle_id TEXT, token BLOB, "
                                  "is_uploaded INTEGER NOT NULL DEFAULT 1)";
         if (sqlite3_exec(_database, notifTable, NULL, NULL, &errorMsg) != SQLITE_OK) {
-            NSLog(@"[SGDatabaseManager] Schema error: %s", errorMsg);
+            SGLOGE(SGDatabaseManager, "Schema error: %s", errorMsg ? errorMsg : "(null)");
             sqlite3_free(errorMsg);
         }
         
@@ -75,8 +92,91 @@
         sqlite3_exec(_database,
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('last_delivered_seq', 0)",
             NULL, NULL, NULL);
+
+        [self _migrateSchema];
     }
     return self;
+}
+
+/**
+ * Brings the database from whatever PRAGMA user_version it currently reports
+ * up to SG_SCHEMA_LATEST_VERSION by running migrations in sequence.  Each step
+ * is wrapped in an immediate transaction so a partial failure rolls back and
+ * the migration is retried on the next launch.  PRAGMA user_version is the
+ * canonical built-in counter — available on every SQLite version Apple has
+ * ever shipped — so we do not need a dedicated schema_version table.
+ */
+- (void)_migrateSchema {
+    int currentVersion = 0;
+    sqlite3_stmt *probe = NULL;
+    if (sqlite3_prepare_v2(_database, "PRAGMA user_version", -1, &probe, NULL) == SQLITE_OK) {
+        if (sqlite3_step(probe) == SQLITE_ROW) currentVersion = sqlite3_column_int(probe, 0);
+        sqlite3_finalize(probe);
+    }
+
+    while (currentVersion < SG_SCHEMA_LATEST_VERSION) {
+        int targetVersion = currentVersion + 1;
+        const char *migration = NULL;
+
+        switch (targetVersion) {
+            case 1:
+                /**
+                 * v1 codifies the schema produced by the inline CREATE IF NOT
+                 * EXISTS calls above.  Both fresh databases (user_version=0
+                 * before this migration ran) and existing databases (also 0
+                 * because PRAGMA user_version has never been set before) reach
+                 * the same shape at this point — no DDL needed, just stamp it.
+                 */
+                migration = NULL;
+                break;
+            case 2:
+                /**
+                 * Durable dedup of received notifications.  Survives daemon
+                 * restarts and reconnects so a server retransmit after we have
+                 * already delivered a notification does not produce a duplicate
+                 * banner on the device.
+                 */
+                migration =
+                    "CREATE TABLE IF NOT EXISTS seen_messages "
+                    "(msg_id BLOB PRIMARY KEY, expires_at INTEGER NOT NULL)";
+                break;
+            case 3:
+                /**
+                 * Local-side delivery retry queue.  Holds notifications whose
+                 * Mach delivery to SpringBoard failed (tweak unloaded, SB
+                 * restarting) so the daemon can redeliver without ever ACKing
+                 * the server for a banner it did not surface.
+                 */
+                migration =
+                    "CREATE TABLE IF NOT EXISTS local_pending_deliveries "
+                    "(msg_id BLOB PRIMARY KEY, bundle_id TEXT NOT NULL, "
+                    "payload BLOB NOT NULL, device_seq INTEGER NOT NULL DEFAULT 0, "
+                    "expires_at INTEGER NOT NULL)";
+                break;
+        }
+
+        sqlite3_exec(_database, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+        int rc = SQLITE_OK;
+        if (migration) {
+            char *err = NULL;
+            rc = sqlite3_exec(_database, migration, NULL, NULL, &err);
+            if (rc != SQLITE_OK) {
+                SGLOGE(SGDatabaseManager, "Schema migration %d -> %d failed: %s",
+                       currentVersion, targetVersion, err ? err : "(null)");
+                sqlite3_free(err);
+                sqlite3_exec(_database, "ROLLBACK", NULL, NULL, NULL);
+                return;
+            }
+        }
+
+        char stamp[64];
+        snprintf(stamp, sizeof(stamp), "PRAGMA user_version = %d", targetVersion);
+        sqlite3_exec(_database, stamp, NULL, NULL, NULL);
+        sqlite3_exec(_database, "COMMIT", NULL, NULL, NULL);
+
+        SGLOGI(SGDatabaseManager, "Schema migrated %d -> %d.", currentVersion, targetVersion);
+        currentVersion = targetVersion;
+    }
 }
 
 - (void)dealloc {
@@ -390,6 +490,132 @@
             sqlite3_wal_checkpoint_v2(self->_database, NULL, SQLITE_CHECKPOINT_PASSIVE, NULL, NULL);
         }
     });
+}
+
+- (BOOL)hasSeenMessageID:(NSData *)msgID {
+    if (!msgID || [msgID length] == 0) return NO;
+    __block BOOL seen = NO;
+    dispatch_sync(_databaseQueue, ^{
+        const char *sql = "SELECT 1 FROM seen_messages WHERE msg_id = ? LIMIT 1";
+        sqlite3_stmt *stmt;
+        if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_blob(stmt, 1, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
+            seen = (sqlite3_step(stmt) == SQLITE_ROW);
+            sqlite3_finalize(stmt);
+        }
+    });
+    return seen;
+}
+
+- (void)markMessageIDAsSeen:(NSData *)msgID expiresAt:(int64_t)expiresAt {
+    if (!msgID || [msgID length] == 0) return;
+    int64_t now = (int64_t)time(NULL);
+    /**
+     * If the wire expiry is missing or already past, keep the row long enough
+     * to suppress retransmits that arrive while the server's redelivery timer
+     * is still running.  A flat 24h floor is generous compared to typical APNS
+     * resend windows (minutes) and costs trivial storage.
+     */
+    int64_t effective = (expiresAt > now) ? expiresAt : (now + SG_DEDUP_DEFAULT_RETENTION_SEC);
+    dispatch_async(_databaseQueue, ^{
+        const char *sql = "INSERT OR REPLACE INTO seen_messages (msg_id, expires_at) VALUES (?, ?)";
+        sqlite3_stmt *stmt;
+        if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_blob(stmt, 1, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 2, effective);
+            sqlite3_step(stmt);
+            sqlite3_finalize(stmt);
+        }
+    });
+}
+
+- (void)pruneExpiredSeenMessagesAsOf:(int64_t)nowEpoch {
+    dispatch_async(_databaseQueue, ^{
+        const char *sql = "DELETE FROM seen_messages WHERE expires_at < ?";
+        sqlite3_stmt *stmt;
+        if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, nowEpoch);
+            sqlite3_step(stmt);
+            sqlite3_finalize(stmt);
+        }
+    });
+}
+
+- (BOOL)enqueueLocalPendingDeliveryForMessageID:(NSData *)msgID
+                                       bundleID:(NSString *)bundleID
+                                        payload:(NSData *)serializedPayload
+                                      deviceSeq:(int64_t)deviceSeq
+                                      expiresAt:(int64_t)expiresAt {
+    if (!msgID || [msgID length] == 0 || !bundleID || !serializedPayload) return NO;
+    __block BOOL ok = NO;
+    dispatch_sync(_databaseQueue, ^{
+        const char *sql = "INSERT OR REPLACE INTO local_pending_deliveries "
+                          "(msg_id, bundle_id, payload, device_seq, expires_at) "
+                          "VALUES (?, ?, ?, ?, ?)";
+        sqlite3_stmt *stmt;
+        if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_blob(stmt, 1, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 2, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_blob(stmt, 3, [serializedPayload bytes], (int)[serializedPayload length], SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 4, deviceSeq);
+            sqlite3_bind_int64(stmt, 5, expiresAt);
+            ok = (sqlite3_step(stmt) == SQLITE_DONE);
+            sqlite3_finalize(stmt);
+        }
+    });
+    return ok;
+}
+
+- (NSArray *)allLocalPendingDeliveries {
+    __block NSMutableArray *results = [NSMutableArray array];
+    dispatch_sync(_databaseQueue, ^{
+        const char *sql = "SELECT msg_id, bundle_id, payload, device_seq, expires_at FROM local_pending_deliveries";
+        sqlite3_stmt *stmt;
+        if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                const char *bID = (const char *)sqlite3_column_text(stmt, 1);
+                [results addObject:@{
+                    @"msgID":     [NSData dataWithBytes:sqlite3_column_blob(stmt, 0) length:sqlite3_column_bytes(stmt, 0)],
+                    @"bundleID":  bID ? [NSString stringWithUTF8String:bID] : @"",
+                    @"payload":   [NSData dataWithBytes:sqlite3_column_blob(stmt, 2) length:sqlite3_column_bytes(stmt, 2)],
+                    @"deviceSeq": [NSNumber numberWithLongLong:sqlite3_column_int64(stmt, 3)],
+                    @"expiresAt": [NSNumber numberWithLongLong:sqlite3_column_int64(stmt, 4)]
+                }];
+            }
+            sqlite3_finalize(stmt);
+        }
+    });
+    return results;
+}
+
+- (BOOL)removeLocalPendingDeliveryForMessageID:(NSData *)msgID {
+    if (!msgID || [msgID length] == 0) return NO;
+    __block BOOL ok = NO;
+    dispatch_sync(_databaseQueue, ^{
+        const char *sql = "DELETE FROM local_pending_deliveries WHERE msg_id = ?";
+        sqlite3_stmt *stmt;
+        if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_blob(stmt, 1, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
+            ok = (sqlite3_step(stmt) == SQLITE_DONE);
+            sqlite3_finalize(stmt);
+        }
+    });
+    return ok;
+}
+
+- (BOOL)hasLocalPendingDeliveryForMessageID:(NSData *)msgID {
+    if (!msgID || [msgID length] == 0) return NO;
+    __block BOOL present = NO;
+    dispatch_sync(_databaseQueue, ^{
+        const char *sql = "SELECT 1 FROM local_pending_deliveries WHERE msg_id = ? LIMIT 1";
+        sqlite3_stmt *stmt;
+        if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_blob(stmt, 1, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
+            present = (sqlite3_step(stmt) == SQLITE_ROW);
+            sqlite3_finalize(stmt);
+        }
+    });
+    return present;
 }
 
 @end

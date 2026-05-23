@@ -1,6 +1,7 @@
 #import "SGServerLocator.h"
 #import "SGDatabaseManager.h"
 #import "SGConfiguration.h"
+#import "SGLog.h"
 #include <dns_sd.h>
 
 #define DNS_CACHE_MAX_AGE_SECONDS 3600.0
@@ -15,14 +16,15 @@
     NSDictionary *cached = [[SGDatabaseManager sharedManager] cachedDNSForDomain:dnsName maxAge:DNS_CACHE_MAX_AGE_SECONDS];
     if (cached) return cached;
 
-    NSLog(@"[SGServerLocator] Performing live DNS-SD lookup for: %@", dnsName);
+    SGLOGI(SGServerLocator, "Performing live DNS-SD lookup for: %s", [dnsName UTF8String]);
     NSDictionary *txt = [self performLiveDNSLookup:dnsName];
-    
+
     if (txt && txt[@"tcp_addr"] && txt[@"tcp_port"]) {
-        NSLog(@"[SGServerLocator] Live lookup success -> %@:%@", txt[@"tcp_addr"], txt[@"tcp_port"]);
+        SGLOGI(SGServerLocator, "Live lookup success -> %s:%s",
+               [txt[@"tcp_addr"] UTF8String], [txt[@"tcp_port"] UTF8String]);
         [[SGDatabaseManager sharedManager] storeDNSCacheForDomain:dnsName ip:txt[@"tcp_addr"] port:txt[@"tcp_port"]];
     } else {
-        NSLog(@"[SGServerLocator] Live lookup failed or returned incomplete TXT records.");
+        SGLOGW(SGServerLocator, "Live lookup failed or returned incomplete TXT records.");
     }
     
     return txt;
@@ -41,7 +43,7 @@ static void DNSSD_API query_callback(DNSServiceRef sdRef, DNSServiceFlags flags,
     NSMutableDictionary *results = (__bridge NSMutableDictionary *)context;
     
     if (errorCode != kDNSServiceErr_NoError) {
-        NSLog(@"[SGServerLocator] mDNSResponder callback error code: %d", errorCode);
+        SGLOGW(SGServerLocator, "mDNSResponder callback error code: %d", errorCode);
     } else if (rdlen > 0) {
         const uint8_t *ptr = (const uint8_t *)rdata;
         const uint8_t *end = ptr + rdlen;
@@ -60,7 +62,8 @@ static void DNSSD_API query_callback(DNSServiceRef sdRef, DNSServiceFlags flags,
                         NSString *key = [comp substringToIndex:range.location];
                         NSString *val = [comp substringFromIndex:range.location + 1];
                         [results setObject:val forKey:key];
-                        NSLog(@"[SGServerLocator] Parsed TXT component: %@ = %@", key, val);
+                        SGLOGD(SGServerLocator, "Parsed TXT component: %s = %s",
+                               [key UTF8String], [val UTF8String]);
                     }
                 }
             }

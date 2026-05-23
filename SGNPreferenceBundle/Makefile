@@ -8,13 +8,14 @@ BUNDLE_NAME = SGNPreferenceBundle
 SGNPreferenceBundle_FILES = \
     SNRootListController.m \
     SNLogViewController.m \
+    SNLogTailViewController.m \
     SNAppToggleCell.m \
     SNAppListController.m \
     SNServerInfoViewController.m \
     SNProfileListController.m \
     SNCustomViewCell.m \
     SNDebugViewController.m \
-    SNDataManager.m 
+    SNDataManager.m
 SGNPreferenceBundle_FRAMEWORKS = UIKit CoreGraphics CFNetwork CoreFoundation QuartzCore
 SGNPreferenceBundle_PRIVATE_FRAMEWORKS = Preferences
 SGNPreferenceBundle_LDFLAGS = \

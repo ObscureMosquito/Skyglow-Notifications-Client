@@ -1,5 +1,6 @@
 #import "SGAvailability.h"
 #import "SGKeepAliveStrategy.h"
+#import "SGLog.h"
 #import <UIKit/UIKit.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 
@@ -153,14 +154,12 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
             }
         }
 
-        NSLog(@"[SGAvailability] iOS %.1f — "
-              @"PCPersistentTimer: %@, "
-              @"PCMultiStageGrowthAlgorithm: %@, "
-              @"IOPMAssertion: %@",
-              sysVer,
-              [self isCapabilityAvailable:SGCapabilityPersistentTimer]  ? @"available" : @"unavailable",
-              [self isCapabilityAvailable:SGCapabilityGrowthAlgorithm]  ? @"available" : @"unavailable",
-              [self isCapabilityAvailable:SGCapabilityPowerAssertion]   ? @"available" : @"unavailable");
+        SGLOGI(SGAvailability,
+               "iOS %.1f — PCPersistentTimer: %s, PCMultiStageGrowthAlgorithm: %s, IOPMAssertion: %s",
+               sysVer,
+               [self isCapabilityAvailable:SGCapabilityPersistentTimer] ? "available" : "unavailable",
+               [self isCapabilityAvailable:SGCapabilityGrowthAlgorithm] ? "available" : "unavailable",
+               [self isCapabilityAvailable:SGCapabilityPowerAssertion]  ? "available" : "unavailable");
     }
     return self;
 }
@@ -234,13 +233,13 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
             initWithKeepAliveInterval:interval
                     loggingIdentifier:@"com.skyglow.sgn"
                         algorithmName:@"SkyglowKA"];
-        NSLog(@"[SGAvailability] Growth algorithm: PCMultiStageGrowthAlgorithm — initial: %.0fs", interval);
+        SGLOGI(SGAvailability, "Growth algorithm: PCMultiStageGrowthAlgorithm — initial: %.0fs", interval);
     } else {
         algo = [[SGBuiltinGrowthAlgorithm alloc]
             initWithKeepAliveInterval:interval
                     loggingIdentifier:@"com.skyglow.sgn"
                         algorithmName:@"SkyglowKA"];
-        NSLog(@"[SGAvailability] Growth algorithm: SGBuiltinGrowthAlgorithm — initial: %.0fs", interval);
+        SGLOGI(SGAvailability, "Growth algorithm: SGBuiltinGrowthAlgorithm — initial: %.0fs", interval);
     }
 
     [algo setMinimumKeepAliveInterval:minInterval];

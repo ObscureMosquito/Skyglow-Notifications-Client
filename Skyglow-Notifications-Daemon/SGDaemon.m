@@ -8,6 +8,7 @@
 #import "SGPayloadParser.h"
 #import "SGCryptoEngine.h"
 #import "SGAvailability.h"
+#import "SGLog.h"
 #include <openssl/pem.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -128,6 +129,7 @@ static BOOL isValidPort(NSString *port) {
     id                     _keepAliveTimer;
     BOOL                   _isWiFi;
     char                   _lastErrorDetail[128];
+    dispatch_source_t      _localDeliveryRetryTimer;
 }
 
 - (id)init {
@@ -148,12 +150,15 @@ static BOOL isValidPort(NSString *port) {
     [_machServer release];
     [_growthAlgorithm release];
     if (_keepAliveTimer) { [_keepAliveTimer invalidate]; [_keepAliveTimer release]; }
+    [self _stopLocalDeliveryRetryTimer];
     dispatch_release(_entryActionQueue);
     [super dealloc];
 }
 
 - (void)start {
     [_machServer startMachBootstrapServices];
+
+    [self _startLocalDeliveryRetryTimer];
 
     [self reconcileTokensWithPlist];
     
@@ -189,7 +194,7 @@ static BOOL isValidPort(NSString *port) {
     for (NSString *bundleID in dbBundles) {
         if (![plistBundles containsObject:bundleID]) {
             [db removeTokenForBundleIdentifier:bundleID];
-            NSLog(@"[SGDaemon] Removed orphaned token for: %@", bundleID);
+            SGLOGI(SGDaemon, "Removed orphaned token for: %s", [bundleID UTF8String]);
         }
     }
     
@@ -201,9 +206,10 @@ static BOOL isValidPort(NSString *port) {
                 NSError *err = nil;
                 NSData *token = [tokenMgr synchronizedTokenForBundleIdentifier:bundleID error:&err];
                 if (token) {
-                    NSLog(@"[SGDaemon] Generated missing token for: %@", bundleID);
+                    SGLOGI(SGDaemon, "Generated missing token for: %s", [bundleID UTF8String]);
                 } else {
-                    NSLog(@"[SGDaemon] Failed to generate token for %@: %@", bundleID, err);
+                    SGLOGE(SGDaemon, "Failed to generate token for %s: %s",
+                           [bundleID UTF8String], [[err description] UTF8String]);
                 }
             }
         }
@@ -211,7 +217,7 @@ static BOOL isValidPort(NSString *port) {
     } else {
         for (NSString *bundleID in plistBundles) {
             if (![dbBundles containsObject:bundleID]) {
-                NSLog(@"[SGDaemon] App %@ needs a token but device is unregistered — will generate after registration", bundleID);
+                SGLOGI(SGDaemon, "App %s needs a token but device is unregistered — will generate after registration", [bundleID UTF8String]);
             }
         }
     }
@@ -224,7 +230,7 @@ static BOOL isValidPort(NSString *port) {
     SGStatusServer_Current(&currentStatus);
     SGState currentState = (SGState)currentStatus.state;
     
-    NSLog(@"[SGDaemon] FSM Rx Event: %ld in State: %s", (long)event, SGState_GetName(currentState));
+    SGLOGD(SGDaemon, "FSM Rx Event: %ld in State: %s", (long)event, SGState_GetName(currentState));
 
     if (event == SGEventStopRequested ||
        (event == SGEventConfigReloaded && ![[SGConfiguration sharedConfiguration] isEnabled])) {
@@ -299,7 +305,7 @@ static BOOL isValidPort(NSString *port) {
                  * the server may still be unreachable; the circuit breaker count
                  * is preserved so we still reach SGStateIdleCircuitOpen eventually.
                  */
-                NSLog(@"[SGDaemon] System wake received during backoff — skipping remaining wait.");
+                SGLOGI(SGDaemon, "System wake received during backoff — skipping remaining wait.");
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             }
             break;
@@ -384,7 +390,7 @@ static BOOL isValidPort(NSString *port) {
                  * From all other states this event is a no-op (handled by the default
                  * case below), so IOKit can fire it on every wake without wasted work.
                  */
-                NSLog(@"[SGDaemon] System wake received in circuit-open idle — resetting failures and retrying.");
+                SGLOGI(SGDaemon, "System wake received in circuit-open idle — resetting failures and retrying.");
                 _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             }
@@ -401,7 +407,8 @@ static BOOL isValidPort(NSString *port) {
     SGStatusPayload current;
     SGStatusServer_Current(&current);
     if (!isLegalTransition((SGState)current.state, newState) && current.state != newState) {
-        NSLog(@"[SGDaemon] ⚠️ ILLEGAL TRANSITION REJECTED: %s → %s", SGState_GetName((SGState)current.state), SGState_GetName(newState));
+        SGLOGE(SGDaemon, "ILLEGAL TRANSITION REJECTED: %s -> %s",
+               SGState_GetName((SGState)current.state), SGState_GetName(newState));
         return;
     }
 
@@ -420,7 +427,7 @@ static BOOL isValidPort(NSString *port) {
     uint32_t activeProfile = (uint32_t)[[SGConfiguration sharedConfiguration] activeProfileIndex];
     SGStatusServer_Post(newState, (uint32_t)_consecutiveFailures, backoff,
                         resolvedIP, _lastErrorDetail, activeProfile);
-    NSLog(@"[SGDaemon] Transitioned to %s (gen=%u)", SGState_GetName(newState), capturedGen);
+    SGLOGD(SGDaemon, "Transitioned to %s (gen=%u)", SGState_GetName(newState), capturedGen);
 
     dispatch_async(_entryActionQueue, ^{
         [self->_stateLock lock];
@@ -482,7 +489,7 @@ static BOOL isValidPort(NSString *port) {
     _consecutiveFailures++;
     
     if (_consecutiveFailures >= SG_MAX_CONSECUTIVE_FAILURES) {
-        NSLog(@"[SGDaemon] Max failures (%d) reached after ~1h. Idling until network change.", SG_MAX_CONSECUTIVE_FAILURES);
+        SGLOGW(SGDaemon, "Max failures (%d) reached after ~1h. Idling until network change.", SG_MAX_CONSECUTIVE_FAILURES);
         strlcpy(_lastErrorDetail, "Too many consecutive failures \xe2\x80\x94 paused", sizeof(_lastErrorDetail));
         [self executeTransitionToState:SGStateIdleCircuitOpen backoff:0 ip:NULL];
     } 
@@ -497,10 +504,10 @@ static BOOL isValidPort(NSString *port) {
         uint32_t serverHint = SGP_GetLastDisconnectRetryAfter();
         if (serverHint > finalDelay) {
             finalDelay = serverHint;
-            NSLog(@"[SGDaemon] Server requested retry-after %us, honoring.", serverHint);
+            SGLOGI(SGDaemon, "Server requested retry-after %us, honoring.", serverHint);
         }
 
-        NSLog(@"[SGDaemon] Backing off for %u seconds (Failure %d/%d)", finalDelay, _consecutiveFailures, SG_MAX_CONSECUTIVE_FAILURES);
+        SGLOGI(SGDaemon, "Backing off for %u seconds (Failure %d/%d)", finalDelay, _consecutiveFailures, SG_MAX_CONSECUTIVE_FAILURES);
         [self executeTransitionToState:SGStateBackingOff backoff:finalDelay ip:NULL];
     }
 }
@@ -522,7 +529,7 @@ static BOOL isValidPort(NSString *port) {
 
     RSA *privKey = SG_CryptoGetClientPrivateKey();
     if (!privKey) {
-        NSLog(@"[SGDaemon] Profile contains device_address but missing/invalid privateKey! Wiping profile for re-registration.");
+        SGLOGW(SGDaemon, "Profile contains device_address but missing/invalid privateKey! Wiping profile for re-registration.");
         [self handleEvent:SGEventAuthFailed payload:nil];
         return;
     }
@@ -542,12 +549,22 @@ static BOOL isValidPort(NSString *port) {
     SGP_FlushActiveTopicFilter();
     SGP_RequestOfflineMessages();
     [[SGDatabaseManager sharedManager] checkpoint];
-    
+    [[SGDatabaseManager sharedManager] pruneExpiredSeenMessagesAsOf:(int64_t)time(NULL)];
+
+    /**
+     * Kick the drain explicitly here so any local-pending notifications that
+     * piled up while disconnected get a redelivery attempt right after the
+     * link is healthy again, rather than waiting up to 10s for the next tick.
+     */
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        [self _drainLocalPendingDeliveries];
+    });
+
     [self uploadPendingTokensAsync];
 }
 
 - (void)protocolDidCompleteTokenRegistration:(NSString *)bundleIdentifier {
-    NSLog(@"[SGDaemon] Token registration acknowledged for %@", bundleIdentifier);
+    SGLOGI(SGDaemon, "Token registration acknowledged for %s", [bundleIdentifier UTF8String]);
 }
 
 - (void)uploadPendingTokensAsync {
@@ -573,27 +590,57 @@ static BOOL isValidPort(NSString *port) {
         NSData *msgID = messageDict[@"msg_id"];
         if (!msgID || [msgID length] != SGP_MSG_ID_LEN) return;
 
-        NSLog(@"[SGDaemon] Processing Push Notification (MSG_ID: %@)", [msgID description]);
+        SGLOGI(SGDaemon, "Processing Push Notification (MSG_ID: %s)", [[msgID description] UTF8String]);
 
+        SGDatabaseManager *db = [SGDatabaseManager sharedManager];
+
+        /**
+         * Durable cross-session dedup.  A retransmit of a message we already
+         * delivered (or terminally ACK'd) in a prior session or before the
+         * last reconnect lands here.  Re-ACK SUCCESS so the server stops
+         * resending and return without re-surfacing the banner.
+         */
+        if ([db hasSeenMessageID:msgID]) {
+            SGLOGD(SGDaemon, "Already-seen msg_id — re-ACKing SUCCESS without re-delivery.");
+            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
+            return;
+        }
+
+        /**
+         * In-flight local-retry queue: an earlier Mach delivery for this msg_id
+         * failed and we are still trying to redeliver to SpringBoard.  A server
+         * retransmit during this window is silently dropped — the drain timer
+         * will ACK once it either delivers or hits the wire expiry, so any ACK
+         * we sent here would be redundant or premature.
+         */
+        if ([db hasLocalPendingDeliveryForMessageID:msgID]) {
+            SGLOGD(SGDaemon, "Retransmit of in-flight local-pending msg — dropping silently; drain timer owns the ACK.");
+            return;
+        }
+
+        /**
+         * Hot-path in-memory dedup: catches the case where a server retransmit
+         * arrives before the async SQLite write from a prior delivery has been
+         * observed.  We only populate this set after a definitive disposition
+         * (see _markMessageDeliveredID:expiresAt:), never speculatively, so an
+         * in-flight delivery never lies its way into the cache.
+         */
         @synchronized(_seenMessageIDs) {
             if ([_seenMessageIDs containsObject:msgID]) {
                 SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
-                return; 
+                return;
             }
-            [_seenMessageIDs addObject:msgID];
-            if ([_seenMessageIDs count] > 200) [_seenMessageIDs removeObjectAtIndex:0];
         }
 
         NSNumber *expiresAtNum = messageDict[@"expires_at"];
-        if (expiresAtNum) {
-            int64_t expiresAt = [expiresAtNum longLongValue];
-            int64_t now = (int64_t)time(NULL);
-            if (now > expiresAt) {
-                NSLog(@"[SGDaemon] DROP: Notification expired %llds ago (expires_at=%lld now=%lld)",
-                      now - expiresAt, expiresAt, now);
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_EXPIRED);
-                return;
-            }
+        int64_t expiresAt = expiresAtNum ? [expiresAtNum longLongValue] : 0;
+        int64_t now = (int64_t)time(NULL);
+        if (expiresAt > 0 && now > expiresAt) {
+            SGLOGW(SGDaemon, "DROP: Notification expired %llds ago (expires_at=%lld now=%lld)",
+                   now - expiresAt, expiresAt, now);
+            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_EXPIRED);
+            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+            return;
         }
 
         uint32_t assertionID = [[SGAvailability shared]
@@ -601,78 +648,107 @@ static BOOL isValidPort(NSString *port) {
                                      timeout:15.0];
 
         NSData *routingKey = messageDict[@"routing_key"];
-        NSDictionary *routingData = [[SGDatabaseManager sharedManager] tokenDataForRoutingKey:routingKey];
+        NSDictionary *routingData = [db tokenDataForRoutingKey:routingKey];
         if (!routingData) {
-            NSLog(@"[SGDaemon] DROP: Routing Key not found in local Database.");
+            SGLOGW(SGDaemon, "DROP: Routing Key not found in local Database.");
             goto cleanup_assertion;
         }
 
         NSData *payloadBytes = messageDict[@"data"];
-        if (!payloadBytes) { 
-            NSLog(@"[SGDaemon] DROP: Payload data is empty.");
-            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED); 
-            goto cleanup_assertion; 
+        if (!payloadBytes) {
+            SGLOGW(SGDaemon, "DROP: Payload data is empty.");
+            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
+            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+            goto cleanup_assertion;
         }
 
         if ([messageDict[@"is_encrypted"] boolValue]) {
-            NSLog(@"[SGDaemon] Payload is Encrypted. Attempting AES-256-GCM decryption...");
+            SGLOGD(SGDaemon, "Payload is encrypted. Attempting AES-256-GCM decryption...");
             if ([payloadBytes length] < SGP_GCM_TAG_LEN) {
-                NSLog(@"[SGDaemon] DROP: Encrypted payload too short for GCM tag (%lu < %d).",
-                      (unsigned long)[payloadBytes length], SGP_GCM_TAG_LEN);
+                SGLOGW(SGDaemon, "DROP: Encrypted payload too short for GCM tag (%lu < %d).",
+                       (unsigned long)[payloadBytes length], SGP_GCM_TAG_LEN);
                 SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED);
+                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
                 goto cleanup_assertion;
             }
             NSData *iv = messageDict[@"iv"];
-            if (!iv) { 
-                NSLog(@"[SGDaemon] DROP: Missing IV for decryption.");
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED); 
-                goto cleanup_assertion; 
+            if (!iv) {
+                SGLOGW(SGDaemon, "DROP: Missing IV for decryption.");
+                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED);
+                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                goto cleanup_assertion;
             }
-            
+
             payloadBytes = SG_CryptoDecryptAESGCM(payloadBytes, routingData[@"e2eeKey"], iv, nil);
-            if (!payloadBytes) { 
-                NSLog(@"[SGDaemon] DROP: Decryption failed (Bad Key or MAC Tag Tampering).");
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED); 
-                goto cleanup_assertion; 
+            if (!payloadBytes) {
+                SGLOGE(SGDaemon, "DROP: Decryption failed (bad key or MAC tag tampering).");
+                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED);
+                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                goto cleanup_assertion;
             }
         } else {
-            NSLog(@"[SGDaemon] Payload is plaintext TLV.");
+            SGLOGD(SGDaemon, "Payload is plaintext TLV.");
         }
 
         NSDictionary *parsed = SG_PayloadParseBinaryData((const uint8_t *)payloadBytes.bytes, (uint32_t)payloadBytes.length);
         if (!parsed || parsed.count == 0) {
-            NSLog(@"[SGDaemon] DROP: TLV Parser returned empty dictionary. Malformed binary data?");
+            SGLOGW(SGDaemon, "DROP: TLV parser returned empty dictionary. Malformed binary data?");
             SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
+            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
             goto cleanup_assertion;
         }
 
-        NSLog(@"[SGDaemon] Sending Push to app [%@]: %@", routingData[@"bundleID"], parsed);
+        SGLOGI(SGDaemon, "Sending push to app [%s]: %s",
+               [routingData[@"bundleID"] UTF8String], [[parsed description] UTF8String]);
+
+        NSNumber *seqNum = messageDict[@"device_seq"];
+        int64_t arrivedSeq = seqNum ? [seqNum longLongValue] : 0;
+
         kern_return_t deliveryKr = SGMach_SendPushToAppTopic(routingData[@"bundleID"], parsed);
         if (deliveryKr == KERN_SUCCESS) {
             SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
-
-            NSNumber *seqNum = messageDict[@"device_seq"];
-            if (seqNum) {
-                int64_t arrivedSeq = [seqNum longLongValue];
-                int64_t currentMax = [[SGDatabaseManager sharedManager] lastDeliveredSeq];
-                if (arrivedSeq > currentMax) {
-                    [[SGDatabaseManager sharedManager] updateLastDeliveredSeq:arrivedSeq];
-                }
-            }
+            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+            [self _advanceLastDeliveredSeqIfNeeded:arrivedSeq];
         } else {
-            /*
+            /**
              * Mach delivery failed — most likely the SpringBoard push receiver
-             * is not registered (tweak not loaded, or SpringBoard restarting).
-             * Log and ACK immediately. A timer-based retry with an arbitrary
-             * duration is not appropriate here: if the receiver is absent due
-             * to a configuration problem no amount of retrying will fix it,
-             * and if it is a transient SpringBoard restart the next incoming
-             * notification will succeed on its own once SpringBoard is back.
+             * is not registered yet (tweak not loaded, or SpringBoard is
+             * restarting).  Rather than ACK SUCCESS for a banner the user will
+             * never see, persist the parsed payload to local_pending_deliveries
+             * and let _drainLocalPendingDeliveries retry on a 10-second cadence
+             * until either Mach succeeds or the wire expiry passes.  Server
+             * retransmits during this window are absorbed by the
+             * hasLocalPendingDeliveryForMessageID: check at the top of this
+             * method, so no double-banner and no premature ACK can occur.
              */
-            NSLog(@"[SGDaemon] WARN: Mach delivery failed kr=%d for %@ — "
-                  @"SpringBoard push receiver unavailable. Notification lost.",
-                  deliveryKr, routingData[@"bundleID"]);
-            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
+            NSData *serialized = [NSPropertyListSerialization
+                dataFromPropertyList:parsed
+                              format:NSPropertyListBinaryFormat_v1_0
+                    errorDescription:NULL];
+            if (serialized) {
+                int64_t effective = (expiresAt > now) ? expiresAt : (now + 86400);
+                [db enqueueLocalPendingDeliveryForMessageID:msgID
+                                                   bundleID:routingData[@"bundleID"]
+                                                    payload:serialized
+                                                  deviceSeq:arrivedSeq
+                                                  expiresAt:effective];
+                SGLOGW(SGDaemon,
+                       "Mach delivery failed kr=%d for %s — queued for local retry (deadline=%s).",
+                       deliveryKr, [routingData[@"bundleID"] UTF8String],
+                       (expiresAt > now) ? "wire expiry" : "24h floor");
+            } else {
+                /**
+                 * Payload not encodable as a binary plist.  This should never
+                 * happen with output from SG_PayloadParseBinaryData (which only
+                 * yields NSString / NSNumber / NSData / NSArray / NSDictionary),
+                 * but if it does we cannot durably retry — degrade to honest
+                 * PARSE_FAILED so the server stops resending.
+                 */
+                SGLOGE(SGDaemon,
+                       "Mach delivery failed and payload not plist-encodable — ACKing PARSE_FAILED to halt server resends.");
+                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
+                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+            }
         }
 
         cleanup_assertion:
@@ -705,12 +781,12 @@ static BOOL isValidPort(NSString *port) {
 }
 
 - (void)protocolDidFinishOfflineQueueDrain {
-    NSLog(@"[SGDaemon] Server confirmed all offline messages delivered.");
+    SGLOGI(SGDaemon, "Server confirmed all offline messages delivered.");
 }
 
 - (void)protocolDidReceiveTimeSyncWithOffset:(int64_t)offsetSeconds {
     if (llabs(offsetSeconds) > 60) {
-        NSLog(@"[SGDaemon] [WARNING] Significant clock drift detected: %lld seconds", offsetSeconds);
+        SGLOGW(SGDaemon, "Significant clock drift detected: %lld seconds", offsetSeconds);
     }
 }
 
@@ -757,7 +833,7 @@ static BOOL isValidPort(NSString *port) {
     pemKey = NULL;
 
     if (!keyWritten) {
-        NSLog(@"[SGDaemon] Failed to write private key to disk — aborting registration.");
+        SGLOGE(SGDaemon, "Failed to write private key to disk — aborting registration.");
         [[NSFileManager defaultManager] removeItemAtPath:absoluteKeyPath error:nil];
         [self handleEvent:SGEventDisconnected payload:nil];
         return;
@@ -775,7 +851,7 @@ static BOOL isValidPort(NSString *port) {
 
     RSA *privKey = SG_CryptoGetClientPrivateKey();
     if (!privKey) {
-        NSLog(@"[SGDaemon] Freshly-written key failed to reload — wiping profile for re-registration.");
+        SGLOGE(SGDaemon, "Freshly-written key failed to reload — wiping profile for re-registration.");
         [self handleEvent:SGEventAuthFailed payload:nil];
         return;
     }
@@ -832,6 +908,145 @@ static BOOL isValidPort(NSString *port) {
         [profile writeToFile:profilePath atomically:YES];
         [[SGConfiguration sharedConfiguration] reloadFromDisk];
         [[SGDatabaseManager sharedManager] resetAllTokensToRequireUpload];
+    }
+}
+
+#pragma mark - Notification Disposition Helpers
+
+/**
+ * Records that a notification has been definitively handled — either delivered
+ * to SpringBoard or terminally ACK'd with a failure code.  Updates both the
+ * durable SQLite dedup table and the in-memory hot-path cache so subsequent
+ * retransmits are recognised instantly.  Never call this for a notification
+ * still pending local redelivery; the drain timer owns that disposition.
+ */
+- (void)_markMessageDeliveredID:(NSData *)msgID expiresAt:(int64_t)expiresAt {
+    if (!msgID || [msgID length] == 0) return;
+    [[SGDatabaseManager sharedManager] markMessageIDAsSeen:msgID expiresAt:expiresAt];
+    @synchronized(_seenMessageIDs) {
+        if (![_seenMessageIDs containsObject:msgID]) {
+            [_seenMessageIDs addObject:msgID];
+            if ([_seenMessageIDs count] > 200) [_seenMessageIDs removeObjectAtIndex:0];
+        }
+    }
+}
+
+/**
+ * Bumps last_delivered_seq if the arriving sequence is strictly greater than
+ * what we have on record.  Pulled out of protocolDidReceiveNotification: so
+ * the drain timer's redelivery path can apply the same rule when it finally
+ * succeeds in handing the message to SpringBoard.
+ */
+- (void)_advanceLastDeliveredSeqIfNeeded:(int64_t)arrivedSeq {
+    if (arrivedSeq <= 0) return;
+    SGDatabaseManager *db = [SGDatabaseManager sharedManager];
+    int64_t currentMax = [db lastDeliveredSeq];
+    if (arrivedSeq > currentMax) [db updateLastDeliveredSeq:arrivedSeq];
+}
+
+#pragma mark - Local Delivery Retry Queue
+
+/**
+ * Starts the 10-second drain timer that retries notifications whose Mach
+ * delivery to SpringBoard failed on first attempt.  10s is a balance:
+ * short enough that a SpringBoard restart (which completes in a few seconds)
+ * clears the queue promptly, long enough that an empty-queue tick is a single
+ * SELECT returning no rows.  Leeway of 1s lets the kernel coalesce the wake
+ * with other timers when the device is asleep, saving battery in the common
+ * no-work case.  The timer runs for the lifetime of the daemon; the queue is
+ * persistent so entries survive daemon restarts and reconnects.
+ */
+- (void)_startLocalDeliveryRetryTimer {
+    if (_localDeliveryRetryTimer) return;
+    _localDeliveryRetryTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+        dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+    dispatch_source_set_timer(_localDeliveryRetryTimer,
+                              dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC),
+                              10 * NSEC_PER_SEC,
+                              1 * NSEC_PER_SEC);
+    dispatch_source_set_event_handler(_localDeliveryRetryTimer, ^{
+        [self _drainLocalPendingDeliveries];
+    });
+    dispatch_resume(_localDeliveryRetryTimer);
+}
+
+- (void)_stopLocalDeliveryRetryTimer {
+    if (!_localDeliveryRetryTimer) return;
+    dispatch_source_cancel(_localDeliveryRetryTimer);
+    dispatch_release(_localDeliveryRetryTimer);
+    _localDeliveryRetryTimer = NULL;
+}
+
+/**
+ * Walks the local_pending_deliveries table, attempting redelivery for each
+ * non-expired entry.  Three terminal outcomes per row:
+ *   - Wire expiry passed → ACK EXPIRED, remove row, mark seen.
+ *   - Mach delivery succeeds → ACK SUCCESS, remove row, mark seen, advance seq.
+ *   - Payload no longer decodable → ACK PARSE_FAILED, remove row, mark seen.
+ * Rows that fail Mach delivery without expiring stay in the table for the
+ * next tick.  Safe to call from any thread; the database manager serialises
+ * its own queue, and SGP_EnqueueAcknowledgement falls back to the persistent
+ * ACK queue if the connection is down.
+ */
+- (void)_drainLocalPendingDeliveries {
+    @autoreleasepool {
+        SGDatabaseManager *db = [SGDatabaseManager sharedManager];
+        NSArray *pending = [db allLocalPendingDeliveries];
+        if ([pending count] == 0) return;
+
+        int64_t now = (int64_t)time(NULL);
+        for (NSDictionary *entry in pending) {
+            @autoreleasepool {
+                NSData   *msgID      = entry[@"msgID"];
+                NSString *bundleID   = entry[@"bundleID"];
+                NSData   *serialized = entry[@"payload"];
+                int64_t   deviceSeq  = [entry[@"deviceSeq"] longLongValue];
+                int64_t   expiresAt  = [entry[@"expiresAt"] longLongValue];
+
+                if (now > expiresAt) {
+                    SGLOGW(SGDaemon,
+                           "Local-pending notification expired in retry queue (msg_id=%s) — ACKing EXPIRED.",
+                           [[msgID description] UTF8String]);
+                    SGP_EnqueueAcknowledgement(msgID, SGP_ACK_EXPIRED);
+                    [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                    [db removeLocalPendingDeliveryForMessageID:msgID];
+                    continue;
+                }
+
+                /**
+                 * propertyListFromData:mutabilityOption:format:errorDescription:
+                 * is deprecated on modern iOS but available all the way back to
+                 * iOS 2.0 — keep it for the iOS 3 floor.  -Wno-deprecated-declarations
+                 * in the Makefile already silences the warning at build time.
+                 */
+                NSDictionary *parsed = (NSDictionary *)[NSPropertyListSerialization
+                    propertyListFromData:serialized
+                        mutabilityOption:NSPropertyListImmutable
+                                  format:NULL
+                        errorDescription:NULL];
+                if (![parsed isKindOfClass:[NSDictionary class]]) {
+                    SGLOGE(SGDaemon,
+                           "Could not deserialize pending payload (msg_id=%s) — ACKing PARSE_FAILED.",
+                           [[msgID description] UTF8String]);
+                    SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
+                    [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                    [db removeLocalPendingDeliveryForMessageID:msgID];
+                    continue;
+                }
+
+                kern_return_t kr = SGMach_SendPushToAppTopic(bundleID, parsed);
+                if (kr == KERN_SUCCESS) {
+                    SGLOGI(SGDaemon,
+                           "Local retry succeeded for msg_id=%s after earlier Mach failure.",
+                           [[msgID description] UTF8String]);
+                    SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
+                    [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                    [self _advanceLastDeliveredSeqIfNeeded:deviceSeq];
+                    [db removeLocalPendingDeliveryForMessageID:msgID];
+                }
+                /* else: SpringBoard still unavailable — leave row for the next tick. */
+            }
+        }
     }
 }
 
@@ -899,7 +1114,7 @@ static BOOL isValidPort(NSString *port) {
 
         [[SGAvailability shared] schedulePersistentTimer:self->_keepAliveTimer inRunLoop:[NSRunLoop mainRunLoop]];
 
-        NSLog(@"[SGDaemon] PCPersistentTimer scheduled: %.0fs (survives sleep)", interval);
+        SGLOGI(SGDaemon, "PCPersistentTimer scheduled: %.0fs (survives sleep)", interval);
     });
 }
 
@@ -925,11 +1140,11 @@ static BOOL isValidPort(NSString *port) {
  */
 - (void)_keepAliveTimerFired:(id)timer {
     if (!SGP_IsConnected()) {
-        NSLog(@"[SGDaemon] PCPersistentTimer fired but not connected — ignoring.");
+        SGLOGD(SGDaemon, "PCPersistentTimer fired but not connected — ignoring.");
         return;
     }
 
-    NSLog(@"[SGDaemon] PCPersistentTimer fired — sending keepalive ping.");
+    SGLOGD(SGDaemon, "PCPersistentTimer fired — sending keepalive ping.");
     BOOL sent = SGP_SendKeepAlivePing();
 
     if (sent) {
@@ -940,7 +1155,7 @@ static BOOL isValidPort(NSString *port) {
          * Timer will be rescheduled in protocolDidReceiveKeepAlivePong
          * after the pong arrives and the adaptive algorithm updates.
          */
-        NSLog(@"[SGDaemon] PCPersistentTimer: ping not sent (already pending or send failed).");
+        SGLOGD(SGDaemon, "PCPersistentTimer: ping not sent (already pending or send failed).");
     }
 }
 
@@ -990,7 +1205,7 @@ static BOOL isValidPort(NSString *port) {
     NSString *cert = [[SGConfiguration sharedConfiguration] serverPubKeyPEM];
 
     if (!ip || !portStr || !cert) {
-        NSLog(@"[SGDaemon] Missing IP, Port, or Certificate. Aborting connection.");
+        SGLOGE(SGDaemon, "Missing IP, Port, or Certificate. Aborting connection.");
         strlcpy(_lastErrorDetail, "Missing server IP, port, or certificate", sizeof(_lastErrorDetail));
         [self handleEvent:SGEventConnectFailed payload:nil];
         return;
@@ -1067,7 +1282,7 @@ static BOOL isValidPort(NSString *port) {
     _workerActive = YES;
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSLog(@"[SGDaemon] Connection worker started.");
+        SGLOGI(SGDaemon, "Connection worker started.");
         while (SGP_IsConnected()) {
             [self->_stateLock lock];
             double pingInterval = [self _currentKeepAliveInterval];
@@ -1076,7 +1291,7 @@ static BOOL isValidPort(NSString *port) {
             int rc = SGP_ProcessNextIncomingMessage(pingInterval);
             
             if (rc != SGP_OK) {
-                NSLog(@"[SGDaemon] Connection worker exited with code: %d", rc);
+                SGLOGI(SGDaemon, "Connection worker exited with code: %d", rc);
                 if (rc == SGP_ERR_AUTH) {
                     [self handleEvent:SGEventAuthFailed payload:nil];
                 } else {
@@ -1090,7 +1305,7 @@ static BOOL isValidPort(NSString *port) {
             self->_workerActive = NO;
             [self->_stateLock unlock];
         });
-        NSLog(@"[SGDaemon] Connection worker stopped.");
+        SGLOGI(SGDaemon, "Connection worker stopped.");
     });
 }
 
@@ -1101,7 +1316,7 @@ static BOOL isValidPort(NSString *port) {
         [self->_stateLock unlock];
         
         if (isStale) {
-            NSLog(@"[SGDaemon] Timer (gen=%u) for event %ld expired but generation changed, discarding.", generation, (long)event);
+            SGLOGD(SGDaemon, "Timer (gen=%u) for event %ld expired but generation changed, discarding.", generation, (long)event);
             return;
         }
         [self handleEvent:event payload:nil];

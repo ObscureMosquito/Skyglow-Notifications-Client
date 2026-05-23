@@ -1,5 +1,6 @@
 #import "SNDebugViewController.h"
 #import "SNDataManager.h"
+#import "SNLogTailViewController.h"
 #include <spawn.h>
 #include <sys/wait.h>
 #import <mach/mach.h>
@@ -14,6 +15,7 @@ typedef enum {
     SectionManualReg,
     SectionSavedTokens,
     SectionStats,
+    SectionLogs,
     SectionDaemon,
     SectionMaintenance,
     SectionCount
@@ -89,6 +91,7 @@ typedef enum {
         case SectionManualReg:   return 2;
         case SectionSavedTokens: return _savedApps.count > 0 ? _savedApps.count : 1;
         case SectionStats:       return 2;
+        case SectionLogs:        return 1;
         case SectionDaemon:      return 1;
         case SectionMaintenance: return 2;
         default: return 0;
@@ -100,6 +103,7 @@ typedef enum {
         case SectionManualReg:   return @"Manual Registration & Testing";
         case SectionSavedTokens: return @"Saved Tokens";
         case SectionStats:       return @"Database Statistics";
+        case SectionLogs:        return @"Logs";
         case SectionDaemon:      return @"Daemon";
         case SectionMaintenance: return @"Maintenance";
         default: return nil;
@@ -109,6 +113,8 @@ typedef enum {
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (section == SectionSavedTokens && _savedApps.count > 0)
         return @"Tap to copy token. Swipe to delete.";
+    if (section == SectionLogs)
+        return @"Live tail of /var/log/skyglow.log.";
     if (section == SectionDaemon)
         return @"Stops and restarts the background daemon process.";
     return nil;
@@ -211,11 +217,18 @@ typedef enum {
     
     cell.selectionStyle = UITableViewCellSelectionStyleBlue;
     cell.accessoryType  = UITableViewCellAccessoryNone;
-    
-    if (indexPath.section == SectionDaemon) {
+
+    if (indexPath.section == SectionLogs) {
+        cell.textLabel.text = @"View Logs";
+        cell.textLabel.textAlignment = NSTextAlignmentLeft;
+        cell.textLabel.textColor = [UIColor blackColor];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    } else if (indexPath.section == SectionDaemon) {
         cell.textLabel.text = @"Restart Daemon";
+        cell.textLabel.textAlignment = NSTextAlignmentCenter;
         cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
     } else if (indexPath.section == SectionMaintenance) {
+        cell.textLabel.textAlignment = NSTextAlignmentCenter;
         if (indexPath.row == 0) {
             cell.textLabel.text = @"Clear DNS Cache";
             cell.textLabel.textColor = [UIColor redColor];
@@ -278,7 +291,11 @@ typedef enum {
         [self showAlert:@"Token Copied"
                 message:[NSString stringWithFormat:@"Bundle: %@\n\nHex:\n%@",
                          app[@"bundleID"], hex]];
-                         
+
+    } else if (indexPath.section == SectionLogs) {
+        SNLogTailViewController *vc = [[SNLogTailViewController alloc] init];
+        [self.navigationController pushViewController:vc animated:YES];
+
     } else if (indexPath.section == SectionDaemon) {
         [self reloadDaemon];
         [self showAlert:@"Done" message:@"Daemon restarted."];

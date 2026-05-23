@@ -8,6 +8,7 @@
 #import "SGStatusServer.h"
 #import "SGProtocolHandler.h"
 #import "SGTokenManager.h"
+#import "SGLog.h"
 #include <signal.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -15,6 +16,13 @@
 #include <sys/stat.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <IOKit/IOMessage.h>
+
+/**
+ * Rotation threshold for /var/log/skyglow.log.  1 MB × 2 generations keeps
+ * roughly 8–24 hours of typical traffic on disk without unbounded growth.
+ * Bump if Debug/Trace logging becomes a routine diagnostic posture.
+ */
+#define SG_LOG_ROTATE_BYTES (1024u * 1024u)
 
 static io_connect_t          _sgPowerRootPort  = MACH_PORT_NULL;
 static io_object_t           _sgPowerNotifier  = MACH_PORT_NULL;
@@ -61,18 +69,32 @@ int main(int argc, char *argv[]) {
     @autoreleasepool {
         signal(SIGPIPE, SIG_IGN);
 
+        /**
+         * Bring up logging before anything else can log.  SGLog_Write is
+         * safe to call before SGLog_OpenFile (it falls back to syslog
+         * only), but doing this first means every line — including the
+         * banner and the PID-file errors — lands in /var/log/skyglow.log
+         * for later inspection from the prefs UI.
+         */
+        SGLog_SetProcessName("SkyglowNotificationsDaemon");
+        if (SGLog_OpenFile([SGPath(@"/var/log/skyglow.log") UTF8String],
+                           SG_LOG_ROTATE_BYTES) != 0) {
+            NSLog(@"[Skyglow] WARNING: could not open log file — running with syslog only.");
+        }
+
         SGConfiguration *config = [SGConfiguration sharedConfiguration];
+        SGLog_SetMinLevel((SGLogLevel)[config logLevel]);
 
         int pid_fd = open([SGPath(@"/var/run/skyglow_daemon.pid") UTF8String], O_RDWR | O_CREAT, 0666);
         if (pid_fd < 0) {
-            NSLog(@"[Skyglow] FATAL: Could not create or open PID file.");
+            SGLOGE(Skyglow, "FATAL: Could not create or open PID file.");
             exit(EXIT_FAILURE);
         }
 
         fchmod(pid_fd, 0666);
 
         if (flock(pid_fd, LOCK_EX | LOCK_NB) != 0) {
-            NSLog(@"[Skyglow] FATAL: Another instance of Skyglow Notifications Daemon is already running! Aborting.");
+            SGLOGE(Skyglow, "FATAL: Another instance of Skyglow Notifications Daemon is already running! Aborting.");
             close(pid_fd);
             exit(EXIT_FAILURE);
         }
@@ -80,8 +102,8 @@ int main(int argc, char *argv[]) {
         ftruncate(pid_fd, 0);
         dprintf(pid_fd, "%d\n", getpid());
 
-        NSLog(@"Speedy Execution Is The Mother Of Good Fortune");
-        NSLog(@"[Skyglow] Daemon starting");
+        SGLOGI(Skyglow, "Speedy Execution Is The Mother Of Good Fortune");
+        SGLOGI(Skyglow, "Daemon starting (pid=%d)", (int)getpid());
 
         /**
          * Start the status server BEFORE the enabled check so the preference
@@ -92,13 +114,14 @@ int main(int argc, char *argv[]) {
         SGStatusServer_Start([SGPath(@"/var/run/skyglow_status.sock") UTF8String], startTime);
 
         if (!config.isEnabled) {
-            NSLog(@"[Skyglow] Daemon is disabled. Broadcasting state and exiting.");
+            SGLOGI(Skyglow, "Daemon is disabled. Broadcasting state and exiting.");
             SGStatusServer_Post(SGStateDisabled, 0, 0, NULL, "Daemon is disabled", 0);
             usleep(200000); /* 200ms — let any watchers read the state */
             SGStatusServer_Shutdown();
             unlink([SGPath(@"/var/run/skyglow_daemon.pid") UTF8String]);
             flock(pid_fd, LOCK_UN);
             close(pid_fd);
+            SGLog_CloseFile();
             exit(EXIT_SUCCESS);
         }
         
@@ -114,7 +137,7 @@ int main(int argc, char *argv[]) {
         dispatch_source_t sigtermSource = dispatch_source_create(
             DISPATCH_SOURCE_TYPE_SIGNAL, SIGTERM, 0, dispatch_get_main_queue());
         dispatch_source_set_event_handler(sigtermSource, ^{
-            NSLog(@"[Skyglow] SIGTERM received — initiating graceful shutdown.");
+            SGLOGI(Skyglow, "SIGTERM received — initiating graceful shutdown.");
             CFRunLoopStop(CFRunLoopGetMain());
         });
         dispatch_resume(sigtermSource);
@@ -140,9 +163,9 @@ int main(int argc, char *argv[]) {
             CFRunLoopAddSource(CFRunLoopGetMain(),
                                IONotificationPortGetRunLoopSource(_sgPowerNotifyPort),
                                kCFRunLoopDefaultMode);
-            NSLog(@"[Skyglow] IOKit power notifications registered.");
+            SGLOGI(Skyglow, "IOKit power notifications registered.");
         } else {
-            NSLog(@"[Skyglow] WARNING: IOKit power notification registration failed — wake recovery disabled.");
+            SGLOGW(Skyglow, "IOKit power notification registration failed — wake recovery disabled.");
         }
 
         SGReachabilityMonitor *reachability = [[SGReachabilityMonitor alloc] initWithChangeHandler:^(BOOL isReachable, BOOL isWWAN) {
@@ -177,7 +200,7 @@ int main(int argc, char *argv[]) {
 
         CFRunLoopRun();
 
-        NSLog(@"[Skyglow] SGDaemon shutting down...");
+        SGLOGI(Skyglow, "SGDaemon shutting down...");
         [daemon requestGracefulDisconnect];
         [reachability stopMonitoringSystemNetworkChanges];
 
@@ -209,6 +232,9 @@ int main(int argc, char *argv[]) {
         unlink([SGPath(@"/var/run/skyglow_daemon.pid") UTF8String]);
         flock(pid_fd, LOCK_UN);
         close(pid_fd);
+
+        SGLog_Flush();
+        SGLog_CloseFile();
     }
     return 0;
 }

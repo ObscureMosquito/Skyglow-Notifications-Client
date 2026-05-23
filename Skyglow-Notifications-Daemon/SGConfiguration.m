@@ -1,4 +1,5 @@
 #import "SGConfiguration.h"
+#import "SGLog.h"
 
 @implementation SGConfiguration {
     NSString *_serverAddress;
@@ -11,6 +12,7 @@
     NSString *_privateKeyPEM;
     NSString *_serverPubKeyPEM;
     NSInteger _activeProfileIndex;
+    NSInteger _logLevel;
 
     dispatch_queue_t _isolationQueue;
 }
@@ -46,6 +48,16 @@
         NSInteger idx = (profileNum && [profileNum integerValue] >= 1 && [profileNum integerValue] <= 5)
                         ? [profileNum integerValue] : 1;
         self->_activeProfileIndex = idx;
+
+        /**
+         * logLevel: 0..4 (SGLogLevel encoding).  Anything outside the
+         * range — including a missing key on a fresh install — resolves to
+         * Info (2), matching the historical NSLog volume.
+         */
+        NSNumber *logLevelNum = mainPrefs ? mainPrefs[@"logLevel"] : nil;
+        NSInteger lvl = logLevelNum ? [logLevelNum integerValue] : 2;
+        if (lvl < 0 || lvl > 4) lvl = 2;
+        self->_logLevel = lvl;
 
         NSString *profilePath = SGPath([NSString stringWithFormat:
             @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile%ld.plist", (long)idx]);
@@ -87,36 +99,36 @@
     if (!rawPath || [rawPath length] == 0) return nil;
     
     if ([rawPath length] > 1024) {
-        NSLog(@"[SGConfiguration] ABORT: Provided path string exceeds PATH_MAX. Is this a raw PEM?");
+        SGLOGE(SGConfiguration, "ABORT: Provided path string exceeds PATH_MAX. Is this a raw PEM?");
         return nil;
     }
-    
+
     NSString *safePath = SGPath(rawPath);
-    
+
     BOOL isDirectory = NO;
     if (![[NSFileManager defaultManager] fileExistsAtPath:safePath isDirectory:&isDirectory] || isDirectory) {
-        NSLog(@"[SGConfiguration] Key file or its directory are missing");
+        SGLOGW(SGConfiguration, "Key file or its directory are missing");
         return nil;
     }
-    
+
     NSError *attrError = nil;
     NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:safePath error:&attrError];
     if (attrError || !attrs) {
-        NSLog(@"[SGConfiguration] Cannot stat key file attributes");
+        SGLOGW(SGConfiguration, "Cannot stat key file attributes");
         return nil;
     }
-    
+
     unsigned long long fileSize = [attrs fileSize];
     if (fileSize > 65536) {
-        NSLog(@"[SGConfiguration] ABORT: Key file exceeds 64KB safety limit!");
+        SGLOGE(SGConfiguration, "ABORT: Key file exceeds 64KB safety limit!");
         return nil;
     }
-    
+
     NSError *readError = nil;
     NSString *keyContent = [NSString stringWithContentsOfFile:safePath encoding:NSUTF8StringEncoding error:&readError];
-    
+
     if (readError || !keyContent) {
-        NSLog(@"[SGConfiguration] Failed to read key file");
+        SGLOGW(SGConfiguration, "Failed to read key file");
         return nil;
     }
     
@@ -284,6 +296,14 @@
     __block NSInteger result = 1;
     dispatch_sync(_isolationQueue, ^{
         result = self->_activeProfileIndex;
+    });
+    return result;
+}
+
+- (NSInteger)logLevel {
+    __block NSInteger result = 2;
+    dispatch_sync(_isolationQueue, ^{
+        result = self->_logLevel;
     });
     return result;
 }

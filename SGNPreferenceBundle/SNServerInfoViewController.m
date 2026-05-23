@@ -74,15 +74,19 @@ static const NSInteger kAlertTagUnregister  = 2;
 
         NSBundle *bundle = [NSBundle bundleForClass:[self class]];
 
+        UIView *iconGroup = [[UIView alloc] initWithFrame:CGRectMake(startX, topPad, totalGroupWidth, iconSize)];
+        iconGroup.backgroundColor = [UIColor clearColor];
+        iconGroup.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
+
         UIImage *webIcon = [UIImage imageWithContentsOfFile:[bundle pathForResource:@"web" ofType:@"png"]];
         UIImageView *webIconView = [[UIImageView alloc] initWithImage:webIcon];
         webIconView.contentMode   = UIViewContentModeScaleAspectFit;
         webIconView.clipsToBounds = YES;
-        webIconView.frame = CGRectMake(startX, topPad, iconSize, iconSize);
+        webIconView.frame = CGRectMake(0, 0, iconSize, iconSize);
 
-        UILabel *arrowLabel = [[UILabel alloc] initWithFrame:CGRectMake(startX + iconSize + spacing, topPad, arrowWidth, iconSize)];
+        UILabel *arrowLabel = [[UILabel alloc] initWithFrame:CGRectMake(iconSize + spacing, 0, arrowWidth, iconSize)];
         arrowLabel.text = @"➔";
-        arrowLabel.font = [UIFont boldSystemFontOfSize:28.0f];
+        arrowLabel.font = [UIFont boldSystemFontOfSize:25.0f];
         arrowLabel.textColor = [UIColor colorWithRed:0.55f green:0.55f blue:0.58f alpha:1.0f];
         arrowLabel.shadowColor = [UIColor colorWithWhite:1.0f alpha:0.7f];
         arrowLabel.shadowOffset = CGSizeMake(0, 1);
@@ -94,10 +98,14 @@ static const NSInteger kAlertTagUnregister  = 2;
         settingsIconView.contentMode   = UIViewContentModeScaleAspectFit;
         settingsIconView.clipsToBounds = YES;
 
-        CGFloat settingsYOffset = topPad + ((iconSize - smallIconSize) / 2.0f);
-        CGFloat settingsXOrigin = startX + iconSize + spacing + arrowWidth + spacing;
+        CGFloat settingsYOffset = (iconSize - smallIconSize) / 2.0f;
+        CGFloat settingsXOrigin = iconSize + spacing + arrowWidth + spacing;
 
         settingsIconView.frame = CGRectMake(settingsXOrigin, settingsYOffset, smallIconSize, smallIconSize);
+        
+        [iconGroup addSubview:webIconView];
+        [iconGroup addSubview:arrowLabel];
+        [iconGroup addSubview:settingsIconView];
 
         CGFloat iconGap   = 10.0f;
         CGFloat titleGap  = 4.0f;
@@ -113,8 +121,10 @@ static const NSInteger kAlertTagUnregister  = 2;
         titleLabel.shadowOffset = CGSizeMake(0, 1);
         titleLabel.textAlignment     = NSTextAlignmentCenter;
         titleLabel.backgroundColor   = [UIColor clearColor];
+        titleLabel.autoresizingMask  = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
         CGFloat titleY = topPad + iconSize + iconGap;
-        titleLabel.frame = CGRectMake(sideInset, titleY, w - sideInset * 2.0f, 22.0f);
+        [titleLabel sizeToFit];
+        titleLabel.frame = CGRectMake((w - titleLabel.frame.size.width) / 2.0f, titleY, titleLabel.frame.size.width, titleLabel.frame.size.height);
 
         UILabel *bodyLabel      = [[UILabel alloc] init];
         bodyLabel.text          = @"Enter your server address below, then select\nyour server\xe2\x80\x99s public certificate to get started.";
@@ -125,17 +135,17 @@ static const NSInteger kAlertTagUnregister  = 2;
         bodyLabel.textAlignment    = NSTextAlignmentCenter;
         bodyLabel.backgroundColor  = [UIColor clearColor];
         bodyLabel.numberOfLines    = 0;
-        CGFloat bodyY = titleY + 22.0f + titleGap;
+        bodyLabel.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
+        CGFloat bodyY = titleY + titleLabel.frame.size.height + titleGap;
         CGSize bodyFit = [bodyLabel sizeThatFits:CGSizeMake(w - sideInset * 2.0f, 999.0f)];
-        bodyLabel.frame = CGRectMake(sideInset, bodyY, w - sideInset * 2.0f, bodyFit.height);
+        bodyLabel.frame = CGRectMake((w - bodyFit.width) / 2.0f, bodyY, bodyFit.width, bodyFit.height);
 
         CGFloat totalH = bodyY + bodyFit.height + bodyGap + botPad;
         UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, totalH)];
         header.backgroundColor = [UIColor clearColor];
+        header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
         
-        [header addSubview:webIconView];
-        [header addSubview:arrowLabel];
-        [header addSubview:settingsIconView];
+        [header addSubview:iconGroup];
         
         [header addSubview:titleLabel];
         [header addSubview:bodyLabel];

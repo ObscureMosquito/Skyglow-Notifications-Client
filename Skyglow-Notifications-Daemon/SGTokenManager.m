@@ -3,6 +3,7 @@
 #import "SGConfiguration.h"
 #import "SGProtocolHandler.h"
 #import "SGCryptoEngine.h"
+#import "SGLog.h"
 #include <Security/Security.h>
 #include <CommonCrypto/CommonDigest.h>
 
@@ -73,7 +74,7 @@
      */
     memset(K, 0, sizeof(K));
 
-    NSLog(@"[SGTokenManager] Generated local token for %@", bundleIdentifier);
+    SGLOGI(SGTokenManager, "Generated local token for %s", [bundleIdentifier UTF8String]);
     return [deviceToken autorelease];
 }
 
@@ -89,9 +90,9 @@
 
     if (SGP_IsConnected() && SGP_RegisterDeviceToken(routingKey, bundleIdentifier)) {
         [[SGDatabaseManager sharedManager] markTokenAsUploaded:routingKey];
-        NSLog(@"[SGTokenManager] Token uploaded for %@", bundleIdentifier);
+        SGLOGI(SGTokenManager, "Token uploaded for %s", [bundleIdentifier UTF8String]);
     } else {
-        NSLog(@"[SGTokenManager] Token upload deferred for %@ (not connected)", bundleIdentifier);
+        SGLOGI(SGTokenManager, "Token upload deferred for %s (not connected)", [bundleIdentifier UTF8String]);
     }
 }
 

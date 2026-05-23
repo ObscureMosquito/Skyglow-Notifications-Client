@@ -113,6 +113,62 @@
  */
 - (void)updateLastDeliveredSeq:(int64_t)seq;
 
+/** Cross-Session Notification Dedup */
+
+/**
+ * Returns YES if the given msg_id was previously delivered (or terminally ACK'd)
+ * by this device in any session.  Used to suppress double-delivery when the
+ * server retransmits a notification we already handled before a reconnect.
+ */
+- (BOOL)hasSeenMessageID:(NSData *)msgID;
+
+/**
+ * Records that msg_id has been definitively handled (delivered or ACK'd with a
+ * terminal failure).  expiresAt is the notification's wire expiry; when zero or
+ * already past, the row is retained for at least 24h to absorb late retransmits.
+ */
+- (void)markMessageIDAsSeen:(NSData *)msgID expiresAt:(int64_t)expiresAt;
+
+/**
+ * Deletes seen_messages rows whose expiry has passed.  Safe to call frequently;
+ * typically invoked on reconnect to keep the table bounded.
+ */
+- (void)pruneExpiredSeenMessagesAsOf:(int64_t)nowEpoch;
+
+/** Local-Side Delivery Retry Queue */
+
+/**
+ * Persists a notification whose Mach delivery to SpringBoard failed so it can
+ * be retried later without lying to the server.  The payload is a binary plist
+ * encoding of the parsed notification dictionary.  The row is removed only
+ * after either successful redelivery or expiry; the wire ACK is sent at the
+ * same moment so the server never sees an ACK for a notification we did not
+ * actually surface on the device.
+ */
+- (BOOL)enqueueLocalPendingDeliveryForMessageID:(NSData *)msgID
+                                       bundleID:(NSString *)bundleID
+                                        payload:(NSData *)serializedPayload
+                                      deviceSeq:(int64_t)deviceSeq
+                                      expiresAt:(int64_t)expiresAt;
+
+/**
+ * Returns all rows currently queued for local redelivery.  Each entry is a
+ * dictionary with keys: msgID (NSData), bundleID (NSString), payload (NSData),
+ * deviceSeq (NSNumber, int64), expiresAt (NSNumber, int64).
+ */
+- (NSArray *)allLocalPendingDeliveries;
+
+/**
+ * Removes a local pending delivery row after it has been disposed of.
+ */
+- (BOOL)removeLocalPendingDeliveryForMessageID:(NSData *)msgID;
+
+/**
+ * Returns YES if a local-pending row exists for the given msg_id.  Used to
+ * silently drop server retransmits we are still trying to redeliver.
+ */
+- (BOOL)hasLocalPendingDeliveryForMessageID:(NSData *)msgID;
+
 /**
  * Closes the underlying SQLite database handle.
  */

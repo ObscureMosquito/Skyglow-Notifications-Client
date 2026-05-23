@@ -10,6 +10,7 @@ include $(THEOS)/makefiles/common.mk
 TOOL_NAME = SkyglowNotificationsDaemon
 SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/main.m \
+    Skyglow-Notifications-Daemon/SGLog.m \
     Skyglow-Notifications-Daemon/SGProtocolHandler.m \
     Skyglow-Notifications-Daemon/SGServerLocator.m \
     Skyglow-Notifications-Daemon/SGDatabaseManager.m \

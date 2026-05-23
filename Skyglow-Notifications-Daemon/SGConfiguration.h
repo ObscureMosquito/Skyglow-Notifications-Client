@@ -34,6 +34,15 @@ static inline NSString * SGPath(NSString *path) {
 
 @property (nonatomic, assign) BOOL isEnabled;
 @property (nonatomic, assign) BOOL hasProfile;
+
+/**
+ * Minimum log level read from the "logLevel" key of the main prefs plist
+ * (com.skyglow.sndp).  Encoding matches SGLogLevel: 0=Error, 1=Warn,
+ * 2=Info (default), 3=Debug, 4=Trace.  Absent or out-of-range values
+ * resolve to Info so a freshly-installed daemon logs at the same volume
+ * the codebase used to with NSLog.
+ */
+@property (nonatomic, readonly) NSInteger logLevel;
 @property (nonatomic, copy) NSString *deviceAddress;
 @property (nonatomic, copy) NSString *privateKeyPEM;
 @property (nonatomic, copy) NSString *serverPubKeyPEM;

@@ -3,6 +3,7 @@
 #import "SGDatabaseManager.h"
 #import "SGConfiguration.h"
 #import "SGMachProtocol.h"
+#import "SGLog.h"
 #include <bootstrap.h>
 #include <string.h>
 
@@ -26,7 +27,7 @@ kern_return_t SGMach_SendPushToAppTopic(NSString *topic, NSDictionary *payload) 
     mach_port_t servicePort;
     kern_return_t kr = bootstrap_look_up(bootstrapPort, SKYGLOW_MACH_SERVICE_NAME_PUSH, &servicePort);
     if (kr != KERN_SUCCESS) {
-        NSLog(@"[SGMachServer] bootstrap_look_up for push receiver failed kr=%d — SpringBoard tweak not loaded or not yet registered", kr);
+        SGLOGW(SGMachServer, "bootstrap_look_up for push receiver failed kr=%d — SpringBoard tweak not loaded or not yet registered", kr);
         return kr;
     }
 
@@ -74,7 +75,7 @@ kern_return_t SGMach_SendPushToAppTopic(NSString *topic, NSDictionary *payload) 
     bootstrap_register(bootstrap_port, SKYGLOW_MACH_SERVICE_NAME_TOKEN, serverPort);
 #pragma clang diagnostic pop
 
-    NSLog(@"[SGMachServer] Listening for token requests on: %s", SKYGLOW_MACH_SERVICE_NAME_TOKEN);
+    SGLOGI(SGMachServer, "Listening for token requests on: %s", SKYGLOW_MACH_SERVICE_NAME_TOKEN);
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [self runMessageLoopWithPort:serverPort];
@@ -148,17 +149,17 @@ kern_return_t SGMach_SendPushToAppTopic(NSString *topic, NSDictionary *payload) 
         response.type = SG_MACH_MSG_ERROR;
         const char *desc = error ? [[error localizedDescription] UTF8String] : NULL;
         strlcpy(response.error, desc ? desc : "Token generation failed", sizeof(response.error));
-        NSLog(@"[SGMachServer] Token error for %@: %s", bundleID, response.error);
+        SGLOGW(SGMachServer, "Token error for %s: %s", [bundleID UTF8String], response.error);
     }
 
     kern_return_t kr = mach_msg(&response.header, MACH_SEND_MSG | MACH_SEND_TIMEOUT,
                                 sizeof(response), 0,
                                 MACH_PORT_NULL, 5000, MACH_PORT_NULL);
     if (kr != KERN_SUCCESS) {
-        NSLog(@"[SGMachServer] Send failed kr=%d for %@", kr, bundleID);
+        SGLOGW(SGMachServer, "Send failed kr=%d for %s", kr, [bundleID UTF8String]);
         // MOVE_SEND consumed the right on send attempt; if send failed the right is gone
     } else {
-        NSLog(@"[SGMachServer] Token response sent for %@", bundleID);
+        SGLOGD(SGMachServer, "Token response sent for %s", [bundleID UTF8String]);
     }
 
     // Upload to server async — does not block token delivery

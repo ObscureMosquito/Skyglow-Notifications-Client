@@ -1,6 +1,7 @@
 #import "SGProtocolHandler.h"
 #import "SGDatabaseManager.h"
 #import "SGConfiguration.h"
+#import "SGLog.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/bio.h>
@@ -416,12 +417,12 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     BIO *b = BIO_new_mem_buf((void *)utf8Cert, (int)strlen(utf8Cert));
     X509 *x = PEM_read_bio_X509(b, NULL, 0, NULL);
     if (!x) {
-        NSLog(@"[SGP_ConnectToServer] OpenSSL Failed to read PEM X509 Certificate!");
+        SGLOGE(SGP, "ConnectToServer: OpenSSL failed to read PEM X509 certificate!");
         unsigned long openSslErr;
         while ((openSslErr = ERR_get_error()) != 0) {
             char errBuf[256];
             ERR_error_string_n(openSslErr, errBuf, sizeof(errBuf));
-            NSLog(@"[SGP_ConnectToServer] OpenSSL Error: %s", errBuf);
+            SGLOGE(SGP, "ConnectToServer: OpenSSL error: %s", errBuf);
         }
     } else {
         X509_STORE_add_cert(SSL_CTX_get_cert_store(_sslctx), x);
@@ -626,13 +627,13 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
     _lastFrameReceivedAt = SG_GetMonotonicSeconds();
 
     if (hdr[0] != SGP_MAGIC || hdr[1] != SGP_VERSION) {
-        NSLog(@"[SGP] Invalid magic/version: 0x%02X 0x%02X (expected 0x%02X 0x%02X)",
-              hdr[0], hdr[1], SGP_MAGIC, SGP_VERSION);
+        SGLOGW(SGP, "Invalid magic/version: 0x%02X 0x%02X (expected 0x%02X 0x%02X)",
+               hdr[0], hdr[1], SGP_MAGIC, SGP_VERSION);
         return SGP_ERR_PROTO;
     }
 
     if (hdr[3] != 0x00) {
-        NSLog(@"[SGP] Non-zero reserved header byte: 0x%02X", hdr[3]);
+        SGLOGW(SGP, "Non-zero reserved header byte: 0x%02X", hdr[3]);
         return SGP_ERR_PROTO;
     }
 
@@ -686,8 +687,8 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
 
         if (idx < 32 && (kRegisteredMask & (1u << idx))) {
             if (len < kServerBounds[idx].min || len > kServerBounds[idx].max) {
-                NSLog(@"[SGP] Payload size %u out of range [%u, %u] for server type 0x%02X — rejecting frame",
-                      len, kServerBounds[idx].min, kServerBounds[idx].max, idx);
+                SGLOGW(SGP, "Payload size %u out of range [%u, %u] for server type 0x%02X — rejecting frame",
+                       len, kServerBounds[idx].min, kServerBounds[idx].max, idx);
                 return SGP_ERR_PROTO;
             }
         }
@@ -747,7 +748,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             uint32_t dl = SG_DecodeBE32(raw + SGP_NOTIFY_OFF_DATA_LEN);
 
             if ((uint64_t)SGP_NOTIFY_MIN_PAYLOAD + dl > (uint64_t)len) {
-                NSLog(@"[SGP] Protocol bounds violation in S_NOTIFY (dl=%u, len=%u)", dl, len);
+                SGLOGW(SGP, "Protocol bounds violation in S_NOTIFY (dl=%u, len=%u)", dl, len);
                 result = SGP_ERR_PROTO; goto cleanup;
             }
 
@@ -824,7 +825,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
                 }
             }
             if (!reason) reason = @"Unknown";
-            NSLog(@"[SGP] Registration failed: code=%u reason=%@", code, reason);
+            SGLOGE(SGP, "Registration failed: code=%u reason=%s", code, [reason UTF8String]);
             if (_regPendingRSA) { RSA_free(_regPendingRSA); _regPendingRSA = NULL; }
             [_regPendingAddress release]; _regPendingAddress = nil;
             if (_regPendingPrivKey) {
@@ -869,7 +870,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             pthread_mutex_lock(&_sendLock);
             _clockSkewSeconds = offset;
             pthread_mutex_unlock(&_sendLock);
-            NSLog(@"[SGP] Time sync: server=%lld local=%lld offset=%llds (skew applied)", serverTime, localTime, offset);
+            SGLOGI(SGP, "Time sync: server=%lld local=%lld offset=%llds (skew applied)", serverTime, localTime, offset);
             [_delegate protocolDidReceiveTimeSyncWithOffset:offset];
             break;
         }
