@@ -17,6 +17,12 @@ typedef enum {
 } WizardSection;
 
 typedef enum {
+    WizardCertRowAuto   = 0,
+    WizardCertRowManual = 1,
+    WizardCertRowCount  = 2
+} WizardCertRow;
+
+typedef enum {
     SectionServer  = 0,
     SectionDevice  = 1,
     SectionActions = 2,
@@ -31,6 +37,7 @@ static const NSInteger kAlertTagUnregister  = 2;
 
 @property (nonatomic, strong) NSString    *pendingServerAddress;
 @property (nonatomic, strong) NSString    *pendingPEMPath;
+@property (nonatomic, assign) BOOL         autoFetchInProgress;
 @property (nonatomic, weak)   UITextField *serverAddressField;
 @property (nonatomic, weak)   UITextField *registeredAddressField;
 
@@ -165,7 +172,9 @@ static const NSInteger kAlertTagUnregister  = 2;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (![self isRegistered]) return 1;
+    if (![self isRegistered]) {
+        return (section == WizardSectionCert) ? WizardCertRowCount : 1;
+    }
     switch (section) {
         case SectionServer:  return 3;
         case SectionDevice:  return 1;
@@ -176,7 +185,11 @@ static const NSInteger kAlertTagUnregister  = 2;
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     if (![self isRegistered]) {
-        return (section == WizardSectionServer) ? @"Server Address" : @"Certificate";
+        switch (section) {
+            case WizardSectionServer: return @"Server Address";
+            case WizardSectionCert:   return @"Server Setup";
+            default: return nil;
+        }
     }
     switch (section) {
         case SectionServer: return @"Server Details";
@@ -187,11 +200,13 @@ static const NSInteger kAlertTagUnregister  = 2;
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     if (![self isRegistered]) {
-        if (section == WizardSectionServer)
-            return @"Enter the hostname or IP address of your Skyglow notification server.";
-        if (section == WizardSectionCert)
-            return @"Select the server's public certificate (.pem). Enter the server address first.";
-        return nil;
+        switch (section) {
+            case WizardSectionServer:
+                return @"Enter the hostname or IP address of your Skyglow notification server.";
+            case WizardSectionCert:
+                return @"Fetch the certificate automatically, or import a .pem file manually from disk";
+            default: return nil;
+        }
     }
     if (section == SectionActions)
         return @"Unregistering disables the daemon and deletes your cryptographic keys. App toggles are preserved.";
@@ -210,7 +225,7 @@ static const NSInteger kAlertTagUnregister  = 2;
                 cell.selectionStyle = UITableViewCellSelectionStyleNone;
 
                 UITextField *tf = [[UITextField alloc] init];
-                tf.placeholder              = @"hostname or IP address";
+                tf.placeholder              = @"Hostname or IP address";
                 tf.autocorrectionType       = UITextAutocorrectionTypeNo;
                 tf.autocapitalizationType   = UITextAutocapitalizationTypeNone;
                 tf.keyboardType             = UIKeyboardTypeURL;
@@ -232,21 +247,41 @@ static const NSInteger kAlertTagUnregister  = 2;
             return cell;
         }
 
-        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"CertCell"];
+        BOOL isAuto = (indexPath.row == WizardCertRowAuto);
+        NSString *reuseID = isAuto ? @"AutoCertCell" : @"ManualCertCell";
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
         if (!cell) {
-            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
-                                          reuseIdentifier:@"CertCell"];
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                          reuseIdentifier:reuseID];
         }
-        BOOL canSelect = (self.pendingServerAddress.length > 0);
-        cell.textLabel.text       = @"Select Certificate";
-        cell.textLabel.textColor  = canSelect
-            ? [UIColor colorWithRed:0.05f green:0.42f blue:0.86f alpha:1.0f]
-            : [UIColor grayColor];
-        cell.detailTextLabel.textColor = [UIColor grayColor];
-        cell.accessoryType  = canSelect ? UITableViewCellAccessoryDisclosureIndicator
-                                        : UITableViewCellAccessoryNone;
-        cell.selectionStyle = canSelect ? UITableViewCellSelectionStyleBlue
-                                        : UITableViewCellSelectionStyleNone;
+
+        BOOL hasAddress = (self.pendingServerAddress.length > 0);
+        BOOL canSelect  = hasAddress && !self.autoFetchInProgress;
+        UIColor *enabledTint = [UIColor colorWithRed:0.05f green:0.42f blue:0.86f alpha:1.0f];
+
+        if (isAuto) {
+            cell.textLabel.text = self.autoFetchInProgress ? @"Fetching\xe2\x80\xa6"
+                                                           : @"Fetch Automatically";
+            if (self.autoFetchInProgress) {
+                UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
+                    initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
+                [spinner startAnimating];
+                cell.accessoryView = spinner;
+            } else {
+                cell.accessoryView = nil;
+                cell.accessoryType = hasAddress ? UITableViewCellAccessoryDisclosureIndicator
+                                                : UITableViewCellAccessoryNone;
+            }
+        } else {
+            cell.textLabel.text = @"Import From Disk";
+            cell.accessoryView  = nil;
+            cell.accessoryType  = canSelect ? UITableViewCellAccessoryDisclosureIndicator
+                                            : UITableViewCellAccessoryNone;
+        }
+
+        cell.textLabel.textColor = canSelect ? enabledTint : [UIColor grayColor];
+        cell.selectionStyle      = canSelect ? UITableViewCellSelectionStyleBlue
+                                             : UITableViewCellSelectionStyleNone;
         return cell;
     }
 
@@ -332,9 +367,14 @@ static const NSInteger kAlertTagUnregister  = 2;
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
     if (![self isRegistered]) {
-        if (indexPath.section == WizardSectionCert && self.pendingServerAddress.length > 0) {
-            [self.serverAddressField resignFirstResponder];
+        if (indexPath.section != WizardSectionCert) return;
+        if (self.pendingServerAddress.length == 0 || self.autoFetchInProgress) return;
 
+        [self.serverAddressField resignFirstResponder];
+
+        if (indexPath.row == WizardCertRowAuto) {
+            [self _beginAutoFetchCertificate];
+        } else {
             SFPFilePickerFilter *filter = [[SFPFilePickerFilter alloc] init];
             filter.allowedExtensions = @[@"pem"];
 
@@ -384,10 +424,11 @@ static const NSInteger kAlertTagUnregister  = 2;
                                                                     withString:string];
         self.pendingServerAddress = [updated stringByTrimmingCharactersInSet:
                                      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-        NSIndexPath *certPath = [NSIndexPath indexPathForRow:0 inSection:WizardSectionCert];
         if ([self.tableView respondsToSelector:@selector(reloadRowsAtIndexPaths:withRowAnimation:)]) {
-            [self.tableView reloadRowsAtIndexPaths:@[certPath]
-                                 withRowAnimation:UITableViewRowAnimationNone];
+            [self.tableView reloadRowsAtIndexPaths:@[
+                [NSIndexPath indexPathForRow:WizardCertRowAuto   inSection:WizardSectionCert],
+                [NSIndexPath indexPathForRow:WizardCertRowManual inSection:WizardSectionCert],
+            ] withRowAnimation:UITableViewRowAnimationNone];
         }
     }
     return YES;
@@ -439,6 +480,107 @@ static const NSInteger kAlertTagUnregister  = 2;
                        cancelButtonTitle:@"Cancel"
                        otherButtonTitles:@"Import", nil];
         av.tag = kAlertTagPEMConfirm;
+        [av show];
+    }
+}
+
+- (void)_beginAutoFetchCertificate {
+    NSString *address = self.pendingServerAddress;
+    if (address.length == 0 || self.autoFetchInProgress) return;
+
+    self.autoFetchInProgress = YES;
+    [self.navigationItem setHidesBackButton:YES animated:YES];
+    [self _reloadCertSections];
+
+    __weak typeof(self) weakSelf = self;
+    [[SNDataManager shared] fetchServerCertificateForAddress:address
+                                                  completion:^(NSString *pem, NSString *errorMessage) {
+        typeof(self) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        strongSelf.autoFetchInProgress = NO;
+        [strongSelf.navigationItem setHidesBackButton:NO animated:YES];
+        [strongSelf _reloadCertSections];
+
+        if (errorMessage) {
+            UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Auto-Fetch Failed"
+                                                         message:errorMessage
+                                                        delegate:nil
+                                               cancelButtonTitle:@"OK"
+                                               otherButtonTitles:nil];
+            [av show];
+            return;
+        }
+        [strongSelf _confirmInstallFetchedPEM:pem serverAddress:address];
+    }];
+}
+
+- (void)_reloadCertSections {
+    if (![self.tableView respondsToSelector:@selector(reloadSections:withRowAnimation:)]) {
+        [self.tableView reloadData];
+        return;
+    }
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:WizardSectionCert]
+                  withRowAnimation:UITableViewRowAnimationNone];
+}
+
+- (void)_confirmInstallFetchedPEM:(NSString *)pem serverAddress:(NSString *)serverAddress {
+    NSDictionary *info = [[SNDataManager shared] parseCertificatePEM:pem];
+    NSString *subject = info[@"subject"] ?: @"(unknown subject)";
+    NSString *issuer  = info[@"issuer"]  ?: @"(unknown issuer)";
+    NSString *message = [NSString stringWithFormat:
+        @"Fetched certificate for %@:\n\nSubject: %@\nIssuer: %@\n\nInstall it as the server certificate?",
+        serverAddress, subject, issuer];
+
+    Class alertControllerClass = NSClassFromString(@"UIAlertController");
+    if (alertControllerClass) {
+        SEL createSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
+        id (*create)(Class, SEL, id, id, NSInteger) =
+            (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
+        id alert = create(alertControllerClass, createSel,
+                          @"Confirm Certificate", message, 1 /* Alert */);
+
+        Class actionClass = NSClassFromString(@"UIAlertAction");
+        SEL actionSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
+        id (*makeAction)(Class, SEL, id, NSInteger, id) =
+            (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
+
+        id cancelAction = makeAction(actionClass, actionSel, @"Cancel", 1, nil);
+        __weak typeof(self) weakSelf = self;
+        NSString *capturedAddress = serverAddress;
+        NSString *capturedPEM     = pem;
+        void (^installBlock)(id) = ^(id action) {
+            [weakSelf _commitInstallFetchedPEM:capturedPEM serverAddress:capturedAddress];
+        };
+        id installAction = makeAction(actionClass, actionSel, @"Install", 0, installBlock);
+
+        SEL addSel = NSSelectorFromString(@"addAction:");
+        void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
+        addAction(alert, addSel, cancelAction);
+        addAction(alert, addSel, installAction);
+
+        SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
+        void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
+        present(self, presentSel, alert, YES, nil);
+    } else {
+        /* iOS < 8: skip confirmation, UIAlertView can't carry both PEM + address. */
+        [self _commitInstallFetchedPEM:pem serverAddress:serverAddress];
+    }
+}
+
+- (void)_commitInstallFetchedPEM:(NSString *)pem serverAddress:(NSString *)serverAddress {
+    BOOL ok = [[SNDataManager shared] installFetchedCertificatePEM:pem
+                                                     serverAddress:serverAddress
+                                                      profileIndex:self.profileIndex];
+    if (ok) {
+        self.pendingServerAddress = nil;
+        [self.navigationController popToViewController:self animated:YES];
+        self.title = [NSString stringWithFormat:@"Profile %ld", (long)self.profileIndex];
+    } else {
+        UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Install Failed"
+                                                     message:@"Could not save the fetched certificate to disk."
+                                                    delegate:nil
+                                           cancelButtonTitle:@"OK"
+                                           otherButtonTitles:nil];
         [av show];
     }
 }

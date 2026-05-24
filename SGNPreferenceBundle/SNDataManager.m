@@ -7,6 +7,11 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <dns_sd.h>
+
+static const NSTimeInterval kSNAutoFetchDNSTimeoutSec  = 5.0;
+static const NSTimeInterval kSNAutoFetchHTTPTimeoutSec = 10.0;
+static NSString * const     kSNAutoFetchCertPath       = @"/snd/server_cert.pem";
 
 static inline NSString * SGPath(NSString *path) {
     if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"]) {
@@ -32,6 +37,39 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
 @property (nonatomic, assign) int watchSocketFD;
 @property (nonatomic, assign) BOOL isWatching;
 @property (nonatomic, assign) uint32_t watchGeneration;
+@end
+
+/* Accepts any server trust — the user confirms the fetched cert before install,
+ * and strict chain validation would defeat the point of fetching it. */
+@interface SNAutoFetchConnectionDelegate : NSObject
+@property (nonatomic, strong) NSMutableData *buffer;
+@property (nonatomic, assign) NSInteger      statusCode;
+@property (nonatomic, strong) NSError       *error;
+@property (nonatomic, assign) BOOL           done;
+@end
+@implementation SNAutoFetchConnectionDelegate
+- (id)init {
+    if ((self = [super init])) { _buffer = [[NSMutableData alloc] init]; }
+    return self;
+}
+- (BOOL)connection:(NSURLConnection *)c canAuthenticateAgainstProtectionSpace:(NSURLProtectionSpace *)space {
+    return [[space authenticationMethod] isEqualToString:NSURLAuthenticationMethodServerTrust];
+}
+- (void)connection:(NSURLConnection *)c didReceiveAuthenticationChallenge:(NSURLAuthenticationChallenge *)ch {
+    if ([[[ch protectionSpace] authenticationMethod] isEqualToString:NSURLAuthenticationMethodServerTrust]) {
+        NSURLCredential *cred = [NSURLCredential credentialForTrust:[[ch protectionSpace] serverTrust]];
+        [[ch sender] useCredential:cred forAuthenticationChallenge:ch];
+    } else {
+        [[ch sender] continueWithoutCredentialForAuthenticationChallenge:ch];
+    }
+}
+- (void)connection:(NSURLConnection *)c didReceiveResponse:(NSURLResponse *)r {
+    [_buffer setLength:0];
+    _statusCode = [r isKindOfClass:[NSHTTPURLResponse class]] ? [(NSHTTPURLResponse *)r statusCode] : 0;
+}
+- (void)connection:(NSURLConnection *)c didReceiveData:(NSData *)data { [_buffer appendData:data]; }
+- (void)connectionDidFinishLoading:(NSURLConnection *)c { _done = YES; }
+- (void)connection:(NSURLConnection *)c didFailWithError:(NSError *)e { _error = e; _done = YES; }
 @end
 
 @implementation SNDataManager
@@ -479,6 +517,181 @@ static sqlite3 *openDBReadOnly(void) {
     [profile setObject:serverAddress forKey:@"server_address"];
     [profile setObject:storedPath    forKey:@"server_pub_key"];
 
+    return [profile writeToFile:SGProfilePathForIndex(index) atomically:YES];
+}
+
+#pragma mark - Certificate Auto-Fetch
+
+static void SNAutoFetch_DNSCallback(DNSServiceRef sdRef, DNSServiceFlags flags,
+                                    uint32_t interfaceIndex, DNSServiceErrorType errorCode,
+                                    const char *fullname, uint16_t rrtype, uint16_t rrclass,
+                                    uint16_t rdlen, const void *rdata, uint32_t ttl, void *context) {
+    NSMutableDictionary *out = (__bridge NSMutableDictionary *)context;
+    if (errorCode != kDNSServiceErr_NoError || rdlen == 0) return;
+
+    const uint8_t *ptr = (const uint8_t *)rdata;
+    const uint8_t *end = ptr + rdlen;
+    while (ptr < end) {
+        uint8_t len = *ptr++;
+        if (len == 0 || ptr + len > end) break;
+        NSString *entry = [[NSString alloc] initWithBytes:ptr length:len encoding:NSUTF8StringEncoding];
+        for (NSString *comp in [entry componentsSeparatedByCharactersInSet:
+                                [NSCharacterSet whitespaceCharacterSet]]) {
+            NSRange r = [comp rangeOfString:@"="];
+            if (r.location != NSNotFound) {
+                out[[comp substringToIndex:r.location]] = [comp substringFromIndex:r.location + 1];
+            }
+        }
+        ptr += len;
+    }
+}
+
+static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
+    NSMutableDictionary *results = [NSMutableDictionary dictionary];
+    DNSServiceRef sdRef = NULL;
+    if (DNSServiceQueryRecord(&sdRef, 0, 0, [dnsName UTF8String],
+                              kDNSServiceType_TXT, kDNSServiceClass_IN,
+                              SNAutoFetch_DNSCallback,
+                              (__bridge void *)results) != kDNSServiceErr_NoError) {
+        return nil;
+    }
+    int fd = DNSServiceRefSockFD(sdRef);
+    if (fd < 0 || fd >= FD_SETSIZE) { DNSServiceRefDeallocate(sdRef); return nil; }
+
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:kSNAutoFetchDNSTimeoutSec];
+    BOOL done = NO;
+    while (!done && [[NSDate date] compare:deadline] == NSOrderedAscending) {
+        fd_set rfds; FD_ZERO(&rfds); FD_SET(fd, &rfds);
+        struct timeval tv = {1, 0};
+        int sel = select(fd + 1, &rfds, NULL, NULL, &tv);
+        if (sel > 0 && FD_ISSET(fd, &rfds)) {
+            DNSServiceProcessResult(sdRef);
+            if (results.count > 0) done = YES;
+        } else if (sel < 0 && errno != EINTR) {
+            break;
+        }
+    }
+    DNSServiceRefDeallocate(sdRef);
+    return results.count > 0 ? results : nil;
+}
+
+- (void)fetchServerCertificateForAddress:(NSString *)serverAddress
+                              completion:(void (^)(NSString *, NSString *))completion {
+    if (!completion) return;
+    NSString *addr = [serverAddress stringByTrimmingCharactersInSet:
+                      [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (addr.length == 0) {
+        completion(nil, @"Enter a server address first.");
+        return;
+    }
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *dnsName = [@"_sgn." stringByAppendingString:addr];
+        NSDictionary *txt = SNAutoFetch_LookupTXT(dnsName);
+
+        if (!txt || !txt[@"http_addr"]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil, [NSString stringWithFormat:
+                    @"No http_addr TXT record found at %@. Make sure your DNS provider "
+                    @"is publishing _sgn.%@ TXT with http_addr=…", dnsName, addr]);
+            });
+            return;
+        }
+
+        NSString *httpBase = txt[@"http_addr"];
+        if (![httpBase hasPrefix:@"http://"] && ![httpBase hasPrefix:@"https://"]) {
+            httpBase = [@"https://" stringByAppendingString:httpBase];
+        }
+        NSURL *certURL = [NSURL URLWithString:
+                          [httpBase stringByAppendingString:kSNAutoFetchCertPath]];
+        if (!certURL) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil, [NSString stringWithFormat:
+                    @"Malformed http_addr in TXT record: %@", txt[@"http_addr"]]);
+            });
+            return;
+        }
+
+        NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:certURL];
+        [req setTimeoutInterval:kSNAutoFetchHTTPTimeoutSec];
+        [req setHTTPMethod:@"GET"];
+
+        SNAutoFetchConnectionDelegate *del = [[SNAutoFetchConnectionDelegate alloc] init];
+        NSURLConnection *conn = [[NSURLConnection alloc] initWithRequest:req
+                                                                 delegate:del
+                                                         startImmediately:NO];
+        if (!conn) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil, @"Could not create network connection.");
+            });
+            return;
+        }
+
+        /* Private runloop on this background queue so NSURLConnection callbacks
+         * fire here; wall-clock deadline catches a stalled server. */
+        NSRunLoop *rl = [NSRunLoop currentRunLoop];
+        [conn scheduleInRunLoop:rl forMode:NSDefaultRunLoopMode];
+        [conn start];
+
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:kSNAutoFetchHTTPTimeoutSec];
+        while (!del.done && [[NSDate date] compare:deadline] == NSOrderedAscending) {
+            [rl runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
+        }
+        if (!del.done) [conn cancel];
+
+        NSError   *connErr = del.error;
+        NSInteger  code    = del.statusCode;
+        NSData    *body    = del.buffer;
+        BOOL       timedOut = !del.done && !connErr;
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (timedOut) {
+                completion(nil, [NSString stringWithFormat:
+                    @"Timed out fetching certificate from %@", [certURL absoluteString]]);
+                return;
+            }
+            if (connErr) {
+                completion(nil, [NSString stringWithFormat:
+                    @"Cert download failed: %@", [connErr localizedDescription]]);
+                return;
+            }
+            if (code != 200) {
+                completion(nil, [NSString stringWithFormat:
+                    @"Server responded HTTP %ld at %@", (long)code, [certURL absoluteString]]);
+                return;
+            }
+            NSString *pem = body ? [[NSString alloc] initWithData:body
+                                                          encoding:NSUTF8StringEncoding] : nil;
+            if (!pem || [pem rangeOfString:@"BEGIN"].location == NSNotFound) {
+                completion(nil, @"Server returned data that is not a PEM certificate.");
+                return;
+            }
+            completion(pem, nil);
+        });
+    });
+}
+
+- (BOOL)installFetchedCertificatePEM:(NSString *)pem
+                       serverAddress:(NSString *)serverAddress
+                        profileIndex:(NSInteger)index {
+    if (!pem || pem.length == 0) return NO;
+    if (!serverAddress || serverAddress.length == 0) return NO;
+    if (index < 1 || index > 5) return NO;
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *destDir = SGPath(@"/var/mobile/Library/SkyglowNotifications");
+    if (![fm fileExistsAtPath:destDir]) {
+        if (![fm createDirectoryAtPath:destDir withIntermediateDirectories:YES
+                            attributes:nil error:nil]) return NO;
+    }
+
+    NSString *destPath = [destDir stringByAppendingPathComponent:@"server.pem"];
+    if (![pem writeToFile:destPath atomically:YES
+                  encoding:NSUTF8StringEncoding error:nil]) return NO;
+
+    NSMutableDictionary *profile = [NSMutableDictionary dictionary];
+    profile[@"server_address"] = serverAddress;
+    profile[@"server_pub_key"] = @"/var/mobile/Library/SkyglowNotifications/server.pem";
     return [profile writeToFile:SGProfilePathForIndex(index) atomically:YES];
 }
 
