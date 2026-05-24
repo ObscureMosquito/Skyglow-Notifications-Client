@@ -1,7 +1,7 @@
 # Skyglow Notifications Protocol Specification
 
 **Version:** 2 (`SGP_VERSION = 0x02`)  
-**Last Updated:** March 2026
+**Last Updated:** May 2026
 
 ---
 
@@ -39,11 +39,15 @@ The TXT record contains space-separated `key=value` pairs:
 "tcp_addr=143.47.32.233 tcp_port=7373 http_addr=https://sgn.example.com"
 ```
 
-| Key         | Description                                        | Required |
-|-------------|----------------------------------------------------|----------|
-| `tcp_addr`  | IPv4 address of the TCP protocol server            | Yes      |
-| `tcp_port`  | Port number of the TCP protocol server (TLS)       | Yes      |
-| `http_addr` | Base URL of the HTTP registration/push API         | No       |
+| Key         | Description                                                       | Required    |
+|-------------|-------------------------------------------------------------------|-------------|
+| `tcp_addr`  | IPv4 address of the TCP protocol server                           | Yes         |
+| `tcp_port`  | Port number of the TCP protocol server (TLS)                      | Yes         |
+| `http_addr` | Base URL of the HTTP API (push submission + cert auto-fetch)      | Recommended |
+
+If `http_addr` is set, the client's prefs UI can fetch the server's public
+certificate automatically — see §3.4.  Without it, users must import the PEM
+file manually.
 
 **Important:** `tcp_port` must point to the TLS-enabled TCP protocol listener, **not** the HTTP API port. These are distinct services running on different ports.
 
@@ -57,10 +61,11 @@ Clients cache resolved DNS records locally (SQLite) and use cached values on sub
 
 ### 3.1. TLS Connection
 
-All TCP protocol communication occurs over a TLS connection. The server uses a self-signed X.509 certificate. The client receives the server's public certificate during initial HTTP registration (stored locally) and uses **certificate pinning** — only the pinned certificate is trusted.
+All TCP protocol communication occurs over a TLS connection. The server uses a self-signed X.509 certificate. The client obtains the server's public certificate **out of band before the first connection** (see §3.4) and uses **certificate pinning** — only the pinned certificate is trusted.
 
 - **Protocol:** TLS 1.2+ (SSLv2, SSLv3, TLS 1.0, and TLS 1.1 are explicitly disabled)
-- **Certificate validation:** Pinned server certificate only
+- **Certificate validation:** Pinned server certificate only; the system CA store is **not** consulted
+- **Pinning mechanism:** The pinned PEM is added to an empty `X509_STORE` via `X509_STORE_add_cert`; the server's presented chain must terminate at that exact certificate
 - **Connection model:** Single persistent long-lived connection; client reconnects with exponential backoff on failure
 - **TCP_NODELAY:** Enabled on the socket
 - **Socket timeouts:** 10 seconds for both send and receive
@@ -97,6 +102,40 @@ All multi-byte integers in payloads are encoded in **big-endian** (network byte 
 - All `int64_t` timestamps and sequence numbers (8 bytes)
 - All `uint32_t` version numbers and data lengths (4 bytes)
 - All `uint16_t` string lengths (2 bytes)
+
+### 3.4. Certificate Provisioning
+
+Because the daemon's TLS layer pins a single self-signed certificate (§3.1),
+the client must obtain that certificate **before** the first TCP connection
+can succeed.  Provisioning is performed by the prefs UI, never by the daemon
+itself, and is decoupled from device registration (§5).  Two paths are
+supported:
+
+**Auto-fetch (recommended).**  The prefs UI:
+
+1. Resolves `_sgn.<server_address>` TXT and reads the `http_addr` value.
+2. Issues `GET <http_addr>/snd/server_cert.pem` over HTTPS.  TLS chain
+   validation is intentionally bypassed for this single request — the user
+   sees the parsed Subject/Issuer in a confirmation dialog before the PEM is
+   saved, which serves as the trust gate.
+3. On confirmation, writes the PEM to disk and records its path in the
+   profile plist.  Every subsequent daemon connection uses strict pinning
+   against that file.
+
+Server-side requirement: a `GET /snd/server_cert.pem` route returning
+`text/plain` or `application/x-pem-file` whose body is the exact same PEM
+the TLS listener presents.  Status code MUST be `200`; the body MUST contain
+a valid `-----BEGIN CERTIFICATE-----` block.  No authentication, no
+revalidation, no `Content-Length` upper bound enforcement beyond the daemon's
+ordinary I/O limits.
+
+**Manual import.**  The user picks a PEM file via a file picker.  The bundle
+copies it to the same canonical location and updates the profile plist.
+Identical end state to the auto-fetch path; useful when the server lacks an
+HTTP component, or when the operator distributes certs out-of-band.
+
+In both paths the cert is bound to a specific profile slot, so different
+profiles may pin different servers.
 
 ---
 
@@ -590,11 +629,17 @@ If decryption or tag verification fails, the client acknowledges with status cod
 
 ### 11.1. Components
 
-| Component   | Default Port | Protocol | Purpose                              |
-|-------------|-------------|----------|--------------------------------------|
-| TCP Server  | 7373        | TLS 1.2+ | Persistent client connections        |
-| HTTP Server | 7878        | HTTP(S)  | Registration API, push submission    |
-| Database    | —           | —        | Device records, queued notifications |
+| Component   | Default Port | Protocol | Purpose                                           |
+|-------------|-------------|----------|---------------------------------------------------|
+| TCP Server  | 7373        | TLS 1.2+ | Persistent client connections, device registration|
+| HTTP Server | 7878        | HTTPS    | Push submission API + cert auto-fetch (§3.4)      |
+| Database    | —           | —        | Device records, queued notifications              |
+
+Note that **device registration is performed over the TCP+TLS channel** (§5),
+not over the HTTP server.  The HTTP component is needed only for push
+submission by notification senders and (optionally) for the cert auto-fetch
+endpoint.  A minimal HTTP server exposing only `GET /snd/server_cert.pem` is
+sufficient for client provisioning.
 
 ### 11.2. Server Cryptographic Material
 
@@ -607,7 +652,7 @@ openssl req -x509 -newkey rsa:4096 \
     -days 7300 -nodes
 ```
 
-- `server_public_key.pem` is distributed to clients during HTTP registration (used for TLS certificate pinning)
+- `server_public_key.pem` is distributed to clients via the auto-fetch endpoint (§3.4) or manual import; clients pin it for the lifetime of the profile
 - `server_private_key.pem` is used by the server for TLS
 
 ### 11.3. DNS Configuration
@@ -717,7 +762,8 @@ For implementors building a compatible **server**:
 - [ ] Bidirectional keep-alive (S_PING/C_PONG and C_PING/S_PONG)
 - [ ] Connection replacement detection (S_DISCONNECT with REPLACED reason)
 - [ ] DNS TXT record configuration
-- [ ] HTTP API for registration and push submission (separate service)
+- [ ] HTTP API for push submission (separate service) — registration itself is performed over the TCP channel (§5)
+- [ ] `GET /snd/server_cert.pem` on the HTTP server, returning the same PEM the TLS listener presents (enables client auto-fetch, §3.4)
 
 ---
 
