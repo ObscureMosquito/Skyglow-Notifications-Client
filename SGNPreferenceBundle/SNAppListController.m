@@ -1,5 +1,6 @@
 #import "SNAppListController.h"
 #import "SNDataManager.h"
+#import "SNChannelGateway.h"
 #import <Preferences/PSSpecifier.h>
 #import <Preferences/PSTableCell.h>
 #import "SNAppToggleCell.h"
@@ -104,19 +105,11 @@
         NSString *bundleId = [spec propertyForKey:@"bundleId"];
         
         if (bundleId) {
-            NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.skyglow.sndp"] ?: @{};
-            NSMutableDictionary *mutablePrefs = [prefs mutableCopy];
-            [mutablePrefs setObject:bundleId forKey:@"lastUnregisteredApp"];
-            [[NSUserDefaults standardUserDefaults] setPersistentDomain:mutablePrefs forName:@"com.skyglow.sndp"];
-            [[NSUserDefaults standardUserDefaults] synchronize];
+            [SNChannelGateway postUnregisterInputAppForBundleId:bundleId];
 
-            CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                                 CFSTR("com.skyglow.sgn.unregisterInputApp"),
-                                                 NULL, NULL, TRUE);
-            
             [[SNDataManager shared] removeAppStatusForBundleId:bundleId];
             [[SNDataManager shared] removeAppFromDatabase:bundleId];
-            
+
             [self removeSpecifier:spec animated:YES];
         }
     }

@@ -4,14 +4,22 @@
 #import "SGTokenManager.h"
 #import "SGProtocolHandler.h"
 #import "SGServerLocator.h"
-#import "SGMachServer.h"
 #import "SGPayloadParser.h"
 #import "SGCryptoEngine.h"
 #import "SGAvailability.h"
+#import "SGControlChannel.h"
 #import "SGLog.h"
 #include <openssl/pem.h>
 #include <unistd.h>
 #include <fcntl.h>
+
+static const int64_t       kSGDrainSafetyIntervalSec              = 300;   // fallback only; primary drains are event-driven
+static const int64_t       kSGDrainSafetyLeewaySec                 =  30;
+static const int64_t       kSGLocalPendingFallbackDeadlineSec      = 86400; // 24h when wire has no expiry
+static const NSUInteger    kSGSeenMessageIDCap                     = 200;
+static const uint32_t      kSGAuthTimeoutSec                       = 30;    // silent timeout; SGEventAuthFailed wipes the profile instead
+static const uint32_t      kSGDNSWatchdogSec                       = 30;
+static const NSTimeInterval kSGNotificationProcessingAssertionSec  = 15.0;
 
 typedef struct { SGState from; SGState to; } SGTransition;
 
@@ -125,11 +133,13 @@ static BOOL isValidPort(NSString *port) {
     uint32_t               _fsmGeneration;
     BOOL                   _workerActive;
     dispatch_queue_t       _entryActionQueue;
-    SGMachServer          *_machServer;
     id                     _keepAliveTimer;
     BOOL                   _isWiFi;
     char                   _lastErrorDetail[128];
     dispatch_source_t      _localDeliveryRetryTimer;
+    dispatch_queue_t       _localDeliveryDrainQueue;
+    SGControlChannel      *_controlChannel;
+    SGControlChannel      *_springBoardClient;
 }
 
 - (id)init {
@@ -137,9 +147,9 @@ static BOOL isValidPort(NSString *port) {
         _stateLock           = [[NSLock alloc] init];
         _consecutiveFailures = 0;
         _fsmGeneration       = 0;
-        _seenMessageIDs      = [[NSMutableOrderedSet alloc] initWithCapacity:200];
+        _seenMessageIDs      = [[NSMutableOrderedSet alloc] initWithCapacity:kSGSeenMessageIDCap];
         _entryActionQueue    = dispatch_queue_create("com.skyglow.daemon.entry", DISPATCH_QUEUE_SERIAL);
-        _machServer          = [[SGMachServer alloc] init];
+        _localDeliveryDrainQueue = dispatch_queue_create("com.skyglow.daemon.drain", DISPATCH_QUEUE_SERIAL);
     }
     return self;
 }
@@ -147,17 +157,42 @@ static BOOL isValidPort(NSString *port) {
 - (void)dealloc {
     [_stateLock release];
     [_seenMessageIDs release];
-    [_machServer release];
     [_growthAlgorithm release];
+    [_controlChannel release];
+    [_springBoardClient release];
     if (_keepAliveTimer) { [_keepAliveTimer invalidate]; [_keepAliveTimer release]; }
     [self _stopLocalDeliveryRetryTimer];
     dispatch_release(_entryActionQueue);
+    if (_localDeliveryDrainQueue) dispatch_release(_localDeliveryDrainQueue);
     [super dealloc];
 }
 
-- (void)start {
-    [_machServer startMachBootstrapServices];
+- (void)attachControlChannel:(SGControlChannel *)channel {
+    if (channel == _controlChannel) return;
+    [channel retain];
+    [_controlChannel release];
+    _controlChannel = channel;
+}
 
+- (void)attachSpringBoardClient:(SGControlChannel *)client {
+    if (client == _springBoardClient) return;
+    [client retain];
+    [_springBoardClient release];
+    _springBoardClient = client;
+
+    if (client) {
+        __unsafe_unretained SGDaemon *daemonSelf = self;
+        [client setConnectionHandler:^(BOOL connected) {
+            if (!connected) return;
+            if (daemonSelf->_controlChannel) {
+                [daemonSelf->_controlChannel postEvent:SGCEVT_SB_RECEIVER_READY payload:nil];
+            }
+            [daemonSelf _kickLocalDeliveryDrain];
+        }];
+    }
+}
+
+- (void)start {
     [self _startLocalDeliveryRetryTimer];
 
     [self reconcileTokensWithPlist];
@@ -429,6 +464,15 @@ static BOOL isValidPort(NSString *port) {
                         resolvedIP, _lastErrorDetail, activeProfile);
     SGLOGD(SGDaemon, "Transitioned to %s (gen=%u)", SGState_GetName(newState), capturedGen);
 
+    if (_controlChannel) {
+        SGCStateChangedEventData ev;
+        memset(&ev, 0, sizeof(ev));
+        ev.newState = (uint8_t)newState;
+        strlcpy(ev.reason, _lastErrorDetail, sizeof(ev.reason));
+        NSData *payload = [NSData dataWithBytes:&ev length:sizeof(ev)];
+        [_controlChannel postEvent:SGCEVT_STATE_CHANGED payload:payload];
+    }
+
     dispatch_async(_entryActionQueue, ^{
         [self->_stateLock lock];
         BOOL isStale = (self->_fsmGeneration != capturedGen);
@@ -448,12 +492,12 @@ static BOOL isValidPort(NSString *port) {
             case SGStateAuthenticating:
                 [self startConnectionScopedWorker];
                 /**
-                 * 30-second timeout fires SGEventAuthTimeout, not SGEventAuthFailed.
+                 * kSGAuthTimeoutSec fires SGEventAuthTimeout, not SGEventAuthFailed.
                  * SGEventAuthFailed is reserved for explicit server rejection and
                  * triggers a profile wipe. A silent timeout is ambiguous — the
                  * credential is presumed valid; we just back off and retry.
                  */
-                [self scheduleTimerForEvent:SGEventAuthTimeout delay:30 generation:capturedGen];
+                [self scheduleTimerForEvent:SGEventAuthTimeout delay:kSGAuthTimeoutSec generation:capturedGen];
                 break;
             case SGStateRegistering:
                 break;
@@ -551,15 +595,7 @@ static BOOL isValidPort(NSString *port) {
     [[SGDatabaseManager sharedManager] checkpoint];
     [[SGDatabaseManager sharedManager] pruneExpiredSeenMessagesAsOf:(int64_t)time(NULL)];
 
-    /**
-     * Kick the drain explicitly here so any local-pending notifications that
-     * piled up while disconnected get a redelivery attempt right after the
-     * link is healthy again, rather than waiting up to 10s for the next tick.
-     */
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        [self _drainLocalPendingDeliveries];
-    });
-
+    [self _kickLocalDeliveryDrain];
     [self uploadPendingTokensAsync];
 }
 
@@ -594,37 +630,19 @@ static BOOL isValidPort(NSString *port) {
 
         SGDatabaseManager *db = [SGDatabaseManager sharedManager];
 
-        /**
-         * Durable cross-session dedup.  A retransmit of a message we already
-         * delivered (or terminally ACK'd) in a prior session or before the
-         * last reconnect lands here.  Re-ACK SUCCESS so the server stops
-         * resending and return without re-surfacing the banner.
-         */
+        /* Three-tier dedup: durable SQLite history → in-flight pending queue →
+         * hot in-memory cache for retransmits arriving before the SQLite write
+         * is observed.  The in-flight check stays silent because the drain
+         * timer owns the ACK for those rows. */
         if ([db hasSeenMessageID:msgID]) {
             SGLOGD(SGDaemon, "Already-seen msg_id — re-ACKing SUCCESS without re-delivery.");
             SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
             return;
         }
-
-        /**
-         * In-flight local-retry queue: an earlier Mach delivery for this msg_id
-         * failed and we are still trying to redeliver to SpringBoard.  A server
-         * retransmit during this window is silently dropped — the drain timer
-         * will ACK once it either delivers or hits the wire expiry, so any ACK
-         * we sent here would be redundant or premature.
-         */
         if ([db hasLocalPendingDeliveryForMessageID:msgID]) {
             SGLOGD(SGDaemon, "Retransmit of in-flight local-pending msg — dropping silently; drain timer owns the ACK.");
             return;
         }
-
-        /**
-         * Hot-path in-memory dedup: catches the case where a server retransmit
-         * arrives before the async SQLite write from a prior delivery has been
-         * observed.  We only populate this set after a definitive disposition
-         * (see _markMessageDeliveredID:expiresAt:), never speculatively, so an
-         * in-flight delivery never lies its way into the cache.
-         */
         @synchronized(_seenMessageIDs) {
             if ([_seenMessageIDs containsObject:msgID]) {
                 SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
@@ -645,7 +663,7 @@ static BOOL isValidPort(NSString *port) {
 
         uint32_t assertionID = [[SGAvailability shared]
             createTimedPowerAssertionWithName:@"com.skyglow.sgn.processing"
-                                     timeout:15.0];
+                                     timeout:kSGNotificationProcessingAssertionSec];
 
         NSData *routingKey = messageDict[@"routing_key"];
         NSDictionary *routingData = [db tokenDataForRoutingKey:routingKey];
@@ -704,29 +722,23 @@ static BOOL isValidPort(NSString *port) {
         NSNumber *seqNum = messageDict[@"device_seq"];
         int64_t arrivedSeq = seqNum ? [seqNum longLongValue] : 0;
 
-        kern_return_t deliveryKr = SGMach_SendPushToAppTopic(routingData[@"bundleID"], parsed);
+        kern_return_t deliveryKr = [self _deliverPushTopic:routingData[@"bundleID"] payload:parsed];
         if (deliveryKr == KERN_SUCCESS) {
             SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
             [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
             [self _advanceLastDeliveredSeqIfNeeded:arrivedSeq];
+
+            [self _kickLocalDeliveryDrain];
         } else {
-            /**
-             * Mach delivery failed — most likely the SpringBoard push receiver
-             * is not registered yet (tweak not loaded, or SpringBoard is
-             * restarting).  Rather than ACK SUCCESS for a banner the user will
-             * never see, persist the parsed payload to local_pending_deliveries
-             * and let _drainLocalPendingDeliveries retry on a 10-second cadence
-             * until either Mach succeeds or the wire expiry passes.  Server
-             * retransmits during this window are absorbed by the
-             * hasLocalPendingDeliveryForMessageID: check at the top of this
-             * method, so no double-banner and no premature ACK can occur.
-             */
+            /* Persist for retry rather than ACK SUCCESS for a banner the user
+             * will never see; server retransmits during the window are absorbed
+             * by hasLocalPendingDeliveryForMessageID: at the top of this method. */
             NSData *serialized = [NSPropertyListSerialization
                 dataFromPropertyList:parsed
                               format:NSPropertyListBinaryFormat_v1_0
                     errorDescription:NULL];
             if (serialized) {
-                int64_t effective = (expiresAt > now) ? expiresAt : (now + 86400);
+                int64_t effective = (expiresAt > now) ? expiresAt : (now + kSGLocalPendingFallbackDeadlineSec);
                 [db enqueueLocalPendingDeliveryForMessageID:msgID
                                                    bundleID:routingData[@"bundleID"]
                                                     payload:serialized
@@ -735,15 +747,10 @@ static BOOL isValidPort(NSString *port) {
                 SGLOGW(SGDaemon,
                        "Mach delivery failed kr=%d for %s — queued for local retry (deadline=%s).",
                        deliveryKr, [routingData[@"bundleID"] UTF8String],
-                       (expiresAt > now) ? "wire expiry" : "24h floor");
+                       (expiresAt > now) ? "wire expiry" : "fallback");
             } else {
-                /**
-                 * Payload not encodable as a binary plist.  This should never
-                 * happen with output from SG_PayloadParseBinaryData (which only
-                 * yields NSString / NSNumber / NSData / NSArray / NSDictionary),
-                 * but if it does we cannot durably retry — degrade to honest
-                 * PARSE_FAILED so the server stops resending.
-                 */
+                /* SG_PayloadParseBinaryData only emits plist-encodable types, so
+                 * this is a corruption signal — degrade to PARSE_FAILED. */
                 SGLOGE(SGDaemon,
                        "Mach delivery failed and payload not plist-encodable — ACKing PARSE_FAILED to halt server resends.");
                 SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
@@ -885,6 +892,9 @@ static BOOL isValidPort(NSString *port) {
     [[SGDatabaseManager sharedManager] resetAllTokensToRequireUpload];
     [self reconcileTokensWithPlist];
     [self handleEvent:SGEventConfigReloaded payload:nil];
+
+    /* Notify any control-channel subscriber so prefs UIs etc. can refresh. */
+    if (_controlChannel) [_controlChannel postEvent:SGCEVT_CONFIG_RELOADED payload:nil];
 }
 
 - (void)handleSystemWake {
@@ -911,32 +921,71 @@ static BOOL isValidPort(NSString *port) {
     }
 }
 
+#pragma mark - SpringBoard Push Delivery (via SGControlChannel)
+
+/* Synchronous wrapper around the async channel send so callers retain their
+ * KERN_SUCCESS-vs-other semantics. */
+- (kern_return_t)_deliverPushTopic:(NSString *)topic payload:(NSDictionary *)payload {
+    if (!_springBoardClient) {
+        SGLOGW(SGDaemon, "Push delivery requested but no SpringBoard client attached.");
+        return KERN_FAILURE;
+    }
+    if (!topic || [topic length] == 0) return KERN_INVALID_ARGUMENT;
+
+    NSData *plistData = nil;
+    if (payload) {
+        plistData = [NSPropertyListSerialization dataWithPropertyList:payload
+                                                               format:NSPropertyListBinaryFormat_v1_0
+                                                              options:0
+                                                                error:NULL];
+    }
+    if (!plistData) plistData = [NSData data];
+
+    if ([plistData length] > SG_CONTROL_MAX_USERINFO_SIZE) {
+        SGLOGE(SGDaemon, "Push payload too large for wire (%lu > %d).",
+               (unsigned long)[plistData length], SG_CONTROL_MAX_USERINFO_SIZE);
+        return KERN_RESOURCE_SHORTAGE;
+    }
+
+    SGCPushDeliveryPayload pd;
+    memset(&pd, 0, sizeof(pd));
+    strlcpy(pd.bundleID, [topic UTF8String], sizeof(pd.bundleID));
+    pd.userInfoLength = (uint32_t)[plistData length];
+    if (pd.userInfoLength > 0) memcpy(pd.userInfoData, [plistData bytes], pd.userInfoLength);
+
+    NSUInteger sendLen = offsetof(SGCPushDeliveryPayload, userInfoData) + pd.userInfoLength;
+    NSData *requestPayload = [NSData dataWithBytes:&pd length:sendLen];
+
+    __block kern_return_t result = KERN_FAILURE;
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    [_springBoardClient sendRequest:SGCMSG_PUSH_DELIVERY
+                            payload:requestPayload
+                            timeout:0
+                         completion:^(SGControlError err, const SGControlChannelMessage *response) {
+        result = (err == SGCERR_OK) ? KERN_SUCCESS : KERN_FAILURE;
+        dispatch_semaphore_signal(sema);
+    }];
+    dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+    dispatch_release(sema);
+
+    return result;
+}
+
 #pragma mark - Notification Disposition Helpers
 
-/**
- * Records that a notification has been definitively handled — either delivered
- * to SpringBoard or terminally ACK'd with a failure code.  Updates both the
- * durable SQLite dedup table and the in-memory hot-path cache so subsequent
- * retransmits are recognised instantly.  Never call this for a notification
- * still pending local redelivery; the drain timer owns that disposition.
- */
+/* Call only after a definitive disposition; entries still pending local
+ * redelivery are owned by the drain timer. */
 - (void)_markMessageDeliveredID:(NSData *)msgID expiresAt:(int64_t)expiresAt {
     if (!msgID || [msgID length] == 0) return;
     [[SGDatabaseManager sharedManager] markMessageIDAsSeen:msgID expiresAt:expiresAt];
     @synchronized(_seenMessageIDs) {
         if (![_seenMessageIDs containsObject:msgID]) {
             [_seenMessageIDs addObject:msgID];
-            if ([_seenMessageIDs count] > 200) [_seenMessageIDs removeObjectAtIndex:0];
+            if ([_seenMessageIDs count] > kSGSeenMessageIDCap) [_seenMessageIDs removeObjectAtIndex:0];
         }
     }
 }
 
-/**
- * Bumps last_delivered_seq if the arriving sequence is strictly greater than
- * what we have on record.  Pulled out of protocolDidReceiveNotification: so
- * the drain timer's redelivery path can apply the same rule when it finally
- * succeeds in handing the message to SpringBoard.
- */
 - (void)_advanceLastDeliveredSeqIfNeeded:(int64_t)arrivedSeq {
     if (arrivedSeq <= 0) return;
     SGDatabaseManager *db = [SGDatabaseManager sharedManager];
@@ -946,24 +995,16 @@ static BOOL isValidPort(NSString *port) {
 
 #pragma mark - Local Delivery Retry Queue
 
-/**
- * Starts the 10-second drain timer that retries notifications whose Mach
- * delivery to SpringBoard failed on first attempt.  10s is a balance:
- * short enough that a SpringBoard restart (which completes in a few seconds)
- * clears the queue promptly, long enough that an empty-queue tick is a single
- * SELECT returning no rows.  Leeway of 1s lets the kernel coalesce the wake
- * with other timers when the device is asleep, saving battery in the common
- * no-work case.  The timer runs for the lifetime of the daemon; the queue is
- * persistent so entries survive daemon restarts and reconnects.
- */
+/* Safety-net only — primary drains are event-driven. Targets the drain queue
+ * so the timer fire serialises with _kickLocalDeliveryDrain. */
 - (void)_startLocalDeliveryRetryTimer {
     if (_localDeliveryRetryTimer) return;
     _localDeliveryRetryTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-        dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+        _localDeliveryDrainQueue);
     dispatch_source_set_timer(_localDeliveryRetryTimer,
-                              dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC),
-                              10 * NSEC_PER_SEC,
-                              1 * NSEC_PER_SEC);
+                              dispatch_time(DISPATCH_TIME_NOW, kSGDrainSafetyIntervalSec * NSEC_PER_SEC),
+                              kSGDrainSafetyIntervalSec * NSEC_PER_SEC,
+                              kSGDrainSafetyLeewaySec * NSEC_PER_SEC);
     dispatch_source_set_event_handler(_localDeliveryRetryTimer, ^{
         [self _drainLocalPendingDeliveries];
     });
@@ -977,17 +1018,14 @@ static BOOL isValidPort(NSString *port) {
     _localDeliveryRetryTimer = NULL;
 }
 
-/**
- * Walks the local_pending_deliveries table, attempting redelivery for each
- * non-expired entry.  Three terminal outcomes per row:
- *   - Wire expiry passed → ACK EXPIRED, remove row, mark seen.
- *   - Mach delivery succeeds → ACK SUCCESS, remove row, mark seen, advance seq.
- *   - Payload no longer decodable → ACK PARSE_FAILED, remove row, mark seen.
- * Rows that fail Mach delivery without expiring stay in the table for the
- * next tick.  Safe to call from any thread; the database manager serialises
- * its own queue, and SGP_EnqueueAcknowledgement falls back to the persistent
- * ACK queue if the connection is down.
- */
+- (void)_kickLocalDeliveryDrain {
+    dispatch_async(_localDeliveryDrainQueue, ^{
+        [self _drainLocalPendingDeliveries];
+    });
+}
+
+/* MUST run on _localDeliveryDrainQueue — call via _kickLocalDeliveryDrain or
+ * the safety timer; direct invocation breaks the no-double-deliver invariant. */
 - (void)_drainLocalPendingDeliveries {
     @autoreleasepool {
         SGDatabaseManager *db = [SGDatabaseManager sharedManager];
@@ -1034,7 +1072,7 @@ static BOOL isValidPort(NSString *port) {
                     continue;
                 }
 
-                kern_return_t kr = SGMach_SendPushToAppTopic(bundleID, parsed);
+                kern_return_t kr = [self _deliverPushTopic:bundleID payload:parsed];
                 if (kr == KERN_SUCCESS) {
                     SGLOGI(SGDaemon,
                            "Local retry succeeded for msg_id=%s after earlier Mach failure.",
@@ -1172,12 +1210,12 @@ static BOOL isValidPort(NSString *port) {
 
     /**
      * Watchdog timer: if SGServerLocator blocks (mDNSResponder stall, DNS-SD socket
-     * issue), the 30-second timer fires SGEventDNSFailed so the FSM backs off and
+     * issue), kSGDNSWatchdogSec fires SGEventDNSFailed so the FSM backs off and
      * retries rather than blocking _entryActionQueue indefinitely. The generation
      * check inside scheduleTimerForEvent: discards the watchdog if DNS resolves first
      * (state changes → new generation → timer sees mismatch and no-ops).
      */
-    [self scheduleTimerForEvent:SGEventDNSFailed delay:30 generation:gen];
+    [self scheduleTimerForEvent:SGEventDNSFailed delay:kSGDNSWatchdogSec generation:gen];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSDictionary *txt = [SGServerLocator resolveEndpointForServerAddress:address];

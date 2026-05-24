@@ -1,6 +1,7 @@
 #import "SNDebugViewController.h"
 #import "SNDataManager.h"
 #import "SNLogTailViewController.h"
+#import "SNChannelGateway.h"
 #include <spawn.h>
 #include <sys/wait.h>
 #import <mach/mach.h>
@@ -254,34 +255,22 @@ typedef enum {
             }
 
             [[SNDataManager shared] setAppStatusValue:YES forBundleId:bundleID];
-            
-            NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.skyglow.sndp"] ?: @{};
-            NSMutableDictionary *mutablePrefs = [prefs mutableCopy];
-            [mutablePrefs setObject:bundleID forKey:@"lastRegisteredApp"];
-            [[NSUserDefaults standardUserDefaults] setPersistentDomain:mutablePrefs forName:@"com.skyglow.sndp"];
-            [[NSUserDefaults standardUserDefaults] synchronize];
 
-            CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                                 CFSTR("com.skyglow.sgn.registerInputApp"),
-                                                 NULL, NULL, TRUE);
+            [SNChannelGateway postRegisterInputAppForBundleId:bundleID];
 
             [self showAlert:@"Request Sent"
                     message:[NSString stringWithFormat:@"Registration request for '%@' sent to SpringBoard.", bundleID]];
             _manualBundleIDParams.text = @"";
-            
+
             [self loadStats];
             [self.tableView reloadData];
-            
+
         } else if (indexPath.row == 2) {
-            
-            NSLog(@"[SGN-Settings] Sending Darwin signal: com.skyglow.test-inject");
-            
-            CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                                 CFSTR("com.skyglow.test-inject"),
-                                                 NULL, NULL, TRUE);
-                                                 
+
+            [SNChannelGateway postTestInject];
+
             [self showAlert:@"Test Triggered"
-                    message:@"Sent signal 'com.skyglow.test-inject' to SpringBoard."];
+                    message:@"Test-inject request sent to the daemon."];
         }
         
     } else if (indexPath.section == SectionSavedTokens && _savedApps.count > 0) {

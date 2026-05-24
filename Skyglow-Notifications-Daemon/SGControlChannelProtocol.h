@@ -1,0 +1,369 @@
+#ifndef SKYGLOW_SG_CONTROL_CHANNEL_PROTOCOL_H
+#define SKYGLOW_SG_CONTROL_CHANNEL_PROTOCOL_H
+
+#import <Foundation/Foundation.h>
+#import <mach/mach.h>
+
+/**
+ * SGControlChannel wire protocol.
+ *
+ * One persistent Mach connection per peer pair carries every cross-process
+ * control message in this project: token requests, push delivery into
+ * SpringBoard, configuration reloads, debug injection, FSM state broadcasts,
+ * and the subscription/event machinery that replaces ad-hoc Darwin
+ * notifications.  All payloads ride inside a single envelope struct; the
+ * envelope is a fully-formed Mach simple message (no port descriptors beyond
+ * the reply port carried in msgh_local_port).
+ *
+ * Two named services define the two roles a process can play.  The daemon
+ * advertises SKYGLOW_CONTROL_SERVICE_DAEMON and clients (prefs bundle,
+ * SpringBoard tweak) connect to it.  The SpringBoard tweak additionally
+ * advertises SKYGLOW_CONTROL_SERVICE_SPRINGBOARD which the daemon connects to
+ * when it needs to push a notification — the daemon is a client of the tweak
+ * for that one direction.  Either side can subscribe to events from the other
+ * once a connection is up; subscriptions live for the connection lifetime.
+ *
+ * Designed to run unchanged from iOS 3 upward: pure Mach IPC, no XPC, no
+ * dispatch sources required at the wire level, no API gated on a later iOS.
+ */
+
+/** Mach Service Names */
+
+/**
+ * Advertised by the daemon.  Token requests, feedback, configuration
+ * reloads, debug injection, and all event subscriptions land here.
+ */
+#define SKYGLOW_CONTROL_SERVICE_DAEMON       "com.skyglow.sgn.control.daemon"
+
+/**
+ * Advertised by the SpringBoard tweak.  The daemon connects to this service
+ * to deliver notifications.  Kept distinct from the daemon-side service so
+ * each side owns its own lookup and dead-name lifecycle.
+ */
+#define SKYGLOW_CONTROL_SERVICE_SPRINGBOARD  "com.skyglow.sgn.control.springboard"
+
+/** Protocol Identity */
+
+/**
+ * Magic byte at the head of every envelope.  Lets a receiver reject foreign
+ * traffic that somehow lands on the port before the bootstrap_check_in handoff
+ * is complete.
+ */
+#define SG_CONTROL_MAGIC                     ((uint8_t)0x43)  /* 'C' */
+
+/**
+ * Current wire version.  Servers reject mismatching versions with
+ * SGCERR_INVALID_REQUEST; the client is expected to be at the same or older
+ * version as the daemon it talks to.  Bump when the envelope or any payload
+ * struct changes in a non-additive way.
+ */
+#define SG_CONTROL_VERSION                   ((uint8_t)0x01)
+
+/** Size Bounds */
+
+/**
+ * Maximum bytes carried in the variable payload region of one envelope.
+ * Sized to comfortably fit the largest current payload (push delivery with a
+ * 1 KiB serialised plist) with room for future growth.  Larger payloads must
+ * be chunked across multiple envelopes by the caller — the channel itself
+ * delivers one envelope atomically per send.
+ */
+#define SG_CONTROL_MAX_PAYLOAD               4096
+
+#define SG_CONTROL_MAX_TOKEN_SIZE            48
+#define SG_CONTROL_MAX_BUNDLE_ID_SIZE        256
+#define SG_CONTROL_MAX_REASON_SIZE           64
+#define SG_CONTROL_MAX_USERINFO_SIZE         1024
+#define SG_CONTROL_MAX_ERROR_DETAIL_SIZE     256
+#define SG_CONTROL_MAX_EVENT_DATA_SIZE       1024
+
+/** Timing Bounds */
+
+/**
+ * Canonical per-request timeout, applied when a caller passes 0 to
+ * SGControlChannel's sendRequest:.  5 s is comfortable for a local Mach
+ * round-trip on a healthy system and surfaces a stuck peer quickly enough
+ * to retry within a user's attention window.  Callers wanting the default
+ * should pass 0 rather than this constant, so a future tweak to the
+ * default value propagates without touching call sites.
+ */
+#define SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC  5.0
+
+/**
+ * Mach send timeout for outbound envelopes (responses and events) — the
+ * state queue must never block longer than this on a slow peer.
+ */
+#define SG_CONTROL_SEND_TIMEOUT_MS              1000
+
+/**
+ * Client reconnect backoff bounds.  Starts at the initial value, doubles
+ * on every failed bootstrap_look_up, caps at the max.  Tuned so a server
+ * that restarts within a second is rediscovered within one client wake
+ * while a missing peer does not burn battery thrashing bootstrap.
+ */
+#define SG_CONTROL_RECONNECT_INITIAL_SEC        0.5
+#define SG_CONTROL_RECONNECT_MAX_SEC            60.0
+
+/** Message Types */
+
+/**
+ * Top-level wire opcode carried in SGControlMessageHeader.messageType.
+ * Numeric ranges are reserved per category so new entries land in the same
+ * neighbourhood as existing ones:
+ *   0x10–0x2F  requests (client → server, expects a response)
+ *   0x30–0x3F  responses (server → client, correlated by requestId)
+ *   0x40–0x4F  events (unsolicited, server → client over a subscription)
+ */
+typedef enum : uint8_t {
+    /* Requests */
+    SGCMSG_TOKEN_REQUEST       = 0x10,  /* SGCTokenRequestPayload    */
+    SGCMSG_TOKEN_REVOKE        = 0x11,  /* SGCTokenRequestPayload    */
+    SGCMSG_FEEDBACK            = 0x12,  /* SGCFeedbackPayload        */
+    SGCMSG_RELOAD_CONFIG       = 0x13,  /* (empty payload)           */
+    SGCMSG_TEST_INJECT         = 0x14,  /* (empty payload)           */
+    SGCMSG_READINESS_PROBE     = 0x15,  /* (empty payload)           */
+    SGCMSG_PUSH_DELIVERY       = 0x16,  /* SGCPushDeliveryPayload    */
+    SGCMSG_SUBSCRIBE           = 0x17,  /* SGCSubscribePayload       */
+    SGCMSG_UNSUBSCRIBE         = 0x18,  /* SGCUnsubscribePayload     */
+    SGCMSG_REGISTER_INPUT_APP  = 0x19,  /* SGCBundleIdPayload        */
+    SGCMSG_UNREGISTER_INPUT_APP= 0x1A,  /* SGCBundleIdPayload        */
+
+    /* Responses */
+    SGCMSG_GENERIC_ACK         = 0x30,  /* (empty payload)           */
+    SGCMSG_TOKEN_RESPONSE      = 0x31,  /* SGCTokenResponsePayload   */
+    SGCMSG_ERROR_RESPONSE      = 0x32,  /* SGCErrorResponsePayload   */
+    SGCMSG_READINESS_RESPONSE  = 0x33,  /* SGCReadinessResponsePayload */
+
+    /* Events */
+    SGCMSG_EVENT_DELIVERY      = 0x40,  /* SGCEventDeliveryPayload   */
+} SGControlMessageType;
+
+/** Event Types */
+
+/**
+ * Carried inside SGCEventDeliveryPayload.eventType.  Subscriptions target
+ * one event type at a time; a client wanting several events sends several
+ * SUBSCRIBE requests and receives independent subscription IDs back.
+ */
+typedef enum : uint16_t {
+    SGCEVT_STATE_CHANGED                 = 1,  /* SGCStateChangedEventData       */
+    SGCEVT_SB_RECEIVER_READY             = 2,  /* (empty data)                   */
+    SGCEVT_DAEMON_READY                  = 3,  /* (empty data)                   */
+    SGCEVT_CONFIG_RELOADED               = 4,  /* (empty data)                   */
+    SGCEVT_TOKEN_REGISTRATION_COMPLETED  = 5,  /* SGCTokenRegistrationEventData  */
+} SGControlEventType;
+
+/** Error Codes */
+
+/**
+ * Carried in SGControlMessageHeader.errorCode for ERROR_RESPONSE messages
+ * and surfaced to callers of the client API.  DAEMON_DISABLED is the one a
+ * caller must treat as terminal: the user has deliberately turned the
+ * service off and a queue/retry would loop forever.  Every other code is
+ * recoverable.
+ */
+typedef enum : uint16_t {
+    SGCERR_OK                = 0,
+    SGCERR_DAEMON_DISABLED   = 1,  /* user turned the daemon off in settings */
+    SGCERR_UNREACHABLE       = 2,  /* peer not running or bootstrap lookup failed */
+    SGCERR_TIMEOUT           = 3,  /* no response within the caller's budget */
+    SGCERR_INVALID_REQUEST   = 4,  /* bad magic, version, type, or payload length */
+    SGCERR_UNAUTHORIZED      = 5,  /* sender lacks capability for this request */
+    SGCERR_INTERNAL          = 6,  /* server-side failure, retryable */
+    SGCERR_DAEMON_BUSY       = 7,  /* server queue full; back off and retry */
+} SGControlError;
+
+#pragma pack(4)
+
+/** Wire Envelope */
+
+/**
+ * Every message on the channel is exactly this struct.  Variable payloads
+ * fit inside payload[]; payloadLength records the populated prefix.  The
+ * Mach header carries the reply port for requests in msgh_local_port and
+ * the remote port (server or subscriber) in msgh_remote_port.
+ *
+ * subscriptionId is meaningful for SUBSCRIBE responses (server-assigned ID
+ * the client uses for UNSUBSCRIBE), for UNSUBSCRIBE requests, and for
+ * EVENT_DELIVERY (lets the client route the event to the right handler if
+ * it has multiple subscriptions).  Zero otherwise.
+ *
+ * requestId is allocated monotonically by the requester and echoed back in
+ * the matching response.  Zero on unsolicited events.
+ */
+typedef struct {
+    mach_msg_header_t mach_header;
+    mach_msg_body_t   mach_body;
+
+    uint8_t  magic;            /* SG_CONTROL_MAGIC */
+    uint8_t  version;          /* SG_CONTROL_VERSION */
+    uint8_t  flags;            /* reserved in v1, must be 0 */
+    uint8_t  messageType;      /* SGControlMessageType */
+
+    uint16_t eventType;        /* SGControlEventType; only set on EVENT_DELIVERY */
+    uint16_t errorCode;        /* SGControlError; only set on ERROR_RESPONSE */
+
+    uint64_t requestId;        /* correlates request ↔ response; 0 on events */
+    uint64_t subscriptionId;   /* identifies a subscription; see above */
+
+    uint32_t payloadLength;    /* bytes used in payload[] */
+    uint8_t  payload[SG_CONTROL_MAX_PAYLOAD];
+} SGControlChannelMessage;
+
+/** Payload Structs */
+
+/**
+ * SGCMSG_TOKEN_REQUEST, SGCMSG_TOKEN_REVOKE.
+ *
+ * Client asks the daemon to mint (or revoke) a push token for the given
+ * bundle identifier.  Server replies with TOKEN_RESPONSE on success or
+ * ERROR_RESPONSE otherwise.  Revoke is fire-and-forget at the wire level
+ * but still returns a GENERIC_ACK so the caller can confirm receipt.
+ */
+typedef struct {
+    char bundleID[SG_CONTROL_MAX_BUNDLE_ID_SIZE];
+} SGCTokenRequestPayload;
+
+/**
+ * SGCMSG_TOKEN_RESPONSE.
+ *
+ * Server's reply to a successful TOKEN_REQUEST.  tokenLength is the
+ * populated prefix of tokenData; values larger than SG_CONTROL_MAX_TOKEN_SIZE
+ * must never be sent and must be rejected by the receiver.
+ */
+typedef struct {
+    uint32_t tokenLength;
+    uint8_t  tokenData[SG_CONTROL_MAX_TOKEN_SIZE];
+} SGCTokenResponsePayload;
+
+/**
+ * SGCMSG_FEEDBACK.
+ *
+ * Used by the SpringBoard tweak to inform the daemon about app-level state
+ * changes (uninstall, force-quit, etc.) so the daemon can prune tokens and
+ * notify the server.  reason is a free-form short string; the daemon
+ * interprets a small set of well-known values today and ignores others.
+ */
+typedef struct {
+    char bundleID[SG_CONTROL_MAX_BUNDLE_ID_SIZE];
+    char reason[SG_CONTROL_MAX_REASON_SIZE];
+} SGCFeedbackPayload;
+
+/**
+ * SGCMSG_PUSH_DELIVERY.
+ *
+ * Sent by the daemon to the SpringBoard tweak with one decrypted notification
+ * ready for the user.  userInfoData is a binary plist encoding the parsed
+ * notification dictionary; userInfoLength is its byte count.  The tweak
+ * replies with GENERIC_ACK on successful surfacing or ERROR_RESPONSE so the
+ * daemon can decide whether to retry, treat as terminal, or expire.
+ */
+typedef struct {
+    char     bundleID[SG_CONTROL_MAX_BUNDLE_ID_SIZE];
+    uint32_t userInfoLength;
+    uint8_t  userInfoData[SG_CONTROL_MAX_USERINFO_SIZE];
+} SGCPushDeliveryPayload;
+
+/**
+ * SGCMSG_SUBSCRIBE.
+ *
+ * Client asks the server to start delivering events of the given type to
+ * this connection.  Server responds with a GENERIC_ACK whose
+ * subscriptionId is the handle to pass to UNSUBSCRIBE later.  Multiple
+ * subscriptions to the same event type are allowed and each receives a
+ * distinct id.
+ */
+typedef struct {
+    uint16_t eventType;        /* SGControlEventType */
+} SGCSubscribePayload;
+
+/**
+ * SGCMSG_UNSUBSCRIBE.
+ *
+ * Cancels a subscription previously created via SUBSCRIBE.  Unknown IDs
+ * elicit GENERIC_ACK rather than an error — the operation is idempotent.
+ */
+typedef struct {
+    uint64_t subscriptionId;
+} SGCUnsubscribePayload;
+
+/**
+ * SGCMSG_REGISTER_INPUT_APP, SGCMSG_UNREGISTER_INPUT_APP.
+ *
+ * Posted by the prefs bundle to the SpringBoard tweak when the user adds or
+ * removes an app from the Skyglow-handled list.  Replaces the legacy
+ * com.skyglow.sgn.{,un}registerInputApp Darwin notifications, which used a
+ * prefs-plist write to smuggle the bundle id alongside the signal.  The
+ * channel carries the bundle id inline so no plist round-trip is needed.
+ */
+typedef struct {
+    char bundleID[SG_CONTROL_MAX_BUNDLE_ID_SIZE];
+} SGCBundleIdPayload;
+
+/**
+ * SGCMSG_EVENT_DELIVERY.
+ *
+ * Server-initiated message sent to one subscriber.  eventType identifies the
+ * event family; data carries the event-specific struct (one of the
+ * SGCxxxEventData types below).  dataLength records the populated prefix.
+ * subscriptionId in the envelope identifies which subscription this
+ * delivery belongs to, so a client with several subscriptions can route
+ * correctly.
+ */
+typedef struct {
+    uint16_t eventType;        /* SGControlEventType */
+    uint32_t dataLength;
+    uint8_t  data[SG_CONTROL_MAX_EVENT_DATA_SIZE];
+} SGCEventDeliveryPayload;
+
+/**
+ * SGCMSG_ERROR_RESPONSE.
+ *
+ * Sent in place of any normal response when an error occurs.  The numeric
+ * SGControlError is carried in the envelope's errorCode field; this payload
+ * carries an optional human-readable string for logging.  Callers branch on
+ * the numeric code; the message is for diagnostics only.
+ */
+typedef struct {
+    char message[SG_CONTROL_MAX_ERROR_DETAIL_SIZE];
+} SGCErrorResponsePayload;
+
+/**
+ * SGCMSG_READINESS_RESPONSE.
+ *
+ * Reply to READINESS_PROBE.  daemonState is the current SGState code (see
+ * SGStatusServer.h), protocolVersion lets the client confirm wire
+ * compatibility before relying on negotiated features, uptime is seconds
+ * since daemon launch for diagnostics.
+ */
+typedef struct {
+    uint8_t  daemonState;
+    uint32_t protocolVersion;
+    uint32_t uptime;
+} SGCReadinessResponsePayload;
+
+/** Event Data Structs */
+
+/**
+ * SGCEVT_STATE_CHANGED data.  newState is the SGState the daemon just
+ * entered; reason is a short free-form string for logs (may be empty).
+ */
+typedef struct {
+    uint8_t newState;
+    char    reason[SG_CONTROL_MAX_REASON_SIZE];
+} SGCStateChangedEventData;
+
+/**
+ * SGCEVT_TOKEN_REGISTRATION_COMPLETED data.  Fired after the daemon
+ * receives an S_TOKEN_ACK from the server confirming the token was
+ * registered.  Lets the SpringBoard tweak know its earlier TOKEN_REQUEST
+ * has completed end-to-end (server-side acknowledgement, not just minted
+ * locally).
+ */
+typedef struct {
+    char bundleID[SG_CONTROL_MAX_BUNDLE_ID_SIZE];
+} SGCTokenRegistrationEventData;
+
+#pragma pack()
+
+#endif

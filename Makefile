@@ -15,7 +15,6 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/SGServerLocator.m \
     Skyglow-Notifications-Daemon/SGDatabaseManager.m \
     Skyglow-Notifications-Daemon/SGCryptoEngine.m \
-    Skyglow-Notifications-Daemon/SGMachServer.m \
     Skyglow-Notifications-Daemon/SGTokenManager.m \
     Skyglow-Notifications-Daemon/SGStatusServer.c \
     Skyglow-Notifications-Daemon/SGPayloadParser.m \
@@ -23,7 +22,8 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/SGKeepAliveStrategy.c \
     Skyglow-Notifications-Daemon/SGReachabilityMonitor.m \
     Skyglow-Notifications-Daemon/SGDaemon.m \
-    Skyglow-Notifications-Daemon/SGAvailability.m
+    Skyglow-Notifications-Daemon/SGAvailability.m \
+    Skyglow-Notifications-Daemon/SGControlChannel.m
 SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result -I$(THEOS_PROJECT_DIR)/openssl/include
 SkyglowNotificationsDaemon_LDFLAGS = \
   $(THEOS_PROJECT_DIR)/openssl/lib/libssl.a \

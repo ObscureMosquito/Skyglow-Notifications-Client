@@ -5,6 +5,7 @@
 #import "SNServerInfoViewController.h"
 #import "SNDebugViewController.h"
 #import "SNDataManager.h"
+#import "SNChannelGateway.h"
 
 @implementation SNRootListController
 
@@ -52,10 +53,7 @@
     CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, appID);
     CFPreferencesAppSynchronize(appID);
     
-    CFNotificationCenterPostNotificationWithOptions(
-        CFNotificationCenterGetDarwinNotifyCenter(),
-        CFSTR("com.skyglow.sgn.reload_config"),
-        NULL, NULL, kCFNotificationDeliverImmediately);
+    [SNChannelGateway postReloadConfig];
 }
 
 - (void)pushDebugView {

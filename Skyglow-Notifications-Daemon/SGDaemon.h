@@ -38,12 +38,25 @@ typedef NS_ENUM(NSInteger, SGEvent) {
     SGEventAuthTimeout      // Auth timer expired (not an explicit server rejection)
 };
 
-/** Darwin Notifications */
-#define kSGConfigurationDidUpdateNotification "com.skyglow.sgn.reload_config"
-
-@class SGMachServer;
+@class SGControlChannel;
 
 @interface SGDaemon : NSObject <SGProtocolDelegate>
+
+/**
+ * Attaches the process-wide control channel.  The daemon uses it to publish
+ * STATE_CHANGED and CONFIG_RELOADED events to any subscriber.  Owned and
+ * lifecycle-managed by the caller (main.m); the daemon only retains a
+ * reference for the duration it is attached.  Pass nil to detach.
+ */
+- (void)attachControlChannel:(SGControlChannel *)channel;
+
+/**
+ * Attaches the SGControlChannel client used to deliver pushes to the
+ * SpringBoard tweak.  When attached, the daemon routes push delivery
+ * through this channel instead of the legacy SGMach_SendPushToAppTopic
+ * raw Mach path.  Lifecycle-managed by the caller (main.m).
+ */
+- (void)attachSpringBoardClient:(SGControlChannel *)client;
 
 /**
  * Starts the daemon's connection state machine.

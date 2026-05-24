@@ -15,7 +15,10 @@ SGNPreferenceBundle_FILES = \
     SNProfileListController.m \
     SNCustomViewCell.m \
     SNDebugViewController.m \
-    SNDataManager.m
+    SNDataManager.m \
+    SNChannelGateway.m \
+    $(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/SGControlChannel.m \
+    $(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/SGLog.m
 SGNPreferenceBundle_FRAMEWORKS = UIKit CoreGraphics CFNetwork CoreFoundation QuartzCore
 SGNPreferenceBundle_PRIVATE_FRAMEWORKS = Preferences
 SGNPreferenceBundle_LDFLAGS = \
@@ -24,7 +27,7 @@ SGNPreferenceBundle_LDFLAGS = \
   SFPFilePicker/lib/SFPFilePicker.a \
   -lsqlite3
 SGNPreferenceBundle_INSTALL_PATH = /Library/PreferenceBundles
-SGNPreferenceBundle_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -I$(THEOS_PROJECT_DIR)/openssl/include
+SGNPreferenceBundle_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -I$(THEOS_PROJECT_DIR)/openssl/include -I..
 ADDITIONAL_CFLAGS += -D"API_AVAILABLE(...)= " -D"API_DEPRECATED(...)= " -D"API_UNAVAILABLE(...)= " -D"instancetype=id"
 
 include $(THEOS_MAKE_PATH)/bundle.mk

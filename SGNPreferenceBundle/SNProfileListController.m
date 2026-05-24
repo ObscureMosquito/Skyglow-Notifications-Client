@@ -1,15 +1,13 @@
 #import "SNProfileListController.h"
 #import "SNServerInfoViewController.h"
 #import "SNDataManager.h"
+#import "SNChannelGateway.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
 static void SNPostReloadConfig(void) {
-    CFNotificationCenterPostNotificationWithOptions(
-        CFNotificationCenterGetDarwinNotifyCenter(),
-        CFSTR("com.skyglow.sgn.reload_config"),
-        NULL, NULL, kCFNotificationDeliverImmediately);
+    [SNChannelGateway postReloadConfig];
 }
 
 enum {

@@ -4,18 +4,21 @@
 #import "SGServerLocator.h"
 #import "SGConfiguration.h"
 #import "SGDatabaseManager.h"
-#import "SGMachServer.h"
 #import "SGStatusServer.h"
 #import "SGProtocolHandler.h"
 #import "SGTokenManager.h"
+#import "SGControlChannel.h"
 #import "SGLog.h"
 #include <signal.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <IOKit/IOMessage.h>
+
+static int64_t _sgDaemonStartTime = 0;
 
 /**
  * Rotation threshold for /var/log/skyglow.log.  1 MB × 2 generations keeps
@@ -23,6 +26,14 @@
  * Bump if Debug/Trace logging becomes a routine diagnostic posture.
  */
 #define SG_LOG_ROTATE_BYTES (1024u * 1024u)
+
+/**
+ * Brief pause between broadcasting SGStateDisabled and tearing down the
+ * status server when the daemon launches in a disabled-by-config state.
+ * Gives any prefs UI / sntool watcher a chance to read the definitive state
+ * before the socket disappears; below human-perceptible latency.
+ */
+#define SG_DISABLED_BROADCAST_GRACE_USEC  (200u * 1000u)
 
 static io_connect_t          _sgPowerRootPort  = MACH_PORT_NULL;
 static io_object_t           _sgPowerNotifier  = MACH_PORT_NULL;
@@ -56,13 +67,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         default:
             break;
     }
-}
-
-static void SG_ConfigurationReloadCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
-    SGDaemon *daemon = (__bridge SGDaemon *)observer;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        @autoreleasepool { [daemon handleConfigurationReloadRequest]; }
-    });
 }
 
 int main(int argc, char *argv[]) {
@@ -110,13 +114,13 @@ int main(int argc, char *argv[]) {
          * bundle always gets a definitive SGStateDisabled instead of having to
          * rely on the ambiguous PID-file-alive heuristic.
          */
-        int64_t startTime = (int64_t)time(NULL);
-        SGStatusServer_Start([SGPath(@"/var/run/skyglow_status.sock") UTF8String], startTime);
+        _sgDaemonStartTime = (int64_t)time(NULL);
+        SGStatusServer_Start([SGPath(@"/var/run/skyglow_status.sock") UTF8String], _sgDaemonStartTime);
 
         if (!config.isEnabled) {
             SGLOGI(Skyglow, "Daemon is disabled. Broadcasting state and exiting.");
             SGStatusServer_Post(SGStateDisabled, 0, 0, NULL, "Daemon is disabled", 0);
-            usleep(200000); /* 200ms — let any watchers read the state */
+            usleep(SG_DISABLED_BROADCAST_GRACE_USEC);
             SGStatusServer_Shutdown();
             unlink([SGPath(@"/var/run/skyglow_daemon.pid") UTF8String]);
             flock(pid_fd, LOCK_UN);
@@ -144,6 +148,163 @@ int main(int argc, char *argv[]) {
 
         SGDaemon *daemon = [[SGDaemon alloc] init];
         SGP_SetDelegate(daemon);
+
+        /* Register handlers before -start so an incoming request can't race a
+         * missing dispatch entry. */
+        SGControlChannel *controlChannel =
+            [[SGControlChannel serverWithServiceName:SKYGLOW_CONTROL_SERVICE_DAEMON] retain];
+
+        /* SGCMSG_TOKEN_REQUEST — mint or return a cached push token. */
+        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                          SGControlReplyBlock reply,
+                                          SGControlReplyErrorBlock replyError) {
+            if (req->payloadLength < sizeof(SGCTokenRequestPayload)) {
+                replyError(SGCERR_INVALID_REQUEST, @"token request payload too short");
+                return;
+            }
+            SGCTokenRequestPayload *tReq = (SGCTokenRequestPayload *)req->payload;
+            NSString *bundleID = [[NSString alloc] initWithBytes:tReq->bundleID
+                                                          length:strnlen(tReq->bundleID, sizeof(tReq->bundleID))
+                                                        encoding:NSUTF8StringEncoding];
+
+            if (![[SGConfiguration sharedConfiguration] isEnabled]) {
+                replyError(SGCERR_DAEMON_DISABLED, @"Daemon disabled in Settings");
+                [bundleID release];
+                return;
+            }
+
+            NSData *token = nil;
+            NSError *err = nil;
+            NSArray *existing = [[SGDatabaseManager sharedManager] tokenEntriesForBundleIdentifier:bundleID];
+            if ([existing count] > 0) {
+                NSData *t = existing[0][@"token"];
+                if ([t length] > 0) token = t;
+            }
+            SGTokenManager *tm = nil;
+            if (!token) {
+                tm = [[SGTokenManager alloc] init];
+                token = [tm generateTokenLocallyForBundleIdentifier:bundleID error:&err];
+            }
+
+            if (!token) {
+                NSString *detail = err ? [err localizedDescription] : @"Token generation failed";
+                replyError(SGCERR_INTERNAL, detail);
+                [tm release];
+                [bundleID release];
+                return;
+            }
+
+            if ([token length] > SG_CONTROL_MAX_TOKEN_SIZE) {
+                replyError(SGCERR_INTERNAL, @"token exceeds wire limit");
+                [tm release];
+                [bundleID release];
+                return;
+            }
+
+            SGCTokenResponsePayload resp;
+            memset(&resp, 0, sizeof(resp));
+            resp.tokenLength = (uint32_t)[token length];
+            memcpy(resp.tokenData, [token bytes], [token length]);
+            reply(SGCMSG_TOKEN_RESPONSE, [NSData dataWithBytes:&resp length:sizeof(resp)]);
+
+            /* Push the token to the server asynchronously — never blocks the response. */
+            if (tm) {
+                NSString *bid = [bundleID retain];
+                SGTokenManager *tmRetained = [tm retain];
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    [tmRetained uploadTokenIfNeededForBundleIdentifier:bid];
+                    [tmRetained release];
+                    [bid release];
+                });
+                [tm release];
+            }
+            [bundleID release];
+        } forMessageType:SGCMSG_TOKEN_REQUEST];
+
+        /* SGCMSG_TOKEN_REVOKE — drop a token, notify the server. */
+        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                          SGControlReplyBlock reply,
+                                          SGControlReplyErrorBlock replyError) {
+            if (req->payloadLength < sizeof(SGCTokenRequestPayload)) {
+                replyError(SGCERR_INVALID_REQUEST, @"token revoke payload too short");
+                return;
+            }
+            SGCTokenRequestPayload *tReq = (SGCTokenRequestPayload *)req->payload;
+            NSString *bundleID = [[NSString alloc] initWithBytes:tReq->bundleID
+                                                          length:strnlen(tReq->bundleID, sizeof(tReq->bundleID))
+                                                        encoding:NSUTF8StringEncoding];
+            SGTokenManager *tm = [[SGTokenManager alloc] init];
+            [tm revokeTokenForBundleIdentifier:bundleID reason:@"client_revoke"];
+            [tm release];
+            [bundleID release];
+            reply(SGCMSG_GENERIC_ACK, nil);
+        } forMessageType:SGCMSG_TOKEN_REVOKE];
+
+        /* SGCMSG_FEEDBACK — app-state hint (uninstall, force-quit) from the SB tweak. */
+        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                          SGControlReplyBlock reply,
+                                          SGControlReplyErrorBlock replyError) {
+            if (req->payloadLength < sizeof(SGCFeedbackPayload)) {
+                replyError(SGCERR_INVALID_REQUEST, @"feedback payload too short");
+                return;
+            }
+            SGCFeedbackPayload *fb = (SGCFeedbackPayload *)req->payload;
+            NSString *bundleID = [[NSString alloc] initWithBytes:fb->bundleID
+                                                          length:strnlen(fb->bundleID, sizeof(fb->bundleID))
+                                                        encoding:NSUTF8StringEncoding];
+            NSString *reason = [[NSString alloc] initWithBytes:fb->reason
+                                                        length:strnlen(fb->reason, sizeof(fb->reason))
+                                                      encoding:NSUTF8StringEncoding];
+            SGTokenManager *tm = [[SGTokenManager alloc] init];
+            [tm revokeTokenForBundleIdentifier:bundleID reason:reason];
+            [tm release];
+            [bundleID release];
+            [reason release];
+            reply(SGCMSG_GENERIC_ACK, nil);
+        } forMessageType:SGCMSG_FEEDBACK];
+
+        /* SGCMSG_RELOAD_CONFIG — replaces com.skyglow.sgn.reload_config Darwin notification. */
+        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                          SGControlReplyBlock reply,
+                                          SGControlReplyErrorBlock replyError) {
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                @autoreleasepool { [daemon handleConfigurationReloadRequest]; }
+            });
+            reply(SGCMSG_GENERIC_ACK, nil);
+        } forMessageType:SGCMSG_RELOAD_CONFIG];
+
+        /* SGCMSG_TEST_INJECT — debug hook.  Logs receipt; no behaviour wired yet. */
+        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                          SGControlReplyBlock reply,
+                                          SGControlReplyErrorBlock replyError) {
+            SGLOGI(Skyglow, "Control channel: TEST_INJECT received.");
+            reply(SGCMSG_GENERIC_ACK, nil);
+        } forMessageType:SGCMSG_TEST_INJECT];
+
+        /* SGCMSG_READINESS_PROBE — lets a client confirm wire compatibility + liveness. */
+        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                          SGControlReplyBlock reply,
+                                          SGControlReplyErrorBlock replyError) {
+            SGStatusPayload current;
+            SGStatusServer_Current(&current);
+            SGCReadinessResponsePayload resp;
+            memset(&resp, 0, sizeof(resp));
+            resp.daemonState     = (uint8_t)current.state;
+            resp.protocolVersion = SG_CONTROL_VERSION;
+            resp.uptime          = (uint32_t)((int64_t)time(NULL) - _sgDaemonStartTime);
+            reply(SGCMSG_READINESS_RESPONSE, [NSData dataWithBytes:&resp length:sizeof(resp)]);
+        } forMessageType:SGCMSG_READINESS_PROBE];
+
+        if (![controlChannel start]) {
+            SGLOGE(Skyglow, "SGControlChannel server failed to start.");
+        } else {
+            [daemon attachControlChannel:controlChannel];
+        }
+
+        SGControlChannel *springBoardClient =
+            [[SGControlChannel clientForServiceName:SKYGLOW_CONTROL_SERVICE_SPRINGBOARD] retain];
+        [springBoardClient start];
+        [daemon attachSpringBoardClient:springBoardClient];
 
         /**
          * IOKit power notification registration.
@@ -176,24 +337,17 @@ int main(int argc, char *argv[]) {
             }
         }];
 
-        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), 
-                                        (__bridge void *)daemon, 
-                                        SG_ConfigurationReloadCallback, 
-                                        CFSTR(kSGConfigurationDidUpdateNotification), 
-                                        NULL, 
-                                        CFNotificationSuspensionBehaviorDeliverImmediately);
-
         /**
          * Always start the daemon before wiring reachability.
          *
-         * start initializes the Mach bootstrap server and reconciles tokens.
-         * If we skip it when offline, apps can never request tokens — even after
-         * WiFi reconnects — because the Mach IPC server was never launched.
+         * start initializes the Mach IPC layer and reconciles tokens.  If we
+         * skip it when offline, apps can never request tokens — even after
+         * WiFi reconnects — because the IPC server was never launched.
          *
-         * The FSM handles the no-network case on its own: the reachability callback
-         * fires SGEventNetworkDown → SGStateIdleNoNetwork → retries when WiFi returns.
-         * Starting before wiring reachability also ensures the FSM is fully initialized
-         * before the first callback arrives.
+         * The FSM handles the no-network case on its own: the reachability
+         * callback fires SGEventNetworkDown → SGStateIdleNoNetwork → retries
+         * when WiFi returns.  Starting before wiring reachability also ensures
+         * the FSM is fully initialized before the first callback arrives.
          */
         [daemon start];
         [reachability startMonitoringSystemNetworkChanges];
@@ -204,16 +358,14 @@ int main(int argc, char *argv[]) {
         [daemon requestGracefulDisconnect];
         [reachability stopMonitoringSystemNetworkChanges];
 
-        /**
-         * Remove the config-reload observer before releasing the daemon.
-         * SG_ConfigurationReloadCallback dispatches [daemon handleConfigurationReloadRequest]
-         * to the global queue. A Darwin notification delivered between CFRunLoopRun()
-         * returning and [daemon release] below would dispatch a block that calls into
-         * a being-torn-down object — no implicit retain in MRC.
-         */
-        CFNotificationCenterRemoveEveryObserver(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            (__bridge void *)daemon);
+        /* Detach + stop channels before -release on the daemon so in-flight
+         * handlers complete with SGCERR_UNREACHABLE first. */
+        [daemon attachControlChannel:nil];
+        [daemon attachSpringBoardClient:nil];
+        [springBoardClient stop];
+        [springBoardClient release];
+        [controlChannel stop];
+        [controlChannel release];
 
         SGStatusServer_Shutdown();
         [[SGDatabaseManager sharedManager] closeDatabase];
