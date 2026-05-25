@@ -150,7 +150,6 @@ profiles may pin different servers.
 | `0x12` | S_AUTH_OK         | Authentication successful                            |
 | `0x13` | S_NOTIFY          | Incoming push notification                           |
 | `0x14` | S_DISCONNECT      | Server is closing the connection                     |
-| `0x15` | S_TOKEN_ACK       | Acknowledgment of device token registration          |
 | `0x16` | S_PONG            | Response to client keep-alive ping                   |
 | `0x17` | S_POLL_DONE       | All offline messages have been delivered              |
 | `0x18` | S_REGISTER_OK     | First-time device registration succeeded             |
@@ -167,12 +166,11 @@ profiles may pin different servers.
 | `0x22` | C_POLL            | Request offline (undelivered) notifications          |
 | `0x23` | C_ACK             | Acknowledge receipt of a notification                |
 | `0x24` | C_DISCONNECT      | Client is closing the connection                     |
-| `0x25` | C_REG_TOKEN       | Register a device token (routing key) for an app     |
 | `0x27` | C_PING            | Client-initiated keep-alive ping                     |
 | `0x28` | C_REGISTER        | First-time device registration request               |
 | `0x29` | C_REGISTER_RESP   | Response to first-time registration challenge        |
 | `0x2A` | C_PONG            | Response to server keep-alive ping                   |
-| `0x2B` | C_FILTER          | Active routing key filter (chunked)                  |
+| `0x2B` | C_FILTER          | Active (routing key, bundle ID) registration set (chunked, full-replace) |
 
 ---
 
@@ -433,37 +431,46 @@ Each app that wishes to receive notifications needs a **device token**. This tok
 | `e2ee_key`     | Yes            | **No**         | No           |
 | `device_token` | Yes            | No             | **Yes**      |
 
-### 8.3. C_REG_TOKEN (0x25) Payload
+### 8.3. C_FILTER (0x2B) Payload — Active Registration Set
 
-| Offset | Size     | Field       | Description                                |
-|--------|----------|-------------|--------------------------------------------|
-| 0      | 32       | routing_key | SHA-256(K) — the 32-byte routing key       |
-| 32     | 2        | bid_len     | Length of bundle ID string (BE u16)        |
-| 34     | bid_len  | bundle_id   | Application bundle identifier (UTF-8)      |
+`C_FILTER` carries the device's **complete** `(tag, routing_key, bundle_id)` registration set. The server treats the multi-chunk transmission as a single atomic full-replace for both:
 
-The client blocks for up to **5 seconds** waiting for S_TOKEN_ACK before considering the registration failed.
+- the **routing filter** (which routing keys this device wants notifications for), and
+- the **bundle binding table** (which bundle ID owns each routing key, for third-party push addressing).
 
-### 8.4. S_TOKEN_ACK (0x15) Payload
+`C_FILTER` is sent:
+- Immediately after `S_AUTH_OK` on every connection (canonical resync).
+- After any local mutation that changes the registration set (mint, mute, unmute, delete).
 
-| Offset | Size     | Field       | Description                                |
-|--------|----------|-------------|--------------------------------------------|
-| 0      | 32       | routing_key | Echo of the registered routing key         |
-| 32     | 2        | bid_len     | Length of bundle ID string (BE u16)        |
-| 34     | bid_len  | bundle_id   | The bundle ID that was registered (UTF-8)  |
+When the entries do not fit in a single frame, they are chunked. The server accumulates chunks until it receives one with `has_more = 0`, then atomically replaces its state. If the connection drops mid-transmission, the server MUST discard the partial buffer.
 
-### 8.5. C_FILTER (0x2B) Payload — Active Topic Filter
+**Frame layout:**
 
-Sent after authentication to inform the server which routing keys the client is currently interested in. This allows the server to drop notifications for unsubscribed topics.
+| Offset | Size  | Field     | Description                                       |
+|--------|-------|-----------|---------------------------------------------------|
+| 0      | 1     | flags     | Bit 0: `has_more` (1 = more chunks follow)        |
+| 1      | 2     | count     | Number of entries in this chunk (BE u16)          |
+| 3      | var.  | entries   | `count` consecutive entries (layout below)        |
 
-The filter is sent in chunks when there are too many keys for a single frame:
+**Entry layout:**
 
-| Offset | Size         | Field     | Description                                    |
-|--------|--------------|-----------|------------------------------------------------|
-| 0      | 1            | flags     | Bit 0: `has_more` (1 = more chunks follow)     |
-| 1      | 2            | count     | Number of routing keys in this chunk (BE u16)  |
-| 3      | count × 32   | keys      | Concatenated 32-byte routing keys              |
+| Offset | Size     | Field        | Description                                    |
+|--------|----------|--------------|------------------------------------------------|
+| 0      | 1        | tag          | `0x01` enabled, `0x02` ignored — see below     |
+| 1      | 32       | routing_key  | SHA-256(K) — the 32-byte routing key           |
+| 33     | 2        | bid_len      | Length of bundle ID string (BE u16)            |
+| 35     | bid_len  | bundle_id    | Application bundle identifier (UTF-8)          |
 
-Maximum keys per chunk: `(4096 - 3) / 32 = 127`.
+**Per-entry tag semantics:**
+
+| Tag    | Name    | Server behaviour                                                         | Client disposition                                                |
+|--------|---------|--------------------------------------------------------------------------|-------------------------------------------------------------------|
+| `0x01` | enabled | Deliver pushes for this routing_key normally.                            | Daemon parses + dispatches to SpringBoard.                        |
+| `0x02` | ignored | Should NOT deliver, but if a stale push arrives the client absorbs it.   | Daemon silently ACKs SUCCESS without dispatching (defensive drop). |
+
+The `ignored` tag is how the toggle-OFF "mute" UX is wired: the user keeps the token (instant re-enable), the server stops pushing, and any in-flight notification that crosses the filter resync gets cleanly absorbed instead of delivered. This mirrors how apsd handles its `_hashesToIgnoredTopics` set.
+
+The client packs entries greedily and starts a new chunk when the next entry would push the frame past `SGP_MAX_PAYLOAD_LEN` (4096). A canonical empty registration set is transmitted as a single frame with `flags=0`, `count=0` and no entries — the server uses that to clear its tables.
 
 ---
 
@@ -671,8 +678,7 @@ The server must store:
 |----------------------|----------------------------------------------------------------|
 | address              | UUID device identifier                                         |
 | public_key           | RSA-2048 public key (DER format, from C_REGISTER)              |
-| routing_keys         | Set of 32-byte routing keys → bundle ID mappings               |
-| active_filter        | Current set of routing keys the client is interested in        |
+| registrations        | Set of `(routing_key, bundle_id)` tuples — full-replace on every C_FILTER. Serves as both the routing filter and the bundle binding table for third-party push addressing. |
 | last_delivered_seq   | Per-device notification sequence counter                       |
 | unacked_notifications| Queue of notifications not yet acknowledged                    |
 
@@ -686,7 +692,7 @@ The server must store:
 | Client sends valid C_REGISTER_RESP   | S_REGISTER_OK (with server version)          |
 | Client sends invalid challenge resp  | S_DISCONNECT (reason: AUTH_FAIL)             |
 | Push notification arrives for device | S_NOTIFY (with routing_key, data, etc.)      |
-| Client sends C_REG_TOKEN             | S_TOKEN_ACK (echo routing_key + bundle_id)   |
+| Client sends C_FILTER chunk(s)       | (No reply.) Buffer chunks until `has_more=0`, then atomically replace the device's registration set. Discard partial buffer if the connection drops mid-transmission. |
 | Client sends C_POLL                  | Re-deliver unacked notifs, then S_POLL_DONE  |
 | Client sends C_PING                  | S_PONG (echo sequence)                       |
 | Server wants to keep-alive           | S_PING (with sequence)                       |
@@ -714,7 +720,6 @@ The server should enforce the same payload bounds the client expects:
 | S_AUTH_OK        | 0        | 0        |
 | S_NOTIFY         | 70       | 4096     |
 | S_DISCONNECT     | 1        | 5        |
-| S_TOKEN_ACK      | 35       | 289      |
 | S_PONG           | 8        | 8        |
 | S_POLL_DONE      | 0        | 0        |
 | S_REGISTER_OK    | 4        | 4        |
