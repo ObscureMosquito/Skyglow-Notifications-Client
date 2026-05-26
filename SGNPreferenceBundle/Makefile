@@ -1,6 +1,6 @@
 TARGET := iphone:clang:7.0:7.0
-ARCHS = armv7 armv7s arm64
-
+ARCHS = armv7 armv7s
+#status item, remove from apsd in app list 
 include $(THEOS)/makefiles/common.mk
 
 BUNDLE_NAME = SGNPreferenceBundle
@@ -15,6 +15,7 @@ SGNPreferenceBundle_FILES = \
     SNProfileListController.m \
     SNCustomViewCell.m \
     SNDebugViewController.m \
+    SNCustomizationViewController.m \
     SNDataManager.m \
     SNChannelGateway.m \
     $(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/SGControlChannel.m \

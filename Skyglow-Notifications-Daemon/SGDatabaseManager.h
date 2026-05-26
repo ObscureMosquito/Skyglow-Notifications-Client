@@ -13,28 +13,12 @@
 /** Token & Identity Management */
 
 /**
- * Stores a device token entry with its routing key, E2EE key, and upload status.
+ * Stores a device token entry with its routing key and E2EE key.
  */
 - (BOOL)storeDeviceTokenData:(NSData *)routingKey
                      e2eeKey:(NSData *)e2eeKey
                     bundleID:(NSString *)bundleID
-                       token:(NSData *)token
-                  isUploaded:(BOOL)isUploaded;
-
-/**
- * Returns all token entries that have not yet been uploaded to the server.
- */
-- (NSArray *)pendingUploadTokens;
-
-/**
- * Marks a token as successfully uploaded to the server.
- */
-- (BOOL)markTokenAsUploaded:(NSData *)routingKey;
-
-/**
- * Resets all tokens to require re-upload on the next connection.
- */
-- (void)resetAllTokensToRequireUpload;
+                       token:(NSData *)token;
 
 /**
  * Returns the token data (E2EE key and bundle ID) for a given routing key.
@@ -52,9 +36,27 @@
 - (BOOL)removeTokenForBundleIdentifier:(NSString *)bundleID;
 
 /**
- * Returns all active routing keys in the notifications table.
+ * Returns the full (routing_key, bundle_id, is_muted) registration set.
+ * Each entry is a dictionary with keys: routingKey (NSData), bundleID
+ * (NSString), isMuted (NSNumber bool).  Used by SGP_FlushActiveTopicFilter
+ * to push the canonical set to the server with per-entry enabled/ignored
+ * tagging.
  */
-- (NSArray *)allActiveRoutingKeys;
+- (NSArray *)allBundleRegistrations;
+
+/**
+ * Sets the mute flag for the given bundle.  Muted rows are emitted with
+ * C_FILTER's "ignored" tag so the server drops further deliveries; toggling
+ * the flag off restores normal routing without losing the token.
+ */
+- (BOOL)setMuted:(BOOL)muted forBundleIdentifier:(NSString *)bundleID;
+
+/**
+ * Returns YES if the row identified by routingKey is muted.  The notification
+ * receive path uses this as a defensive drop in case the server is still
+ * delivering pushes while a filter resync is in flight.
+ */
+- (BOOL)isMutedForRoutingKey:(NSData *)routingKey;
 
 /**
  * Returns the set of distinct bundle identifiers that have registered tokens.
@@ -162,6 +164,13 @@
  * Removes a local pending delivery row after it has been disposed of.
  */
 - (BOOL)removeLocalPendingDeliveryForMessageID:(NSData *)msgID;
+
+/**
+ * Removes every local pending delivery row for a given bundle.  Called by
+ * the DELETE_APP cascade so queued retries don't loop trying to deliver to
+ * an app whose Skyglow registration has just been torn down.
+ */
+- (BOOL)removeLocalPendingDeliveriesForBundleIdentifier:(NSString *)bundleID;
 
 /**
  * Returns YES if a local-pending row exists for the given msg_id.  Used to

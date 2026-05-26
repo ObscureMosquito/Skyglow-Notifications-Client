@@ -4,12 +4,15 @@
 <dict>
 	<key>items</key>
 	<array>
+
 		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string>Configuration</string>
-        </dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>General</string>
+			<key>footerText</key>
+			<string>Stops or starts the background daemon. Toggling off disconnects from the server.</string>
+		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSSwitchCell</string>
@@ -22,12 +25,15 @@
 			<key>label</key>
 			<string>Enabled</string>
 		</dict>
+
 		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string></string>
-        </dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Setup</string>
+			<key>footerText</key>
+			<string>Pick which apps route through Skyglow, and manage the servers they connect to.</string>
+		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSLinkCell</string>
@@ -35,7 +41,7 @@
 			<string>Server Profiles</string>
 			<key>detail</key>
 			<string>SNProfileListController</string>
-        </dict>
+		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSLinkCell</string>
@@ -45,11 +51,20 @@
 			<string>SNAppListController</string>
 		</dict>
 		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>label</key>
-            <string></string>
-        </dict>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>label</key>
+			<string>Other Settings</string>
+			<key>action</key>
+			<string>pushCustomizationView</string>
+		</dict>
+
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Status</string>
+		</dict>
 		<dict>
 			<key>cellClass</key>
 			<string>SNCustomTableViewCell</string>
@@ -59,22 +74,21 @@
 			<string></string>
 			<key>action</key>
 			<string>pushDebugView</string>
+			<key>height</key>
+			<real>48</real>
 		</dict>
+
 		<dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>footerText</key>
-            <string>Made with love by Requis &amp; Preloading. Thanks to Electimon for the OpenSSL builds.</string>
-        </dict>
-        
-        <dict>
-            <key>cell</key>
-            <string>PSGroupCell</string>
-            <key>footerCellClass</key>
-            <string>SNFooterView</string>
-        </dict>
-    </array>
-    <key>title</key>
-    <string>Skyglow Notifications</string>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>Made with love by Requis &amp; Preloading. Thanks to Electimon for the OpenSSL builds.</string>
+			<key>footerCellClass</key>
+			<string>SNFooterView</string>
+		</dict>
+
+	</array>
+	<key>title</key>
+	<string>Skyglow Notifications</string>
 </dict>
 </plist>

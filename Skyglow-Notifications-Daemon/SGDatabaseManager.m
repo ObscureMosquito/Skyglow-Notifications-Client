@@ -6,20 +6,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/**
- * SQLite schema version of this build.  Incremented whenever a migration is
- * added below.  Pre-versioning databases (anything older than v1) are tagged
- * as v1 in-place — the inline CREATE IF NOT EXISTS calls in -init already
- * produce that exact schema for both fresh and upgraded databases.
- */
-#define SG_SCHEMA_LATEST_VERSION 3
+#define SG_SCHEMA_LATEST_VERSION 4
 
-/**
- * Local retention floor for the seen_messages dedup table.  Notifications
- * without a server-supplied expires_at, or whose expiry has already passed by
- * the time we record them, are kept for this long so a late retransmit from
- * the server can still be recognised as a duplicate.
- */
 #define SG_DEDUP_DEFAULT_RETENTION_SEC ((int64_t)86400)
 
 @implementation SGDatabaseManager {
@@ -63,15 +51,11 @@
 
         char *errorMsg = NULL;
         const char *notifTable = "CREATE TABLE IF NOT EXISTS notifications "
-                                 "(routing_key BLOB PRIMARY KEY, e2ee_key BLOB, bundle_id TEXT, token BLOB, "
-                                 "is_uploaded INTEGER NOT NULL DEFAULT 1)";
+                                 "(routing_key BLOB PRIMARY KEY, e2ee_key BLOB, bundle_id TEXT, token BLOB)";
         if (sqlite3_exec(_database, notifTable, NULL, NULL, &errorMsg) != SQLITE_OK) {
             SGLOGE(SGDatabaseManager, "Schema error: %s", errorMsg ? errorMsg : "(null)");
             sqlite3_free(errorMsg);
         }
-        
-        sqlite3_exec(_database, "ALTER TABLE notifications ADD COLUMN is_uploaded INTEGER NOT NULL DEFAULT 1", NULL, NULL, NULL);
-
         const char *dnsTable = "CREATE TABLE IF NOT EXISTS dns_cache "
                                "(domain TEXT PRIMARY KEY, ip TEXT NOT NULL, port TEXT NOT NULL, updated_at REAL NOT NULL)";
         sqlite3_exec(_database, dnsTable, NULL, NULL, NULL);
@@ -84,11 +68,6 @@
                                     "(key TEXT PRIMARY KEY, value REAL NOT NULL)";
         sqlite3_exec(_database, settingsTable, NULL, NULL, NULL);
 
-        /**
-         * last_delivered_seq: highest device_seq the client has successfully ACK'd.
-         * Stored as REAL because SQLite has no native INT64 binding that survives
-         * the settings schema — cast to/from int64_t explicitly.
-         */
         sqlite3_exec(_database,
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('last_delivered_seq', 0)",
             NULL, NULL, NULL);
@@ -98,14 +77,6 @@
     return self;
 }
 
-/**
- * Brings the database from whatever PRAGMA user_version it currently reports
- * up to SG_SCHEMA_LATEST_VERSION by running migrations in sequence.  Each step
- * is wrapped in an immediate transaction so a partial failure rolls back and
- * the migration is retried on the next launch.  PRAGMA user_version is the
- * canonical built-in counter — available on every SQLite version Apple has
- * ever shipped — so we do not need a dedicated schema_version table.
- */
 - (void)_migrateSchema {
     int currentVersion = 0;
     sqlite3_stmt *probe = NULL;
@@ -120,38 +91,23 @@
 
         switch (targetVersion) {
             case 1:
-                /**
-                 * v1 codifies the schema produced by the inline CREATE IF NOT
-                 * EXISTS calls above.  Both fresh databases (user_version=0
-                 * before this migration ran) and existing databases (also 0
-                 * because PRAGMA user_version has never been set before) reach
-                 * the same shape at this point — no DDL needed, just stamp it.
-                 */
                 migration = NULL;
                 break;
             case 2:
-                /**
-                 * Durable dedup of received notifications.  Survives daemon
-                 * restarts and reconnects so a server retransmit after we have
-                 * already delivered a notification does not produce a duplicate
-                 * banner on the device.
-                 */
                 migration =
                     "CREATE TABLE IF NOT EXISTS seen_messages "
                     "(msg_id BLOB PRIMARY KEY, expires_at INTEGER NOT NULL)";
                 break;
             case 3:
-                /**
-                 * Local-side delivery retry queue.  Holds notifications whose
-                 * Mach delivery to SpringBoard failed (tweak unloaded, SB
-                 * restarting) so the daemon can redeliver without ever ACKing
-                 * the server for a banner it did not surface.
-                 */
                 migration =
                     "CREATE TABLE IF NOT EXISTS local_pending_deliveries "
                     "(msg_id BLOB PRIMARY KEY, bundle_id TEXT NOT NULL, "
                     "payload BLOB NOT NULL, device_seq INTEGER NOT NULL DEFAULT 0, "
                     "expires_at INTEGER NOT NULL)";
+                break;
+            case 4:
+                migration =
+                    "ALTER TABLE notifications ADD COLUMN is_muted INTEGER NOT NULL DEFAULT 0";
                 break;
         }
 
@@ -194,64 +150,23 @@
     });
 }
 
-- (BOOL)storeDeviceTokenData:(NSData *)routingKey e2eeKey:(NSData *)e2eeKey bundleID:(NSString *)bundleID token:(NSData *)token isUploaded:(BOOL)isUploaded {
+- (BOOL)storeDeviceTokenData:(NSData *)routingKey e2eeKey:(NSData *)e2eeKey bundleID:(NSString *)bundleID token:(NSData *)token {
     if (!routingKey || !e2eeKey || !bundleID || !token) return NO;
 
     __block BOOL success = NO;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "INSERT OR REPLACE INTO notifications (routing_key, e2ee_key, bundle_id, token, is_uploaded) VALUES (?, ?, ?, ?, ?)";
+        const char *sql = "INSERT OR REPLACE INTO notifications (routing_key, e2ee_key, bundle_id, token) VALUES (?, ?, ?, ?)";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
             sqlite3_bind_blob(stmt, 1, [routingKey bytes], (int)[routingKey length], SQLITE_TRANSIENT);
             sqlite3_bind_blob(stmt, 2, [e2eeKey bytes], (int)[e2eeKey length], SQLITE_TRANSIENT);
             sqlite3_bind_text(stmt, 3, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
             sqlite3_bind_blob(stmt, 4, [token bytes], (int)[token length], SQLITE_TRANSIENT);
-            sqlite3_bind_int(stmt, 5, isUploaded ? 1 : 0);
             success = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
         }
     });
     return success;
-}
-
-- (NSArray *)pendingUploadTokens {
-    __block NSMutableArray *results = [NSMutableArray array];
-    dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT routing_key, e2ee_key, bundle_id, token FROM notifications WHERE is_uploaded = 0";
-        sqlite3_stmt *stmt;
-        if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            while (sqlite3_step(stmt) == SQLITE_ROW) {
-                [results addObject:@{
-                    @"routingKey": [NSData dataWithBytes:sqlite3_column_blob(stmt, 0) length:sqlite3_column_bytes(stmt, 0)],
-                    @"e2eeKey":    [NSData dataWithBytes:sqlite3_column_blob(stmt, 1) length:sqlite3_column_bytes(stmt, 1)],
-                    @"bundleID":   sqlite3_column_text(stmt, 2) ? [NSString stringWithUTF8String:(const char *)sqlite3_column_text(stmt, 2)] : @"",
-                    @"token":      [NSData dataWithBytes:sqlite3_column_blob(stmt, 3) length:sqlite3_column_bytes(stmt, 3)]
-                }];
-            }
-            sqlite3_finalize(stmt);
-        }
-    });
-    return results;
-}
-
-- (BOOL)markTokenAsUploaded:(NSData *)routingKey {
-    __block BOOL ok = NO;
-    dispatch_sync(_databaseQueue, ^{
-        const char *sql = "UPDATE notifications SET is_uploaded = 1 WHERE routing_key = ?";
-        sqlite3_stmt *stmt;
-        if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, [routingKey bytes], (int)[routingKey length], SQLITE_TRANSIENT);
-            ok = (sqlite3_step(stmt) == SQLITE_DONE);
-            sqlite3_finalize(stmt);
-        }
-    });
-    return ok;
-}
-
-- (void)resetAllTokensToRequireUpload {
-    dispatch_sync(_databaseQueue, ^{
-        sqlite3_exec(_database, "UPDATE notifications SET is_uploaded = 0", NULL, NULL, NULL);
-    });
 }
 
 - (NSArray *)tokenEntriesForBundleIdentifier:(NSString *)bundleID {
@@ -289,19 +204,58 @@
     return ok;
 }
 
-- (NSArray *)allActiveRoutingKeys {
+- (NSArray *)allBundleRegistrations {
     __block NSMutableArray *results = [NSMutableArray array];
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT routing_key FROM notifications";
+        const char *sql = "SELECT routing_key, bundle_id, is_muted FROM notifications";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
             while (sqlite3_step(stmt) == SQLITE_ROW) {
-                [results addObject:[NSData dataWithBytes:sqlite3_column_blob(stmt, 0) length:sqlite3_column_bytes(stmt, 0)]];
+                const char *bID = (const char *)sqlite3_column_text(stmt, 1);
+                if (!bID) continue;
+                [results addObject:@{
+                    @"routingKey": [NSData dataWithBytes:sqlite3_column_blob(stmt, 0) length:sqlite3_column_bytes(stmt, 0)],
+                    @"bundleID":   [NSString stringWithUTF8String:bID],
+                    @"isMuted":    @(sqlite3_column_int(stmt, 2) != 0)
+                }];
             }
             sqlite3_finalize(stmt);
         }
     });
     return results;
+}
+
+- (BOOL)setMuted:(BOOL)muted forBundleIdentifier:(NSString *)bundleID {
+    if (!bundleID) return NO;
+    __block BOOL ok = NO;
+    dispatch_sync(_databaseQueue, ^{
+        const char *sql = "UPDATE notifications SET is_muted = ? WHERE bundle_id = ?";
+        sqlite3_stmt *stmt;
+        if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_int(stmt, 1, muted ? 1 : 0);
+            sqlite3_bind_text(stmt, 2, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
+            ok = (sqlite3_step(stmt) == SQLITE_DONE);
+            sqlite3_finalize(stmt);
+        }
+    });
+    return ok;
+}
+
+- (BOOL)isMutedForRoutingKey:(NSData *)routingKey {
+    if (!routingKey) return NO;
+    __block BOOL muted = NO;
+    dispatch_sync(_databaseQueue, ^{
+        const char *sql = "SELECT is_muted FROM notifications WHERE routing_key = ?";
+        sqlite3_stmt *stmt;
+        if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_blob(stmt, 1, [routingKey bytes], (int)[routingKey length], SQLITE_TRANSIENT);
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                muted = (sqlite3_column_int(stmt, 0) != 0);
+            }
+            sqlite3_finalize(stmt);
+        }
+    });
+    return muted;
 }
 
 - (NSSet *)registeredBundleIdentifiers {
@@ -401,7 +355,7 @@
                 result = [@{
                     @"e2eeKey": [NSData dataWithBytes:sqlite3_column_blob(stmt, 0) length:sqlite3_column_bytes(stmt, 0)],
                     @"bundleID": sqlite3_column_text(stmt, 1) ? [NSString stringWithUTF8String:(const char *)sqlite3_column_text(stmt, 1)] : @""
-                } retain]; // Retain to survive dispatch_sync
+                } retain];
             }
             sqlite3_finalize(stmt);
         }
@@ -463,7 +417,6 @@
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
             if (sqlite3_step(stmt) == SQLITE_ROW) {
-                // Stored as double to fit the settings schema; cast back to int64.
                 seq = (int64_t)sqlite3_column_double(stmt, 0);
             }
             sqlite3_finalize(stmt);
@@ -510,12 +463,6 @@
 - (void)markMessageIDAsSeen:(NSData *)msgID expiresAt:(int64_t)expiresAt {
     if (!msgID || [msgID length] == 0) return;
     int64_t now = (int64_t)time(NULL);
-    /**
-     * If the wire expiry is missing or already past, keep the row long enough
-     * to suppress retransmits that arrive while the server's redelivery timer
-     * is still running.  A flat 24h floor is generous compared to typical APNS
-     * resend windows (minutes) and costs trivial storage.
-     */
     int64_t effective = (expiresAt > now) ? expiresAt : (now + SG_DEDUP_DEFAULT_RETENTION_SEC);
     dispatch_async(_databaseQueue, ^{
         const char *sql = "INSERT OR REPLACE INTO seen_messages (msg_id, expires_at) VALUES (?, ?)";
@@ -596,6 +543,21 @@
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
             sqlite3_bind_blob(stmt, 1, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
+            ok = (sqlite3_step(stmt) == SQLITE_DONE);
+            sqlite3_finalize(stmt);
+        }
+    });
+    return ok;
+}
+
+- (BOOL)removeLocalPendingDeliveriesForBundleIdentifier:(NSString *)bundleID {
+    if (!bundleID || [bundleID length] == 0) return NO;
+    __block BOOL ok = NO;
+    dispatch_sync(_databaseQueue, ^{
+        const char *sql = "DELETE FROM local_pending_deliveries WHERE bundle_id = ?";
+        sqlite3_stmt *stmt;
+        if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
             ok = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
         }

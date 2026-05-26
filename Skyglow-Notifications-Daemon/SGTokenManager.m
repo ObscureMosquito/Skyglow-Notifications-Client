@@ -24,15 +24,6 @@
     return [self generateTokenLocallyForBundleIdentifier:bundleIdentifier error:outError];
 }
 
-- (BOOL)revokeTokenForBundleIdentifier:(NSString *)bundleIdentifier reason:(NSString *)reason {
-    if (!bundleIdentifier) return NO;
-
-    [[SGDatabaseManager sharedManager] removeTokenForBundleIdentifier:bundleIdentifier];
-    SGP_FlushActiveTopicFilter();
-    
-    return YES;
-}
-
 - (NSData *)generateTokenLocallyForBundleIdentifier:(NSString *)bundleIdentifier error:(NSError **)outError {
     NSString *serverAddr = [[SGConfiguration sharedConfiguration] serverAddress];
     if (!serverAddr) {
@@ -63,37 +54,12 @@
     [[SGDatabaseManager sharedManager] storeDeviceTokenData:routingKey
                                                    e2eeKey:e2eeKey
                                                   bundleID:bundleIdentifier
-                                                     token:deviceToken
-                                                isUploaded:NO];
+                                                     token:deviceToken];
 
-    /**
-     * Zero K before the stack frame is released. K is the raw entropy from which
-     * both the routing key (SHA256(K)) and the e2ee key (HKDF(K, salt)) are derived.
-     * Without this, K lives on the stack until the frame is reused — potentially
-     * never, on a long-running daemon with a stable call graph.
-     */
     memset(K, 0, sizeof(K));
 
     SGLOGI(SGTokenManager, "Generated local token for %s", [bundleIdentifier UTF8String]);
     return [deviceToken autorelease];
-}
-
-- (void)uploadTokenIfNeededForBundleIdentifier:(NSString *)bundleIdentifier {
-    NSArray *existing = [[SGDatabaseManager sharedManager] tokenEntriesForBundleIdentifier:bundleIdentifier];
-    if (existing.count == 0) return;
-
-    NSDictionary *entry = existing[0];
-    if ([entry[@"isUploaded"] boolValue]) return;
-
-    NSData *routingKey = entry[@"routingKey"];
-    if (!routingKey) return;
-
-    if (SGP_IsConnected() && SGP_RegisterDeviceToken(routingKey, bundleIdentifier)) {
-        [[SGDatabaseManager sharedManager] markTokenAsUploaded:routingKey];
-        SGLOGI(SGTokenManager, "Token uploaded for %s", [bundleIdentifier UTF8String]);
-    } else {
-        SGLOGI(SGTokenManager, "Token upload deferred for %s (not connected)", [bundleIdentifier UTF8String]);
-    }
 }
 
 @end

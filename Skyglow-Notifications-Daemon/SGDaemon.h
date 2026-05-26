@@ -91,6 +91,35 @@ typedef NS_ENUM(NSInteger, SGEvent) {
  */
 - (void)handleSystemWake;
 
+/**
+ * Asks the SpringBoard tweak (via the attached SB client) to reset iOS's
+ * view of the bundle's push registration so its next register call hits
+ * our hook fresh.  Fire-and-forget; silently no-ops if no SB client is
+ * attached.  Used by the DELETE_APP cascade — see the daemon's
+ * SGCMSG_DELETE_APP handler in main.m.
+ */
+- (void)dispatchResetRegistrationForBundleIdentifier:(NSString *)bundleID;
+
+/**
+ * Atomically removes the given bundle from the plist's pendingDeletions
+ * field.  Called at the end of the DELETE_APP cascade once the operational
+ * cleanup has completed, so the persistent intent record is cleared in
+ * lockstep with the cleanup it represents.  No-op if the field is missing
+ * or the bundle isn't in the list.
+ */
+- (void)clearPendingDeletionForBundleIdentifier:(NSString *)bundleID;
+
+/**
+ * Per-bundle operational cleanup: drops the DB row, scrubs queued local
+ * pending deliveries, and dispatches a native iOS registration reset to
+ * the SB tweak.  Idempotent.  Shared by the live SGCMSG_DELETE_APP
+ * handler and reconcile-on-startup so both paths produce identical
+ * results.  Does NOT flush the server filter or clear pendingDeletions —
+ * those are caller-batchable (one flush per batch, plist write per call
+ * site).
+ */
+- (void)_runDeletionCascadeForBundle:(NSString *)bundleID;
+
 @end
 
 #endif

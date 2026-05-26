@@ -1,5 +1,6 @@
 #import "SNAppToggleCell.h"
 #import "SNDataManager.h"
+#import "SNChannelGateway.h"
 #import <Preferences/PSSpecifier.h>
 #import <Preferences/PSTableCell.h>
 #import <Foundation/Foundation.h>
@@ -111,12 +112,14 @@
         _appNameLabel.textColor = [UIColor blackColor];
         [self.contentView addSubview:_appNameLabel];
         
-        _toggleSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
-        _toggleSwitch.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-        [_toggleSwitch addTarget:self action:@selector(toggleChanged:)
-                forControlEvents:UIControlEventValueChanged];
-        self.accessoryView = _toggleSwitch;
-        
+        if (![[specifier propertyForKey:@"sgnHideToggle"] boolValue]) {
+            _toggleSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
+            _toggleSwitch.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+            [_toggleSwitch addTarget:self action:@selector(toggleChanged:)
+                    forControlEvents:UIControlEventValueChanged];
+            self.accessoryView = _toggleSwitch;
+        }
+
         NSString *bundleId = [specifier propertyForKey:@"bundleId"];
         if (bundleId) [self configureCellForBundleId:bundleId];
     }
@@ -126,11 +129,11 @@
 - (void)layoutSubviews {
     [super layoutSubviews];
     CGFloat h = self.contentView.bounds.size.height;
-    CGFloat iconSize = 30.0;
+    CGFloat iconSize = 32.0;
     
-    _appIconView.frame = CGRectMake(15, (h - iconSize) / 2.0, iconSize, iconSize);
+    _appIconView.frame = CGRectMake(6, (h - iconSize) / 2.0, iconSize, iconSize);
     
-    CGFloat labelX = CGRectGetMaxX(_appIconView.frame) + 12.0;
+    CGFloat labelX = CGRectGetMaxX(_appIconView.frame) + 11.0;
     _appNameLabel.frame = CGRectMake(labelX, 0,
                                      self.contentView.bounds.size.width - labelX - 20.0, h);
     _appNameLabel.centerY = h / 2.0;
@@ -138,30 +141,37 @@
 
 - (void)configureCellForBundleId:(NSString *)bundleId {
     AppInfoHelper *helper = [[AppInfoHelper alloc] init];
-    
+
     UIImage *icon = [helper getIconForBundleId:bundleId];
     _appIconView.image = icon ?: [UIImage imageNamed:@"icon.png"];
-    
+
     NSString *name = [helper getAppNameForBundleId:bundleId];
     _appNameLabel.text = name ?: bundleId;
-    
-    NSDictionary *appStatus = [[SNDataManager shared] appStatus];
-    id val = [appStatus objectForKey:bundleId];
-    if (val) {
-        _toggleSwitch.on = [val boolValue];
-    } else {
-        NSSet *dbIDs = [[SNDataManager shared] registeredBundleIDs];
-        _toggleSwitch.on = [dbIDs containsObject:bundleId];
+
+    if (_toggleSwitch) {
+        NSDictionary *appStatus = [[SNDataManager shared] appStatus];
+        id val = [appStatus objectForKey:bundleId];
+        if (val) {
+            _toggleSwitch.on = [val boolValue];
+        } else {
+            NSSet *dbIDs = [[SNDataManager shared] registeredBundleIDs];
+            _toggleSwitch.on = [dbIDs containsObject:bundleId];
+        }
     }
-    
+
     self.selectionStyle = UITableViewCellSelectionStyleNone;
 }
 
 - (void)toggleChanged:(UISwitch *)sender {
     NSString *bundleId = [self.specifier propertyForKey:@"bundleId"];
     if (!bundleId) return;
-    
+
     [[SNDataManager shared] setAppStatusValue:sender.isOn forBundleId:bundleId];
+    if (sender.isOn) {
+        [SNChannelGateway postEnableAppForBundleId:bundleId];
+    } else {
+        [SNChannelGateway postDisableAppForBundleId:bundleId];
+    }
     NSLog(@"[SNAppToggleCell] %@ → %@", bundleId, sender.isOn ? @"ON" : @"OFF");
 }
 

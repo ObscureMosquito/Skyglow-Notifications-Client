@@ -39,8 +39,6 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
 @property (nonatomic, assign) uint32_t watchGeneration;
 @end
 
-/* Accepts any server trust — the user confirms the fetched cert before install,
- * and strict chain validation would defeat the point of fetching it. */
 @interface SNAutoFetchConnectionDelegate : NSObject
 @property (nonatomic, strong) NSMutableData *buffer;
 @property (nonatomic, assign) NSInteger      statusCode;
@@ -99,13 +97,25 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
     [prefs writeToFile:SGMainPrefsPath() atomically:YES];
 }
 
-- (void)removeAppStatusForBundleId:(NSString *)bundleId {
+- (void)scheduleAppDeletion:(NSString *)bundleId {
     if (!bundleId) return;
     NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()] ?: [NSMutableDictionary dictionary];
+
     NSMutableDictionary *appSt = [NSMutableDictionary dictionaryWithDictionary:[prefs objectForKey:@"appStatus"] ?: @{}];
     [appSt removeObjectForKey:bundleId];
     [prefs setObject:appSt forKey:@"appStatus"];
+
+    NSMutableArray *pending = [NSMutableArray arrayWithArray:[prefs objectForKey:@"pendingDeletions"] ?: @[]];
+    if (![pending containsObject:bundleId]) {
+        [pending addObject:bundleId];
+    }
+    [prefs setObject:pending forKey:@"pendingDeletions"];
+
     [prefs writeToFile:SGMainPrefsPath() atomically:YES];
+}
+
+- (NSArray *)pendingDeletions {
+    return [[self mainPrefs] objectForKey:@"pendingDeletions"] ?: @[];
 }
 
 - (NSString *)serverAddressInput {
@@ -208,13 +218,6 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
     [self _performConnectionCycleForGeneration:self.watchGeneration];
 }
 
-/*
- * Performs one full connect → write-mode → read-loop cycle.
- * On any failure the thread is released immediately and the next attempt is
- * scheduled via dispatch_after — no thread is consumed during the wait.
- * The read loop itself blocks on I/O (SO_RCVTIMEO), which is intentional:
- * productive blocking waiting for data is not the same as an idle sleep.
- */
 - (void)_performConnectionCycleForGeneration:(uint32_t)gen {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         if (!self.isWatching || self.watchGeneration != gen) return;
@@ -278,7 +281,7 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
                     readError = YES; break;
                 } else {
                     if (errno == EINTR) continue;
-                    readError = YES; break; /* EAGAIN = 5s timeout expired; reconnect */
+                    readError = YES; break;
                 }
             }
 
@@ -627,8 +630,6 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
             return;
         }
 
-        /* Private runloop on this background queue so NSURLConnection callbacks
-         * fire here; wall-clock deadline catches a stalled server. */
         NSRunLoop *rl = [NSRunLoop currentRunLoop];
         [conn scheduleInRunLoop:rl forMode:NSDefaultRunLoopMode];
         [conn start];

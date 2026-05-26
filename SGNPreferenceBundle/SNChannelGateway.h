@@ -36,10 +36,28 @@
 + (void)postRegisterInputAppForBundleId:(NSString *)bundleId;
 
 /**
- * Asks the SpringBoard tweak to remove the given bundle id from the
- * Skyglow-handled list.  Replaces the com.skyglow.sgn.unregisterInputApp
- * Darwin signal plus the lastUnregisteredApp prefs-plist write.
+ * Unified per-app state commands sent to the DAEMON (not the SB tweak).
+ * These replace the prior pattern of the prefs bundle writing the DB
+ * directly: the plist remains the source-of-truth for user intent and is
+ * written here, then the daemon is told to sync its DB + server filter
+ * accordingly.  Fire-and-forget; the daemon handles the cascade including
+ * any required SB-side actions (e.g. native deregister on delete).
  */
-+ (void)postUnregisterInputAppForBundleId:(NSString *)bundleId;
++ (void)postEnableAppForBundleId:(NSString *)bundleId;
++ (void)postDisableAppForBundleId:(NSString *)bundleId;
++ (void)postDeleteAppForBundleId:(NSString *)bundleId;
+
+/**
+ * Asynchronously requests the list of bundles iOS considers push-registered
+ * (third-party only).  The SB tweak handler returns the iOS-native push
+ * registration table (apsd-style — apps that have been registered for push
+ * regardless of provider).  Used by the prefs app list to render the
+ * "Apple Push" section after subtracting bundles already in our own
+ * Skyglow plist.
+ *
+ * Completion fires on the main queue with the array of NSString bundle IDs,
+ * or an empty array if the channel is unreachable / SB tweak isn't loaded.
+ */
++ (void)queryNativelyPushRegisteredBundlesWithCompletion:(void (^)(NSArray *bundleIds))completion;
 
 @end

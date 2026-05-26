@@ -21,9 +21,6 @@
     self.statusLabel = [[UILabel alloc] initWithFrame:self.view.bounds];
     self.statusLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
-    if ([[UIDevice currentDevice].systemVersion floatValue] < 7.0) {
-        self.statusLabel.layer.cornerRadius = 7.0;
-    }
     self.statusLabel.clipsToBounds = YES;
     self.statusLabel.font = [UIFont boldSystemFontOfSize:13.0];
     self.statusLabel.textColor = [UIColor whiteColor];
@@ -37,6 +34,18 @@
     self.gradientLayer.colors = @[(id)[[UIColor colorWithWhite:1.0 alpha:0.15] CGColor],
                                   (id)[[UIColor colorWithWhite:0.0 alpha:0.15] CGColor]];
     [self.statusLabel.layer addSublayer:self.gradientLayer];
+
+    NSBundle *bundle = [NSBundle bundleForClass:[self class]];
+    UIImageView *overlay = [[UIImageView alloc]
+        initWithImage:[UIImage imageWithContentsOfFile:
+                        [bundle pathForResource:@"Gloss" ofType:@"png"]]];
+    overlay.frame             = self.statusLabel.bounds;
+    overlay.autoresizingMask  = UIViewAutoresizingFlexibleWidth |
+                                UIViewAutoresizingFlexibleHeight;
+    overlay.contentMode       = UIViewContentModeScaleToFill;
+    overlay.userInteractionEnabled = NO;
+    overlay.alpha = 0.4;
+    [self.statusLabel addSubview:overlay];
 
     self.statusLabel.numberOfLines = 2;
     self.statusLabel.userInteractionEnabled = NO;

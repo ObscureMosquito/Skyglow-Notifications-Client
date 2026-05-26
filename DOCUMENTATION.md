@@ -39,14 +39,14 @@ The TXT record contains space-separated `key=value` pairs:
 "tcp_addr=143.47.32.233 tcp_port=7373 http_addr=https://sgn.example.com"
 ```
 
-| Key         | Description                                                       | Required    |
-|-------------|-------------------------------------------------------------------|-------------|
-| `tcp_addr`  | IPv4 address of the TCP protocol server                           | Yes         |
-| `tcp_port`  | Port number of the TCP protocol server (TLS)                      | Yes         |
-| `http_addr` | Base URL of the HTTP API (push submission + cert auto-fetch)      | Recommended |
+| Key         | Description                                                  | Required    |
+| ----------- | ------------------------------------------------------------ | ----------- |
+| `tcp_addr`  | IPv4 address of the TCP protocol server                      | Yes         |
+| `tcp_port`  | Port number of the TCP protocol server (TLS)                 | Yes         |
+| `http_addr` | Base URL of the HTTP API (push submission + cert auto-fetch) | Recommended |
 
 If `http_addr` is set, the client's prefs UI can fetch the server's public
-certificate automatically — see §3.4.  Without it, users must import the PEM
+certificate automatically — see §3.4. Without it, users must import the PEM
 file manually.
 
 **Important:** `tcp_port` must point to the TLS-enabled TCP protocol listener, **not** the HTTP API port. These are distinct services running on different ports.
@@ -83,14 +83,14 @@ All messages in both directions use identical binary framing:
 └────────┴─────────┴──────┴──────────┴──────────────────┴──────────────────────────────┘
 ```
 
-| Field          | Size    | Description                                               |
-|----------------|---------|-----------------------------------------------------------|
-| Magic          | 1 byte  | Always `0x53` (ASCII `S`)                                 |
-| Version        | 1 byte  | Protocol version, currently `0x02`                        |
-| Type           | 1 byte  | Message type identifier (see Section 4)                   |
-| Reserved       | 1 byte  | Must be `0x00`. Non-zero values cause a protocol error.   |
-| Payload Length | 4 bytes | Unsigned 32-bit integer, **big-endian** (network order)   |
-| Payload        | N bytes | Type-specific binary data. Max `4096` bytes.              |
+| Field          | Size    | Description                                             |
+| -------------- | ------- | ------------------------------------------------------- |
+| Magic          | 1 byte  | Always `0x53` (ASCII `S`)                               |
+| Version        | 1 byte  | Protocol version, currently `0x02`                      |
+| Type           | 1 byte  | Message type identifier (see Section 4)                 |
+| Reserved       | 1 byte  | Must be `0x00`. Non-zero values cause a protocol error. |
+| Payload Length | 4 bytes | Unsigned 32-bit integer, **big-endian** (network order) |
+| Payload        | N bytes | Type-specific binary data. Max `4096` bytes.            |
 
 **Header size:** 8 bytes fixed.  
 **Maximum payload:** 4096 bytes (`SGP_MAX_PAYLOAD_LEN`).
@@ -98,6 +98,7 @@ All messages in both directions use identical binary framing:
 ### 3.3. Byte Order
 
 All multi-byte integers in payloads are encoded in **big-endian** (network byte order). This applies to:
+
 - The 4-byte payload length in the header
 - All `int64_t` timestamps and sequence numbers (8 bytes)
 - All `uint32_t` version numbers and data lengths (4 bytes)
@@ -107,29 +108,29 @@ All multi-byte integers in payloads are encoded in **big-endian** (network byte 
 
 Because the daemon's TLS layer pins a single self-signed certificate (§3.1),
 the client must obtain that certificate **before** the first TCP connection
-can succeed.  Provisioning is performed by the prefs UI, never by the daemon
-itself, and is decoupled from device registration (§5).  Two paths are
+can succeed. Provisioning is performed by the prefs UI, never by the daemon
+itself, and is decoupled from device registration (§5). Two paths are
 supported:
 
-**Auto-fetch (recommended).**  The prefs UI:
+**Auto-fetch (recommended).** The prefs UI:
 
 1. Resolves `_sgn.<server_address>` TXT and reads the `http_addr` value.
-2. Issues `GET <http_addr>/snd/server_cert.pem` over HTTPS.  TLS chain
+2. Issues `GET <http_addr>/snd/server_cert.pem` over HTTPS. TLS chain
    validation is intentionally bypassed for this single request — the user
    sees the parsed Subject/Issuer in a confirmation dialog before the PEM is
    saved, which serves as the trust gate.
 3. On confirmation, writes the PEM to disk and records its path in the
-   profile plist.  Every subsequent daemon connection uses strict pinning
+   profile plist. Every subsequent daemon connection uses strict pinning
    against that file.
 
 Server-side requirement: a `GET /snd/server_cert.pem` route returning
 `text/plain` or `application/x-pem-file` whose body is the exact same PEM
-the TLS listener presents.  Status code MUST be `200`; the body MUST contain
-a valid `-----BEGIN CERTIFICATE-----` block.  No authentication, no
+the TLS listener presents. Status code MUST be `200`; the body MUST contain
+a valid `-----BEGIN CERTIFICATE-----` block. No authentication, no
 revalidation, no `Content-Length` upper bound enforcement beyond the daemon's
 ordinary I/O limits.
 
-**Manual import.**  The user picks a PEM file via a file picker.  The bundle
+**Manual import.** The user picks a PEM file via a file picker. The bundle
 copies it to the same canonical location and updates the profile plist.
 Identical end state to the auto-fetch path; useful when the server lacks an
 HTTP component, or when the operator distributes certs out-of-band.
@@ -143,34 +144,34 @@ profiles may pin different servers.
 
 ### 4.1. Server → Client Messages (`0x1_`)
 
-| Type   | Name              | Description                                          |
-|--------|-------------------|------------------------------------------------------|
-| `0x10` | S_HELLO           | Server greeting after TLS handshake                  |
-| `0x11` | S_CHALLENGE       | Authentication challenge nonce                       |
-| `0x12` | S_AUTH_OK         | Authentication successful                            |
-| `0x13` | S_NOTIFY          | Incoming push notification                           |
-| `0x14` | S_DISCONNECT      | Server is closing the connection                     |
-| `0x16` | S_PONG            | Response to client keep-alive ping                   |
-| `0x17` | S_POLL_DONE       | All offline messages have been delivered              |
-| `0x18` | S_REGISTER_OK     | First-time device registration succeeded             |
-| `0x19` | S_REGISTER_FAIL   | First-time device registration failed                |
-| `0x1A` | S_PING            | Server-initiated keep-alive ping                     |
-| `0x1B` | S_TIME_SYNC       | Clock synchronization message                        |
+| Type   | Name            | Description                              |
+| ------ | --------------- | ---------------------------------------- |
+| `0x10` | S_HELLO         | Server greeting after TLS handshake      |
+| `0x11` | S_CHALLENGE     | Authentication challenge nonce           |
+| `0x12` | S_AUTH_OK       | Authentication successful                |
+| `0x13` | S_NOTIFY        | Incoming push notification               |
+| `0x14` | S_DISCONNECT    | Server is closing the connection         |
+| `0x16` | S_PONG          | Response to client keep-alive ping       |
+| `0x17` | S_POLL_DONE     | All offline messages have been delivered |
+| `0x18` | S_REGISTER_OK   | First-time device registration succeeded |
+| `0x19` | S_REGISTER_FAIL | First-time device registration failed    |
+| `0x1A` | S_PING          | Server-initiated keep-alive ping         |
+| `0x1B` | S_TIME_SYNC     | Clock synchronization message            |
 
 ### 4.2. Client → Server Messages (`0x2_`)
 
-| Type   | Name              | Description                                          |
-|--------|-------------------|------------------------------------------------------|
-| `0x20` | C_LOGIN           | Login handshake initiation                           |
-| `0x21` | C_LOGIN_RESP      | Response to authentication challenge                 |
-| `0x22` | C_POLL            | Request offline (undelivered) notifications          |
-| `0x23` | C_ACK             | Acknowledge receipt of a notification                |
-| `0x24` | C_DISCONNECT      | Client is closing the connection                     |
-| `0x27` | C_PING            | Client-initiated keep-alive ping                     |
-| `0x28` | C_REGISTER        | First-time device registration request               |
-| `0x29` | C_REGISTER_RESP   | Response to first-time registration challenge        |
-| `0x2A` | C_PONG            | Response to server keep-alive ping                   |
-| `0x2B` | C_FILTER          | Active (routing key, bundle ID) registration set (chunked, full-replace) |
+| Type   | Name            | Description                                                              |
+| ------ | --------------- | ------------------------------------------------------------------------ |
+| `0x20` | C_LOGIN         | Login handshake initiation                                               |
+| `0x21` | C_LOGIN_RESP    | Response to authentication challenge                                     |
+| `0x22` | C_POLL          | Request offline (undelivered) notifications                              |
+| `0x23` | C_ACK           | Acknowledge receipt of a notification                                    |
+| `0x24` | C_DISCONNECT    | Client is closing the connection                                         |
+| `0x27` | C_PING          | Client-initiated keep-alive ping                                         |
+| `0x28` | C_REGISTER      | First-time device registration request                                   |
+| `0x29` | C_REGISTER_RESP | Response to first-time registration challenge                            |
+| `0x2A` | C_PONG          | Response to server keep-alive ping                                       |
+| `0x2B` | C_FILTER        | Active (routing key, bundle ID) registration set (chunked, full-replace) |
 
 ---
 
@@ -198,31 +199,32 @@ Client                                              Server
 
 ### 5.2. C_REGISTER (0x28) Payload
 
-| Offset | Size         | Field          | Description                                    |
-|--------|--------------|----------------|------------------------------------------------|
-| 0      | 2            | addr_len       | Length of the device address string (BE u16)    |
-| 2      | addr_len     | address        | UUID-formatted device address (UTF-8)          |
-| 2+AL   | 2            | pubkey_len     | Length of DER-encoded public key (BE u16)       |
-| 4+AL   | pubkey_len   | public_key     | RSA-2048 public key in DER format (`i2d_RSA_PUBKEY`) |
-| 4+AL+PL| 8            | timestamp      | Current Unix time, corrected for clock skew (BE i64) |
-| 12+AL+PL| 4           | version        | Protocol version `0x02` (BE u32)               |
+| Offset   | Size       | Field      | Description                                          |
+| -------- | ---------- | ---------- | ---------------------------------------------------- |
+| 0        | 2          | addr_len   | Length of the device address string (BE u16)         |
+| 2        | addr_len   | address    | UUID-formatted device address (UTF-8)                |
+| 2+AL     | 2          | pubkey_len | Length of DER-encoded public key (BE u16)            |
+| 4+AL     | pubkey_len | public_key | RSA-2048 public key in DER format (`i2d_RSA_PUBKEY`) |
+| 4+AL+PL  | 8          | timestamp  | Current Unix time, corrected for clock skew (BE i64) |
+| 12+AL+PL | 4          | version    | Protocol version `0x02` (BE u32)                     |
 
 The client generates:
+
 - A **UUID v4** as the device address
 - An **RSA-2048** keypair — the public key is sent to the server, the private key is stored locally
 
 ### 5.3. S_REGISTER_OK (0x18) Payload
 
-| Offset | Size | Field          | Description                                |
-|--------|------|----------------|--------------------------------------------|
-| 0      | 4    | server_version | Server's protocol version (BE u32)         |
+| Offset | Size | Field          | Description                        |
+| ------ | ---- | -------------- | ---------------------------------- |
+| 0      | 4    | server_version | Server's protocol version (BE u32) |
 
 ### 5.4. S_REGISTER_FAIL (0x19) Payload
 
-| Offset | Size       | Field      | Description                         |
-|--------|------------|------------|-------------------------------------|
-| 0      | 1          | code       | Rejection reason code (u8)          |
-| 1      | 2          | reason_len | Length of reason string (BE u16)    |
+| Offset | Size       | Field      | Description                             |
+| ------ | ---------- | ---------- | --------------------------------------- |
+| 0      | 1          | code       | Rejection reason code (u8)              |
+| 1      | 2          | reason_len | Length of reason string (BE u16)        |
 | 3      | reason_len | reason     | Human-readable rejection reason (UTF-8) |
 
 ---
@@ -259,26 +261,26 @@ Client                                              Server
 
 ### 6.2. S_HELLO (0x10) Payload
 
-| Offset | Size | Field          | Description                    |
-|--------|------|----------------|--------------------------------|
+| Offset | Size | Field          | Description                        |
+| ------ | ---- | -------------- | ---------------------------------- |
 | 0      | 4    | server_version | Server's protocol version (BE u32) |
 
 Sent by the server immediately after the TLS handshake completes.
 
 ### 6.3. C_LOGIN (0x20) Payload
 
-| Offset | Size     | Field     | Description                                     |
-|--------|----------|-----------|-------------------------------------------------|
-| 0      | 2        | addr_len  | Length of address string (BE u16)                |
-| 2      | addr_len | address   | The client's registered UUID address (UTF-8)     |
+| Offset | Size     | Field     | Description                                          |
+| ------ | -------- | --------- | ---------------------------------------------------- |
+| 0      | 2        | addr_len  | Length of address string (BE u16)                    |
+| 2      | addr_len | address   | The client's registered UUID address (UTF-8)         |
 | 2+AL   | 8        | timestamp | Current Unix time, corrected for clock skew (BE i64) |
-| 10+AL  | 4        | version   | Protocol version `0x02` (BE u32)                 |
+| 10+AL  | 4        | version   | Protocol version `0x02` (BE u32)                     |
 
 ### 6.4. S_CHALLENGE (0x11) Payload
 
-| Offset | Size | Field | Description                               |
-|--------|------|-------|-------------------------------------------|
-| 0      | 32   | nonce | Server-generated cryptographic nonce      |
+| Offset | Size | Field | Description                          |
+| ------ | ---- | ----- | ------------------------------------ |
+| 0      | 32   | nonce | Server-generated cryptographic nonce |
 
 The same S_CHALLENGE message type is used for both login and first-time registration flows.
 
@@ -286,11 +288,11 @@ The same S_CHALLENGE message type is used for both login and first-time registra
 
 Both response types use the same payload format:
 
-| Offset | Size    | Field    | Description                                                |
-|--------|---------|----------|------------------------------------------------------------|
-| 0      | 8       | timestamp| The timestamp from the original C_LOGIN/C_REGISTER (BE i64)|
-| 8      | 2       | sig_len  | Length of RSA-PSS signature (BE u16)                       |
-| 10     | sig_len | signature| RSA-PSS-SHA256 signature (see 6.6)                        |
+| Offset | Size    | Field     | Description                                                 |
+| ------ | ------- | --------- | ----------------------------------------------------------- |
+| 0      | 8       | timestamp | The timestamp from the original C_LOGIN/C_REGISTER (BE i64) |
+| 8      | 2       | sig_len   | Length of RSA-PSS signature (BE u16)                        |
+| 10     | sig_len | signature | RSA-PSS-SHA256 signature (see 6.6)                          |
 
 ### 6.6. RSA-PSS Signature Scheme
 
@@ -323,17 +325,17 @@ The server may send `S_TIME_SYNC (0x1B)` at any time, containing an 8-byte big-e
 └──────────────┴──────────┴──────┴────────────┴───────┴──────────────┴──────────┴──────────────┴──────────┘
 ```
 
-| Offset | Size      | Field        | Description                                           |
-|--------|-----------|--------------|-------------------------------------------------------|
-| 0      | 32        | routing_key  | SHA-256 hash of the token secret K                    |
-| 32     | 16        | msg_id       | Unique notification ID (raw 16 bytes, UUID)           |
-| 48     | 8         | seq          | Server-assigned per-device sequence number (BE i64)   |
-| 56     | 8         | expires_at   | Expiration timestamp (BE i64), 0 = no expiry          |
-| 64     | 1         | flags        | Bit 0: `is_encrypted` (1 = E2EE payload)             |
-| 65     | 1         | content_type | Payload format identifier (see 7.4)                   |
-| 66     | 4         | data_len     | Length of the data field in bytes (BE u32)             |
-| 70     | data_len  | data         | Notification payload (plaintext or ciphertext+tag)    |
-| 70+DL  | 12        | iv           | AES-GCM IV (**only present when `is_encrypted = 1`**) |
+| Offset | Size     | Field        | Description                                           |
+| ------ | -------- | ------------ | ----------------------------------------------------- |
+| 0      | 32       | routing_key  | SHA-256 hash of the token secret K                    |
+| 32     | 16       | msg_id       | Unique notification ID (raw 16 bytes, UUID)           |
+| 48     | 8        | seq          | Server-assigned per-device sequence number (BE i64)   |
+| 56     | 8        | expires_at   | Expiration timestamp (BE i64), 0 = no expiry          |
+| 64     | 1        | flags        | Bit 0: `is_encrypted` (1 = E2EE payload)              |
+| 65     | 1        | content_type | Payload format identifier (see 7.4)                   |
+| 66     | 4        | data_len     | Length of the data field in bytes (BE u32)            |
+| 70     | data_len | data         | Notification payload (plaintext or ciphertext+tag)    |
+| 70+DL  | 12       | iv           | AES-GCM IV (**only present when `is_encrypted = 1`**) |
 
 **Minimum payload size:** 70 bytes (empty data, unencrypted).
 
@@ -350,18 +352,18 @@ The server may send `S_TIME_SYNC (0x1B)` at any time, containing an 8-byte big-e
 
 ### 7.3. C_ACK (0x23) Payload
 
-| Offset | Size | Field    | Description                                |
-|--------|------|----------|--------------------------------------------|
-| 0      | 16   | msg_id   | The `msg_id` from the notification         |
-| 16     | 1    | status   | Processing result code (see below)         |
+| Offset | Size | Field  | Description                        |
+| ------ | ---- | ------ | ---------------------------------- |
+| 0      | 16   | msg_id | The `msg_id` from the notification |
+| 16     | 1    | status | Processing result code (see below) |
 
 **Status codes:**
 
-| Code | Meaning                             |
-|------|-------------------------------------|
-| 0    | Success — notification delivered    |
-| 1    | Decryption failure                  |
-| 2    | Deserialization failure             |
+| Code | Meaning                          |
+| ---- | -------------------------------- |
+| 0    | Success — notification delivered |
+| 1    | Decryption failure               |
+| 2    | Deserialization failure          |
 
 Acknowledgements are sent immediately if connected. If the connection is down, they are persisted to SQLite and flushed when the connection is restored.
 
@@ -376,18 +378,18 @@ Notification payloads use a **Type-Length-Value** encoding:
 └──────┴────────┴───────────────┘
 ```
 
-| Type | Key           | Value Type | Description                  |
-|------|---------------|------------|------------------------------|
-| 0x01 | title        | UTF-8      | Notification title           |
-| 0x02 | body         | UTF-8      | Notification body text       |
-| 0x03 | sound        | UTF-8      | Sound name                   |
-| 0x04 | custom_data  | Raw bytes  | Application-specific data    |
+| Type | Key         | Value Type | Description               |
+| ---- | ----------- | ---------- | ------------------------- |
+| 0x01 | title       | UTF-8      | Notification title        |
+| 0x02 | body        | UTF-8      | Notification body text    |
+| 0x03 | sound       | UTF-8      | Sound name                |
+| 0x04 | custom_data | Raw bytes  | Application-specific data |
 
 ### 7.5. C_POLL (0x22) Payload
 
-| Offset | Size | Field    | Description                                              |
-|--------|------|----------|----------------------------------------------------------|
-| 0      | 8    | last_seq | Last delivered device sequence number (BE i64)           |
+| Offset | Size | Field    | Description                                    |
+| ------ | ---- | -------- | ---------------------------------------------- |
+| 0      | 8    | last_seq | Last delivered device sequence number (BE i64) |
 
 Requests the server to re-deliver any notifications with a sequence number greater than `last_seq`. Typically sent immediately after authentication.
 
@@ -425,7 +427,7 @@ Each app that wishes to receive notifications needs a **device token**. This tok
 **Storage:**
 
 | What           | Stored Locally | Sent to Server | Given to App |
-|----------------|----------------|----------------|--------------|
+| -------------- | -------------- | -------------- | ------------ |
 | `K`            | Indirectly     | No             | Indirectly   |
 | `routing_key`  | Yes            | Yes            | No           |
 | `e2ee_key`     | Yes            | **No**         | No           |
@@ -439,6 +441,7 @@ Each app that wishes to receive notifications needs a **device token**. This tok
 - the **bundle binding table** (which bundle ID owns each routing key, for third-party push addressing).
 
 `C_FILTER` is sent:
+
 - Immediately after `S_AUTH_OK` on every connection (canonical resync).
 - After any local mutation that changes the registration set (mint, mute, unmute, delete).
 
@@ -446,27 +449,27 @@ When the entries do not fit in a single frame, they are chunked. The server accu
 
 **Frame layout:**
 
-| Offset | Size  | Field     | Description                                       |
-|--------|-------|-----------|---------------------------------------------------|
-| 0      | 1     | flags     | Bit 0: `has_more` (1 = more chunks follow)        |
-| 1      | 2     | count     | Number of entries in this chunk (BE u16)          |
-| 3      | var.  | entries   | `count` consecutive entries (layout below)        |
+| Offset | Size | Field   | Description                                |
+| ------ | ---- | ------- | ------------------------------------------ |
+| 0      | 1    | flags   | Bit 0: `has_more` (1 = more chunks follow) |
+| 1      | 2    | count   | Number of entries in this chunk (BE u16)   |
+| 3      | var. | entries | `count` consecutive entries (layout below) |
 
 **Entry layout:**
 
-| Offset | Size     | Field        | Description                                    |
-|--------|----------|--------------|------------------------------------------------|
-| 0      | 1        | tag          | `0x01` enabled, `0x02` ignored — see below     |
-| 1      | 32       | routing_key  | SHA-256(K) — the 32-byte routing key           |
-| 33     | 2        | bid_len      | Length of bundle ID string (BE u16)            |
-| 35     | bid_len  | bundle_id    | Application bundle identifier (UTF-8)          |
+| Offset | Size    | Field       | Description                                |
+| ------ | ------- | ----------- | ------------------------------------------ |
+| 0      | 1       | tag         | `0x01` enabled, `0x02` ignored — see below |
+| 1      | 32      | routing_key | SHA-256(K) — the 32-byte routing key       |
+| 33     | 2       | bid_len     | Length of bundle ID string (BE u16)        |
+| 35     | bid_len | bundle_id   | Application bundle identifier (UTF-8)      |
 
 **Per-entry tag semantics:**
 
-| Tag    | Name    | Server behaviour                                                         | Client disposition                                                |
-|--------|---------|--------------------------------------------------------------------------|-------------------------------------------------------------------|
-| `0x01` | enabled | Deliver pushes for this routing_key normally.                            | Daemon parses + dispatches to SpringBoard.                        |
-| `0x02` | ignored | Should NOT deliver, but if a stale push arrives the client absorbs it.   | Daemon silently ACKs SUCCESS without dispatching (defensive drop). |
+| Tag    | Name    | Server behaviour                                                       | Client disposition                                                 |
+| ------ | ------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `0x01` | enabled | Deliver pushes for this routing_key normally.                          | Daemon parses + dispatches to SpringBoard.                         |
+| `0x02` | ignored | Should NOT deliver, but if a stale push arrives the client absorbs it. | Daemon silently ACKs SUCCESS without dispatching (defensive drop). |
 
 The `ignored` tag is how the toggle-OFF "mute" UX is wired: the user keeps the token (instant re-enable), the server stops pushing, and any in-flight notification that crosses the filter resync gets cleanly absorbed instead of delivered. This mirrors how apsd handles its `_hashesToIgnoredTopics` set.
 
@@ -482,27 +485,27 @@ The protocol supports **bidirectional** keep-alive pings:
 
 **Client → Server (C_PING 0x27):**
 
-| Offset | Size | Field | Description                                |
-|--------|------|-------|--------------------------------------------|
+| Offset | Size | Field | Description                                       |
+| ------ | ---- | ----- | ------------------------------------------------- |
 | 0      | 8    | seq   | Monotonically increasing sequence number (BE i64) |
 
 **Server → Client (S_PONG 0x16):**
 
-| Offset | Size | Field | Description                    |
-|--------|------|-------|--------------------------------|
-| 0      | 8    | seq   | Echo of the ping sequence      |
+| Offset | Size | Field | Description               |
+| ------ | ---- | ----- | ------------------------- |
+| 0      | 8    | seq   | Echo of the ping sequence |
 
 **Server → Client (S_PING 0x1A):**
 
-| Offset | Size | Field | Description                    |
-|--------|------|-------|--------------------------------|
-| 0      | 8    | seq   | Server's sequence number       |
+| Offset | Size | Field | Description              |
+| ------ | ---- | ----- | ------------------------ |
+| 0      | 8    | seq   | Server's sequence number |
 
 **Client → Server (C_PONG 0x2A):**
 
-| Offset | Size | Field | Description                    |
-|--------|------|-------|--------------------------------|
-| 0      | 8    | seq   | Echo of the server's sequence  |
+| Offset | Size | Field | Description                   |
+| ------ | ---- | ----- | ----------------------------- |
+| 0      | 8    | seq   | Echo of the server's sequence |
 
 The client uses an **adaptive keep-alive algorithm** with three stages:
 
@@ -516,26 +519,26 @@ The client uses an **adaptive keep-alive algorithm** with three stages:
 
 **S_DISCONNECT (0x14):**
 
-| Offset | Size | Field       | Description                              |
-|--------|------|-------------|------------------------------------------|
-| 0      | 1    | reason      | Disconnect reason code (see below)       |
+| Offset | Size | Field       | Description                                 |
+| ------ | ---- | ----------- | ------------------------------------------- |
+| 0      | 1    | reason      | Disconnect reason code (see below)          |
 | 1      | 4    | retry_after | Optional: seconds before reconnect (BE u32) |
 
 **C_DISCONNECT (0x24):**
 
-| Offset | Size | Field  | Description                    |
-|--------|------|--------|--------------------------------|
-| 0      | 1    | reason | Always `0x00` (normal)         |
+| Offset | Size | Field  | Description            |
+| ------ | ---- | ------ | ---------------------- |
+| 0      | 1    | reason | Always `0x00` (normal) |
 
 **Disconnect reason codes:**
 
-| Code   | Name            | Description                                      |
-|--------|-----------------|--------------------------------------------------|
-| `0x00` | NORMAL          | Graceful disconnect                              |
-| `0x01` | AUTH_FAIL       | Authentication failure                           |
-| `0x02` | PROTOCOL        | Protocol violation                               |
-| `0x03` | SERVER_ERR      | Internal server error                            |
-| `0x04` | REPLACED        | Another connection replaced this one             |
+| Code   | Name       | Description                          |
+| ------ | ---------- | ------------------------------------ |
+| `0x00` | NORMAL     | Graceful disconnect                  |
+| `0x01` | AUTH_FAIL  | Authentication failure               |
+| `0x02` | PROTOCOL   | Protocol violation                   |
+| `0x03` | SERVER_ERR | Internal server error                |
+| `0x04` | REPLACED   | Another connection replaced this one |
 
 If `retry_after` is present and non-zero, the client should wait at least that many seconds before reconnecting.
 
@@ -553,7 +556,7 @@ loop:
         reset backoff to 1
         while handle_message() == success:
             continue
-    
+
     disconnect()
     if server sent retry_after:
         sleep(retry_after)
@@ -567,7 +570,7 @@ The client also detects **rapid disconnection loops** and disables itself to pre
 ### 9.4. S_TIME_SYNC (0x1B) Payload
 
 | Offset | Size | Field       | Description                              |
-|--------|------|-------------|------------------------------------------|
+| ------ | ---- | ----------- | ---------------------------------------- |
 | 0      | 8    | server_time | Server's current Unix timestamp (BE i64) |
 
 The client computes `offset = server_time - local_time` and applies this correction to all timestamps in login/registration messages. This handles devices with unreliable NTP (e.g., iOS 3–5 era hardware).
@@ -636,16 +639,16 @@ If decryption or tag verification fails, the client acknowledges with status cod
 
 ### 11.1. Components
 
-| Component   | Default Port | Protocol | Purpose                                           |
-|-------------|-------------|----------|---------------------------------------------------|
-| TCP Server  | 7373        | TLS 1.2+ | Persistent client connections, device registration|
-| HTTP Server | 7878        | HTTPS    | Push submission API + cert auto-fetch (§3.4)      |
-| Database    | —           | —        | Device records, queued notifications              |
+| Component   | Default Port | Protocol | Purpose                                            |
+| ----------- | ------------ | -------- | -------------------------------------------------- |
+| TCP Server  | 7373         | TLS 1.2+ | Persistent client connections, device registration |
+| HTTP Server | 7878         | HTTPS    | Push submission API + cert auto-fetch (§3.4)       |
+| Database    | —            | —        | Device records, queued notifications               |
 
 Note that **device registration is performed over the TCP+TLS channel** (§5),
-not over the HTTP server.  The HTTP component is needed only for push
+not over the HTTP server. The HTTP component is needed only for push
 submission by notification senders and (optionally) for the cert auto-fetch
-endpoint.  A minimal HTTP server exposing only `GET /snd/server_cert.pem` is
+endpoint. A minimal HTTP server exposing only `GET /snd/server_cert.pem` is
 sufficient for client provisioning.
 
 ### 11.2. Server Cryptographic Material
@@ -674,31 +677,31 @@ _sgn.example.com  IN  TXT  "tcp_addr=<IP> tcp_port=<TCP_PORT> http_addr=<HTTP_UR
 
 The server must store:
 
-| Field                | Description                                                    |
-|----------------------|----------------------------------------------------------------|
-| address              | UUID device identifier                                         |
-| public_key           | RSA-2048 public key (DER format, from C_REGISTER)              |
-| registrations        | Set of `(routing_key, bundle_id)` tuples — full-replace on every C_FILTER. Serves as both the routing filter and the bundle binding table for third-party push addressing. |
-| last_delivered_seq   | Per-device notification sequence counter                       |
-| unacked_notifications| Queue of notifications not yet acknowledged                    |
+| Field                 | Description                                                                                                                                                                |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| address               | UUID device identifier                                                                                                                                                     |
+| public_key            | RSA-2048 public key (DER format, from C_REGISTER)                                                                                                                          |
+| registrations         | Set of `(routing_key, bundle_id)` tuples — full-replace on every C_FILTER. Serves as both the routing filter and the bundle binding table for third-party push addressing. |
+| last_delivered_seq    | Per-device notification sequence counter                                                                                                                                   |
+| unacked_notifications | Queue of notifications not yet acknowledged                                                                                                                                |
 
 ### 11.5. Server Message Processing Summary
 
-| When...                              | Server sends...                              |
-|--------------------------------------|----------------------------------------------|
-| Client connects (TLS handshake done) | S_HELLO (with server version)                |
-| Client sends C_LOGIN or C_REGISTER   | S_CHALLENGE (32-byte random nonce)           |
-| Client sends valid C_LOGIN_RESP      | S_AUTH_OK                                    |
-| Client sends valid C_REGISTER_RESP   | S_REGISTER_OK (with server version)          |
-| Client sends invalid challenge resp  | S_DISCONNECT (reason: AUTH_FAIL)             |
-| Push notification arrives for device | S_NOTIFY (with routing_key, data, etc.)      |
-| Client sends C_FILTER chunk(s)       | (No reply.) Buffer chunks until `has_more=0`, then atomically replace the device's registration set. Discard partial buffer if the connection drops mid-transmission. |
-| Client sends C_POLL                  | Re-deliver unacked notifs, then S_POLL_DONE  |
-| Client sends C_PING                  | S_PONG (echo sequence)                       |
-| Server wants to keep-alive           | S_PING (with sequence)                       |
-| Server needs to disconnect           | S_DISCONNECT (with reason + optional retry)  |
-| Clock drift detected                 | S_TIME_SYNC (server's Unix timestamp)        |
-| Another client connects with same addr| S_DISCONNECT (reason: REPLACED) to old conn |
+| When...                                | Server sends...                                                                                                                                                       |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Client connects (TLS handshake done)   | S_HELLO (with server version)                                                                                                                                         |
+| Client sends C_LOGIN or C_REGISTER     | S_CHALLENGE (32-byte random nonce)                                                                                                                                    |
+| Client sends valid C_LOGIN_RESP        | S_AUTH_OK                                                                                                                                                             |
+| Client sends valid C_REGISTER_RESP     | S_REGISTER_OK (with server version)                                                                                                                                   |
+| Client sends invalid challenge resp    | S_DISCONNECT (reason: AUTH_FAIL)                                                                                                                                      |
+| Push notification arrives for device   | S_NOTIFY (with routing_key, data, etc.)                                                                                                                               |
+| Client sends C_FILTER chunk(s)         | (No reply.) Buffer chunks until `has_more=0`, then atomically replace the device's registration set. Discard partial buffer if the connection drops mid-transmission. |
+| Client sends C_POLL                    | Re-deliver unacked notifs, then S_POLL_DONE                                                                                                                           |
+| Client sends C_PING                    | S_PONG (echo sequence)                                                                                                                                                |
+| Server wants to keep-alive             | S_PING (with sequence)                                                                                                                                                |
+| Server needs to disconnect             | S_DISCONNECT (with reason + optional retry)                                                                                                                           |
+| Clock drift detected                   | S_TIME_SYNC (server's Unix timestamp)                                                                                                                                 |
+| Another client connects with same addr | S_DISCONNECT (reason: REPLACED) to old conn                                                                                                                           |
 
 ### 11.6. Challenge Verification
 
@@ -713,19 +716,19 @@ When verifying C_LOGIN_RESP or C_REGISTER_RESP:
 
 The server should enforce the same payload bounds the client expects:
 
-| Message Type     | Min Size | Max Size |
-|------------------|----------|----------|
-| S_HELLO          | 4        | 4        |
-| S_CHALLENGE      | 32       | 32       |
-| S_AUTH_OK        | 0        | 0        |
-| S_NOTIFY         | 70       | 4096     |
-| S_DISCONNECT     | 1        | 5        |
-| S_PONG           | 8        | 8        |
-| S_POLL_DONE      | 0        | 0        |
-| S_REGISTER_OK    | 4        | 4        |
-| S_REGISTER_FAIL  | 1        | 258      |
-| S_PING           | 8        | 8        |
-| S_TIME_SYNC      | 8        | 8        |
+| Message Type    | Min Size | Max Size |
+| --------------- | -------- | -------- |
+| S_HELLO         | 4        | 4        |
+| S_CHALLENGE     | 32       | 32       |
+| S_AUTH_OK       | 0        | 0        |
+| S_NOTIFY        | 70       | 4096     |
+| S_DISCONNECT    | 1        | 5        |
+| S_PONG          | 8        | 8        |
+| S_POLL_DONE     | 0        | 0        |
+| S_REGISTER_OK   | 4        | 4        |
+| S_REGISTER_FAIL | 1        | 258      |
+| S_PING          | 8        | 8        |
+| S_TIME_SYNC     | 8        | 8        |
 
 ---
 

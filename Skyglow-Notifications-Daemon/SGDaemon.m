@@ -8,17 +8,21 @@
 #import "SGCryptoEngine.h"
 #import "SGAvailability.h"
 #import "SGControlChannel.h"
+#import "SGReachabilityMonitor.h"
 #import "SGLog.h"
 #include <openssl/pem.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <IOKit/pwr_mgt/IOPMLib.h>
+#include <IOKit/IOMessage.h>
 
-static const int64_t       kSGDrainSafetyIntervalSec              = 300;   // fallback only; primary drains are event-driven
+static const int64_t       kSGDrainSafetyIntervalSec              = 300;
 static const int64_t       kSGDrainSafetyLeewaySec                 =  30;
-static const int64_t       kSGLocalPendingFallbackDeadlineSec      = 86400; // 24h when wire has no expiry
+static const int64_t       kSGLocalPendingFallbackDeadlineSec      = 86400;
 static const NSUInteger    kSGSeenMessageIDCap                     = 200;
-static const uint32_t      kSGAuthTimeoutSec                       = 30;    // silent timeout; SGEventAuthFailed wipes the profile instead
+static const uint32_t      kSGAuthTimeoutSec                       = 30;
 static const uint32_t      kSGDNSWatchdogSec                       = 30;
+static const uint32_t      kSGFSMWatchdogSec                       = 90;
 static const NSTimeInterval kSGNotificationProcessingAssertionSec  = 15.0;
 
 typedef struct { SGState from; SGState to; } SGTransition;
@@ -140,6 +144,10 @@ static BOOL isValidPort(NSString *port) {
     dispatch_queue_t       _localDeliveryDrainQueue;
     SGControlChannel      *_controlChannel;
     SGControlChannel      *_springBoardClient;
+    SGReachabilityMonitor *_reachability;
+    io_connect_t           _powerRootPort;
+    io_object_t            _powerNotifier;
+    IONotificationPortRef  _powerNotifyPort;
 }
 
 - (id)init {
@@ -150,6 +158,9 @@ static BOOL isValidPort(NSString *port) {
         _seenMessageIDs      = [[NSMutableOrderedSet alloc] initWithCapacity:kSGSeenMessageIDCap];
         _entryActionQueue    = dispatch_queue_create("com.skyglow.daemon.entry", DISPATCH_QUEUE_SERIAL);
         _localDeliveryDrainQueue = dispatch_queue_create("com.skyglow.daemon.drain", DISPATCH_QUEUE_SERIAL);
+        _powerRootPort       = MACH_PORT_NULL;
+        _powerNotifier       = MACH_PORT_NULL;
+        _powerNotifyPort     = NULL;
     }
     return self;
 }
@@ -160,6 +171,9 @@ static BOOL isValidPort(NSString *port) {
     [_growthAlgorithm release];
     [_controlChannel release];
     [_springBoardClient release];
+    [_reachability stopMonitoringSystemNetworkChanges];
+    [_reachability release];
+    [self _stopPowerMonitoring];
     if (_keepAliveTimer) { [_keepAliveTimer invalidate]; [_keepAliveTimer release]; }
     [self _stopLocalDeliveryRetryTimer];
     dispatch_release(_entryActionQueue);
@@ -193,55 +207,176 @@ static BOOL isValidPort(NSString *port) {
 }
 
 - (void)start {
-    [self _startLocalDeliveryRetryTimer];
+    if ([[SGConfiguration sharedConfiguration] isEnabled]) {
+        [self _enterActiveMode];
+    }
 
-    [self reconcileTokensWithPlist];
-    
-    [_stateLock lock];
-    _isWiFi = YES;
-    double savedInterval = [[SGDatabaseManager sharedManager] loadKeepAliveIntervalForWiFi:YES];
-    double initialInterval = (savedInterval > 0.0) ? savedInterval : 600.0;
-
-    _growthAlgorithm = [[SGAvailability shared]
-        createGrowthAlgorithmWithInterval:initialInterval
-                          minimumInterval:600.0
-                          maximumInterval:1680.0];
-    [_stateLock unlock];
-    
     [self handleEvent:SGEventStartRequested payload:nil];
+}
+
+#pragma mark - Active / Disabled Mode Lifecycle
+
+- (void)_enterActiveMode {
+    [self reconcileTokensWithPlist];
+
+    [_stateLock lock];
+    if (!_growthAlgorithm) {
+        _isWiFi = YES;
+        double savedInterval = [[SGDatabaseManager sharedManager] loadKeepAliveIntervalForWiFi:YES];
+        double initialInterval = (savedInterval > 0.0) ? savedInterval : 600.0;
+        _growthAlgorithm = [[SGAvailability shared]
+            createGrowthAlgorithmWithInterval:initialInterval
+                              minimumInterval:600.0
+                              maximumInterval:1680.0];
+    }
+    [_stateLock unlock];
+
+    [self _startLocalDeliveryRetryTimer];
+    [self _startReachabilityMonitor];
+    [self _startPowerMonitoring];
+}
+
+- (void)_exitActiveMode {
+    [_stateLock lock];
+    if (_growthAlgorithm) {
+        [_growthAlgorithm release];
+        _growthAlgorithm = nil;
+    }
+    [_stateLock unlock];
+
+    [self _invalidateKeepAliveTimer];
+    [self _stopLocalDeliveryRetryTimer];
+    [self _stopReachabilityMonitor];
+    [self _stopPowerMonitoring];
+}
+
+- (void)_startReachabilityMonitor {
+    if (_reachability) return;
+    __unsafe_unretained SGDaemon *daemonSelf = self;
+    _reachability = [[SGReachabilityMonitor alloc] initWithChangeHandler:^(BOOL isReachable, BOOL isWWAN) {
+        if (isReachable) {
+            [daemonSelf systemNetworkReachabilityDidChangeWithWWANStatus:isWWAN];
+        } else {
+            [daemonSelf systemNetworkDidDrop];
+        }
+    }];
+    [_reachability startMonitoringSystemNetworkChanges];
+}
+
+- (void)_stopReachabilityMonitor {
+    if (!_reachability) return;
+    [_reachability stopMonitoringSystemNetworkChanges];
+    [_reachability release];
+    _reachability = nil;
+}
+
+#pragma mark - IOKit Power Monitoring
+
+static void SG_IOPowerCallback(void *refcon, io_service_t service,
+                                natural_t messageType, void *messageArgument) {
+    SGDaemon *daemon = (__bridge SGDaemon *)refcon;
+    switch (messageType) {
+        case kIOMessageSystemHasPoweredOn:
+            [daemon handleSystemWake];
+            break;
+        case kIOMessageCanSystemSleep:
+        case kIOMessageSystemWillSleep:
+            IOAllowPowerChange(daemon->_powerRootPort, (long)messageArgument);
+            break;
+        default:
+            break;
+    }
+}
+
+- (void)_startPowerMonitoring {
+    if (_powerRootPort != MACH_PORT_NULL) return;
+    _powerRootPort = IORegisterForSystemPower((__bridge void *)self,
+                                              &_powerNotifyPort,
+                                              SG_IOPowerCallback,
+                                              &_powerNotifier);
+    if (_powerRootPort == MACH_PORT_NULL) {
+        SGLOGW(SGDaemon, "IOKit power notification registration failed — wake recovery disabled.");
+        return;
+    }
+    CFRunLoopAddSource(CFRunLoopGetMain(),
+                       IONotificationPortGetRunLoopSource(_powerNotifyPort),
+                       kCFRunLoopDefaultMode);
+    SGLOGI(SGDaemon, "IOKit power notifications registered.");
+}
+
+- (void)_stopPowerMonitoring {
+    if (_powerRootPort == MACH_PORT_NULL) return;
+    if (_powerNotifier != MACH_PORT_NULL) {
+        IODeregisterForSystemPower(&_powerNotifier);
+        _powerNotifier = MACH_PORT_NULL;
+    }
+    IOServiceClose(_powerRootPort);
+    _powerRootPort = MACH_PORT_NULL;
+    if (_powerNotifyPort) {
+        IONotificationPortDestroy(_powerNotifyPort);
+        _powerNotifyPort = NULL;
+    }
+}
+
+- (void)_runDeletionCascadeForBundle:(NSString *)bundleID {
+    if (![bundleID length]) return;
+    SGDatabaseManager *db = [SGDatabaseManager sharedManager];
+    [db removeTokenForBundleIdentifier:bundleID];
+    [db removeLocalPendingDeliveriesForBundleIdentifier:bundleID];
+    [self dispatchResetRegistrationForBundleIdentifier:bundleID];
 }
 
 - (void)reconcileTokensWithPlist {
     NSString *plistPath = SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp.plist");
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
     NSDictionary *appStatus = [prefs objectForKey:@"appStatus"] ?: @{};
-    
-    NSMutableSet *plistBundles = [NSMutableSet set];
+    SGDatabaseManager *db = [SGDatabaseManager sharedManager];
+
+    NSArray *pending = [prefs objectForKey:@"pendingDeletions"] ?: @[];
+    if ([pending count] > 0) {
+        for (NSString *bundleID in pending) {
+            [self _runDeletionCascadeForBundle:bundleID];
+            SGLOGI(SGDaemon, "Recovered pending deletion: %s", [bundleID UTF8String]);
+        }
+        [self _clearPendingDeletionsInPlistForBundles:pending];
+    }
+
+    NSMutableSet *plistYes = [NSMutableSet set];
+    NSMutableSet *plistNo  = [NSMutableSet set];
     for (NSString *bundleID in appStatus) {
         if ([[appStatus objectForKey:bundleID] boolValue]) {
-            [plistBundles addObject:bundleID];
+            [plistYes addObject:bundleID];
+        } else {
+            [plistNo addObject:bundleID];
         }
     }
-    
-    SGDatabaseManager *db = [SGDatabaseManager sharedManager];
+
     NSSet *dbBundles = [db registeredBundleIdentifiers];
-    
+
     for (NSString *bundleID in dbBundles) {
-        if (![plistBundles containsObject:bundleID]) {
-            [db removeTokenForBundleIdentifier:bundleID];
-            SGLOGI(SGDaemon, "Removed orphaned token for: %s", [bundleID UTF8String]);
+        if ([plistYes containsObject:bundleID]) {
+            [db setMuted:NO  forBundleIdentifier:bundleID];
+        } else if ([plistNo containsObject:bundleID]) {
+            [db setMuted:YES forBundleIdentifier:bundleID];
         }
     }
-    
+
     NSString *serverAddr = [[SGConfiguration sharedConfiguration] serverAddress];
+    BOOL mutated = ([pending count] > 0);
     if (serverAddr && [serverAddr length] > 0) {
         SGTokenManager *tokenMgr = [[SGTokenManager alloc] init];
-        for (NSString *bundleID in plistBundles) {
+        NSMutableSet *allOptedIn = [NSMutableSet setWithSet:plistYes];
+        [allOptedIn unionSet:plistNo];
+        for (NSString *bundleID in allOptedIn) {
             if (![dbBundles containsObject:bundleID]) {
                 NSError *err = nil;
                 NSData *token = [tokenMgr synchronizedTokenForBundleIdentifier:bundleID error:&err];
                 if (token) {
                     SGLOGI(SGDaemon, "Generated missing token for: %s", [bundleID UTF8String]);
+                    if ([plistNo containsObject:bundleID]) {
+                        [db setMuted:YES forBundleIdentifier:bundleID];
+                    }
+                    mutated = YES;
                 } else {
                     SGLOGE(SGDaemon, "Failed to generate token for %s: %s",
                            [bundleID UTF8String], [[err description] UTF8String]);
@@ -250,12 +385,15 @@ static BOOL isValidPort(NSString *port) {
         }
         [tokenMgr release];
     } else {
-        for (NSString *bundleID in plistBundles) {
+        NSMutableSet *allOptedIn = [NSMutableSet setWithSet:plistYes];
+        [allOptedIn unionSet:plistNo];
+        for (NSString *bundleID in allOptedIn) {
             if (![dbBundles containsObject:bundleID]) {
                 SGLOGI(SGDaemon, "App %s needs a token but device is unregistered — will generate after registration", [bundleID UTF8String]);
             }
         }
     }
+    if (mutated) SGP_FlushActiveTopicFilter();
 }
 
 - (void)handleEvent:(SGEvent)event payload:(id)payload {
@@ -332,14 +470,6 @@ static BOOL isValidPort(NSString *port) {
                 if (event == SGEventNetworkUp) _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             } else if (event == SGEventSystemDidWake) {
-                /**
-                 * Device woke from deep sleep while a backoff timer was pending.
-                 * Skip the remaining wait and retry immediately — the system wake
-                 * implies enough time has passed that a retry is reasonable.
-                 * Unlike SGEventNetworkUp this does NOT reset _consecutiveFailures:
-                 * the server may still be unreachable; the circuit breaker count
-                 * is preserved so we still reach SGStateIdleCircuitOpen eventually.
-                 */
                 SGLOGI(SGDaemon, "System wake received during backoff — skipping remaining wait.");
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             }
@@ -353,6 +483,16 @@ static BOOL isValidPort(NSString *port) {
                 [self executeTransitionToState:SGStateAuthenticating backoff:0 ip:NULL];
             } else if (event == SGEventConnectFailed || event == SGEventDisconnected) {
                 strlcpy(_lastErrorDetail, "Connection to server failed", sizeof(_lastErrorDetail));
+                [self executeFailureBackoff];
+            }
+            break;
+
+        case SGStateRegistering:
+            if (event == SGEventConfigReloaded) {
+                _consecutiveFailures = 0;
+                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
+            } else if (event == SGEventDisconnected) {
+                strlcpy(_lastErrorDetail, "Disconnected during registration", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
             }
             break;
@@ -391,17 +531,6 @@ static BOOL isValidPort(NSString *port) {
             
         case SGStateErrorAuth:
             if (event == SGEventConfigReloaded) {
-                /**
-                 * A config reload (user changed server settings or re-enabled the
-                 * daemon) is the natural recovery path from an auth error. The new
-                 * config may have a different server or different credentials, so
-                 * retry from scratch. _consecutiveFailures is reset so the fresh
-                 * attempt gets a full set of retries before the circuit opens again.
-                 *
-                 * SGStateErrorAuth → SGStateResolvingDNS is a legal transition.
-                 * Without this case, the daemon would stay stuck indefinitely after
-                 * an explicit server auth rejection unless the process was restarted.
-                 */
                 _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             }
@@ -412,19 +541,6 @@ static BOOL isValidPort(NSString *port) {
                 _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             } else if (event == SGEventSystemDidWake) {
-                /**
-                 * The device woke from deep sleep while the circuit breaker was open.
-                 * The network interface is almost certainly still available (same WiFi),
-                 * but the server may have recovered while we were asleep — or the device
-                 * may have moved to a different network without triggering a change event.
-                 *
-                 * This is NOT SGEventNetworkUp: the network has not changed. We are not
-                 * lying to the FSM. This is a distinct "enough time has passed, try again"
-                 * trigger that exists specifically for the wake-from-sleep case.
-                 *
-                 * From all other states this event is a no-op (handled by the default
-                 * case below), so IOKit can fire it on every wake without wasted work.
-                 */
                 SGLOGI(SGDaemon, "System wake received in circuit-open idle — resetting failures and retrying.");
                 _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
@@ -473,6 +589,9 @@ static BOOL isValidPort(NSString *port) {
         [_controlChannel postEvent:SGCEVT_STATE_CHANGED payload:payload];
     }
 
+    BOOL leavingDisabled = (current.state == SGStateDisabled && newState != SGStateDisabled);
+    BOOL enteringDisabled = (current.state != SGStateDisabled && newState == SGStateDisabled);
+
     dispatch_async(_entryActionQueue, ^{
         [self->_stateLock lock];
         BOOL isStale = (self->_fsmGeneration != capturedGen);
@@ -481,6 +600,10 @@ static BOOL isValidPort(NSString *port) {
 
         [self _invalidateKeepAliveTimer];
 
+        if (leavingDisabled) {
+            [self _enterActiveMode];
+        }
+
         switch (newState) {
             case SGStateResolvingDNS:
                 SGP_AbortConnection();
@@ -488,29 +611,20 @@ static BOOL isValidPort(NSString *port) {
                 break;
             case SGStateConnecting:
                 [self performSocketConnection];
-                break;    
+                [self scheduleTimerForEvent:SGEventConnectFailed delay:kSGFSMWatchdogSec generation:capturedGen];
+                break;
             case SGStateAuthenticating:
                 [self startConnectionScopedWorker];
-                /**
-                 * kSGAuthTimeoutSec fires SGEventAuthTimeout, not SGEventAuthFailed.
-                 * SGEventAuthFailed is reserved for explicit server rejection and
-                 * triggers a profile wipe. A silent timeout is ambiguous — the
-                 * credential is presumed valid; we just back off and retry.
-                 */
                 [self scheduleTimerForEvent:SGEventAuthTimeout delay:kSGAuthTimeoutSec generation:capturedGen];
                 break;
             case SGStateRegistering:
+                [self scheduleTimerForEvent:SGEventDisconnected delay:kSGFSMWatchdogSec generation:capturedGen];
                 break;
             case SGStateConnected:
                 [self _scheduleKeepAliveTimer];
                 break;
             case SGStateBackingOff:
             case SGStateIdleDNSFailed:
-                /**
-                 * Abort any in-progress connection (e.g. auth timed out while
-                 * the socket was still open). SGP_AbortConnection is idempotent —
-                 * safe to call when already disconnected.
-                 */
                 SGP_AbortConnection();
                 [self scheduleTimerForEvent:SGEventBackoffTimerFired delay:backoff generation:capturedGen];
                 break;
@@ -521,10 +635,14 @@ static BOOL isValidPort(NSString *port) {
             case SGStateIdleNoNetwork:
             case SGStateErrorBadConfig:
             case SGStateErrorAuth:
-                SGP_AbortConnection(); 
+                SGP_AbortConnection();
                 break;
             default:
                 break;
+        }
+
+        if (enteringDisabled) {
+            [self _exitActiveMode];
         }
     });
 }
@@ -596,29 +714,6 @@ static BOOL isValidPort(NSString *port) {
     [[SGDatabaseManager sharedManager] pruneExpiredSeenMessagesAsOf:(int64_t)time(NULL)];
 
     [self _kickLocalDeliveryDrain];
-    [self uploadPendingTokensAsync];
-}
-
-- (void)protocolDidCompleteTokenRegistration:(NSString *)bundleIdentifier {
-    SGLOGI(SGDaemon, "Token registration acknowledged for %s", [bundleIdentifier UTF8String]);
-}
-
-- (void)uploadPendingTokensAsync {
-    NSArray *pending = [[SGDatabaseManager sharedManager] pendingUploadTokens];
-    if ([pending count] == 0) return;
-
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        for (NSDictionary *entry in pending) {
-            @autoreleasepool {
-                if (!SGP_IsConnected()) break;
-                NSData   *routingKey = entry[@"routingKey"];
-                NSString *bundleID   = entry[@"bundleID"];
-                if (SGP_RegisterDeviceToken(routingKey, bundleID)) {
-                    [[SGDatabaseManager sharedManager] markTokenAsUploaded:routingKey];
-                }
-            }
-        }
-    });
 }
 
 - (void)protocolDidReceiveNotification:(NSDictionary *)messageDict {
@@ -630,10 +725,6 @@ static BOOL isValidPort(NSString *port) {
 
         SGDatabaseManager *db = [SGDatabaseManager sharedManager];
 
-        /* Three-tier dedup: durable SQLite history → in-flight pending queue →
-         * hot in-memory cache for retransmits arriving before the SQLite write
-         * is observed.  The in-flight check stays silent because the drain
-         * timer owns the ACK for those rows. */
         if ([db hasSeenMessageID:msgID]) {
             SGLOGD(SGDaemon, "Already-seen msg_id — re-ACKing SUCCESS without re-delivery.");
             SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
@@ -669,6 +760,14 @@ static BOOL isValidPort(NSString *port) {
         NSDictionary *routingData = [db tokenDataForRoutingKey:routingKey];
         if (!routingData) {
             SGLOGW(SGDaemon, "DROP: Routing Key not found in local Database.");
+            goto cleanup_assertion;
+        }
+
+        if ([db isMutedForRoutingKey:routingKey]) {
+            SGLOGI(SGDaemon, "DROP: muted bundle (%s); ACKing success without delivery.",
+                   [routingData[@"bundleID"] UTF8String]);
+            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
+            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
             goto cleanup_assertion;
         }
 
@@ -730,9 +829,6 @@ static BOOL isValidPort(NSString *port) {
 
             [self _kickLocalDeliveryDrain];
         } else {
-            /* Persist for retry rather than ACK SUCCESS for a banner the user
-             * will never see; server retransmits during the window are absorbed
-             * by hasLocalPendingDeliveryForMessageID: at the top of this method. */
             NSData *serialized = [NSPropertyListSerialization
                 dataFromPropertyList:parsed
                               format:NSPropertyListBinaryFormat_v1_0
@@ -749,8 +845,6 @@ static BOOL isValidPort(NSString *port) {
                        deliveryKr, [routingData[@"bundleID"] UTF8String],
                        (expiresAt > now) ? "wire expiry" : "fallback");
             } else {
-                /* SG_PayloadParseBinaryData only emits plist-encodable types, so
-                 * this is a corruption signal — degrade to PARSE_FAILED. */
                 SGLOGE(SGDaemon,
                        "Mach delivery failed and payload not plist-encodable — ACKing PARSE_FAILED to halt server resends.");
                 SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
@@ -778,12 +872,6 @@ static BOOL isValidPort(NSString *port) {
         [[SGDatabaseManager sharedManager] saveKeepAliveInterval:newVal forWiFi:isWiFi];
     }
 
-    /**
-     * Reschedule the PCPersistentTimer with the (possibly updated) interval.
-     * This keeps the maintenance wake schedule in sync with the adaptive algorithm.
-     * If the worker thread's select timeout sent the ping (not PCPersistentTimer),
-     * we still need to ensure a PCPersistentTimer is pending for the next cycle.
-     */
     [self _scheduleKeepAliveTimer];
 }
 
@@ -854,7 +942,8 @@ static BOOL isValidPort(NSString *port) {
     }
 
     [[SGConfiguration sharedConfiguration] reloadFromDisk];
-    [[SGDatabaseManager sharedManager] resetAllTokensToRequireUpload];
+
+    [self reconcileTokensWithPlist];
 
     RSA *privKey = SG_CryptoGetClientPrivateKey();
     if (!privKey) {
@@ -889,16 +978,55 @@ static BOOL isValidPort(NSString *port) {
 
 - (void)handleConfigurationReloadRequest {
     [[SGConfiguration sharedConfiguration] reloadFromDisk];
-    [[SGDatabaseManager sharedManager] resetAllTokensToRequireUpload];
     [self reconcileTokensWithPlist];
     [self handleEvent:SGEventConfigReloaded payload:nil];
 
-    /* Notify any control-channel subscriber so prefs UIs etc. can refresh. */
     if (_controlChannel) [_controlChannel postEvent:SGCEVT_CONFIG_RELOADED payload:nil];
 }
 
 - (void)handleSystemWake {
     [self handleEvent:SGEventSystemDidWake payload:nil];
+}
+
+- (void)dispatchResetRegistrationForBundleIdentifier:(NSString *)bundleID {
+    if (!_springBoardClient || ![bundleID length]) return;
+
+    SGCBundleIdPayload payload;
+    memset(&payload, 0, sizeof(payload));
+    strlcpy(payload.bundleID, [bundleID UTF8String], sizeof(payload.bundleID));
+    NSData *data = [NSData dataWithBytes:&payload length:sizeof(payload)];
+
+    [_springBoardClient sendRequest:SGCMSG_RESET_APP_REGISTRATION
+                            payload:data
+                            timeout:0
+                         completion:nil];
+}
+
+- (void)clearPendingDeletionForBundleIdentifier:(NSString *)bundleID {
+    if (![bundleID length]) return;
+    [self _clearPendingDeletionsInPlistForBundles:@[bundleID]];
+}
+
+- (void)_clearPendingDeletionsInPlistForBundles:(NSArray *)bundles {
+    if ([bundles count] == 0) return;
+    NSString *plistPath = SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp.plist");
+    NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:plistPath] mutableCopy];
+    if (!prefs) return;
+
+    NSArray *current = [prefs objectForKey:@"pendingDeletions"];
+    if ([current count] > 0) {
+        NSMutableArray *next = [current mutableCopy];
+        [next removeObjectsInArray:bundles];
+        if ([next count] == [current count]) {
+            [next release];
+            [prefs release];
+            return;
+        }
+        [prefs setObject:next forKey:@"pendingDeletions"];
+        [next release];
+        [prefs writeToFile:plistPath atomically:YES];
+    }
+    [prefs release];
 }
 
 - (void)performProfileWipeInline {
@@ -917,14 +1045,11 @@ static BOOL isValidPort(NSString *port) {
         [profile removeObjectForKey:@"privateKey"];
         [profile writeToFile:profilePath atomically:YES];
         [[SGConfiguration sharedConfiguration] reloadFromDisk];
-        [[SGDatabaseManager sharedManager] resetAllTokensToRequireUpload];
     }
 }
 
 #pragma mark - SpringBoard Push Delivery (via SGControlChannel)
 
-/* Synchronous wrapper around the async channel send so callers retain their
- * KERN_SUCCESS-vs-other semantics. */
 - (kern_return_t)_deliverPushTopic:(NSString *)topic payload:(NSDictionary *)payload {
     if (!_springBoardClient) {
         SGLOGW(SGDaemon, "Push delivery requested but no SpringBoard client attached.");
@@ -973,8 +1098,6 @@ static BOOL isValidPort(NSString *port) {
 
 #pragma mark - Notification Disposition Helpers
 
-/* Call only after a definitive disposition; entries still pending local
- * redelivery are owned by the drain timer. */
 - (void)_markMessageDeliveredID:(NSData *)msgID expiresAt:(int64_t)expiresAt {
     if (!msgID || [msgID length] == 0) return;
     [[SGDatabaseManager sharedManager] markMessageIDAsSeen:msgID expiresAt:expiresAt];
@@ -995,8 +1118,6 @@ static BOOL isValidPort(NSString *port) {
 
 #pragma mark - Local Delivery Retry Queue
 
-/* Safety-net only — primary drains are event-driven. Targets the drain queue
- * so the timer fire serialises with _kickLocalDeliveryDrain. */
 - (void)_startLocalDeliveryRetryTimer {
     if (_localDeliveryRetryTimer) return;
     _localDeliveryRetryTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
@@ -1024,8 +1145,6 @@ static BOOL isValidPort(NSString *port) {
     });
 }
 
-/* MUST run on _localDeliveryDrainQueue — call via _kickLocalDeliveryDrain or
- * the safety timer; direct invocation breaks the no-double-deliver invariant. */
 - (void)_drainLocalPendingDeliveries {
     @autoreleasepool {
         SGDatabaseManager *db = [SGDatabaseManager sharedManager];
@@ -1051,12 +1170,6 @@ static BOOL isValidPort(NSString *port) {
                     continue;
                 }
 
-                /**
-                 * propertyListFromData:mutabilityOption:format:errorDescription:
-                 * is deprecated on modern iOS but available all the way back to
-                 * iOS 2.0 — keep it for the iOS 3 floor.  -Wno-deprecated-declarations
-                 * in the Makefile already silences the warning at build time.
-                 */
                 NSDictionary *parsed = (NSDictionary *)[NSPropertyListSerialization
                     propertyListFromData:serialized
                         mutabilityOption:NSPropertyListImmutable
@@ -1082,7 +1195,6 @@ static BOOL isValidPort(NSString *port) {
                     [self _advanceLastDeliveredSeqIfNeeded:deviceSeq];
                     [db removeLocalPendingDeliveryForMessageID:msgID];
                 }
-                /* else: SpringBoard still unavailable — leave row for the next tick. */
             }
         }
     }
@@ -1090,26 +1202,14 @@ static BOOL isValidPort(NSString *port) {
 
 #pragma mark - Keepalive Algorithm Helpers
 
-/**
- * Returns the current keepalive interval.
- * MUST be called while holding _stateLock.
- */
 - (double)_currentKeepAliveInterval {
     return [[SGAvailability shared] currentIntervalForGrowthAlgorithm:_growthAlgorithm];
 }
 
-/**
- * Informs the algorithm of a keepalive result.
- * MUST be called while holding _stateLock.
- */
 - (void)_processKeepAliveResult:(BOOL)success {
     [[SGAvailability shared] processResult:success forGrowthAlgorithm:_growthAlgorithm];
 }
 
-/**
- * Reinitializes the algorithm for a network type change.
- * MUST be called while holding _stateLock.
- */
 - (void)_reinitializeKeepAliveForWiFi:(BOOL)isWiFi savedInterval:(double)savedInterval {
     [_growthAlgorithm release];
     _growthAlgorithm = [[SGAvailability shared]
@@ -1119,17 +1219,6 @@ static BOOL isValidPort(NSString *port) {
 
 #pragma mark - PCPersistentTimer Keepalive (Survives Deep Sleep)
 
-/**
- * Schedules a PCPersistentTimer for the current keepalive interval.
- * PCPersistentTimer internally registers with IOKit for power notifications
- * and schedules maintenance wakes via PCSystemWakeManager so the timer fires
- * even when the device is in deep sleep. This is the same mechanism apsd uses.
- *
- * The worker thread's select timeout remains as a redundant path — whichever
- * fires first sends the ping (dedup via _pingPendingSince in SGP_SendKeepAlivePing).
- *
- * Safe to call from any thread — dispatches to main internally.
- */
 - (void)_scheduleKeepAliveTimer {
     if (![SGAvailability shared].persistentTimerAvailable) return;
 
@@ -1156,10 +1245,6 @@ static BOOL isValidPort(NSString *port) {
     });
 }
 
-/**
- * Invalidates and releases the current keepalive timer.
- * Safe to call from any thread — dispatches to main internally.
- */
 - (void)_invalidateKeepAliveTimer {
     dispatch_async(dispatch_get_main_queue(), ^{
         if (self->_keepAliveTimer) {
@@ -1170,12 +1255,6 @@ static BOOL isValidPort(NSString *port) {
     });
 }
 
-/**
- * Fires on the main thread when the keepalive interval elapses.
- * During deep sleep, PCPersistentTimer schedules a maintenance wake,
- * the AP wakes briefly, this callback fires, ping goes out, pong
- * comes back, system sleeps again.
- */
 - (void)_keepAliveTimerFired:(id)timer {
     if (!SGP_IsConnected()) {
         SGLOGD(SGDaemon, "PCPersistentTimer fired but not connected — ignoring.");
@@ -1188,11 +1267,6 @@ static BOOL isValidPort(NSString *port) {
     if (sent) {
         [self _scheduleKeepAliveTimer];
     } else {
-        /**
-         * Ping already pending (worker thread beat us) or send failed.
-         * Timer will be rescheduled in protocolDidReceiveKeepAlivePong
-         * after the pong arrives and the adaptive algorithm updates.
-         */
         SGLOGD(SGDaemon, "PCPersistentTimer: ping not sent (already pending or send failed).");
     }
 }
@@ -1208,22 +1282,11 @@ static BOOL isValidPort(NSString *port) {
     uint32_t gen = _fsmGeneration;
     [_stateLock unlock];
 
-    /**
-     * Watchdog timer: if SGServerLocator blocks (mDNSResponder stall, DNS-SD socket
-     * issue), kSGDNSWatchdogSec fires SGEventDNSFailed so the FSM backs off and
-     * retries rather than blocking _entryActionQueue indefinitely. The generation
-     * check inside scheduleTimerForEvent: discards the watchdog if DNS resolves first
-     * (state changes → new generation → timer sees mismatch and no-ops).
-     */
     [self scheduleTimerForEvent:SGEventDNSFailed delay:kSGDNSWatchdogSec generation:gen];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSDictionary *txt = [SGServerLocator resolveEndpointForServerAddress:address];
 
-        /**
-         * Discard the result if the FSM moved on while DNS was in flight
-         * (e.g. network dropped, user disabled daemon, watchdog fired).
-         */
         [self->_stateLock lock];
         BOOL isStale = (self->_fsmGeneration != gen);
         [self->_stateLock unlock];
@@ -1253,23 +1316,6 @@ static BOOL isValidPort(NSString *port) {
     uint32_t gen = _fsmGeneration;
     [_stateLock unlock];
 
-    /**
-     * SGP_ConnectToServer performs a non-blocking TLS handshake and can
-     * block for several seconds (TCP timeout, slow server). Running it on
-     * the entry-action queue would serialize all subsequent state entry
-     * actions behind the connect. Dispatching to the global queue keeps
-     * the FSM responsive to concurrent events (network drop, SIGTERM).
-     *
-     * Pre-connect stale check: avoids starting a connection that will be
-     * immediately discarded (e.g. network dropped just before we got here).
-     *
-     * Post-connect stale check: if the FSM transitioned while the TLS
-     * handshake was in flight, close the socket we just opened so it is
-     * not leaked. SGP_DisconnectFromServer (not SGP_AbortConnection) is
-     * used here because SGP_ConnectToServer successfully completed the
-     * handshake and the SSL/socket objects are in a valid state — a
-     * graceful teardown avoids leaving the server slot in an ambiguous state.
-     */
     NSString *ipCopy   = [ip copy];
     NSString *certCopy = [cert copy];
     int port = [portStr intValue];
@@ -1297,10 +1343,6 @@ static BOOL isValidPort(NSString *port) {
 
             if (isStale) {
                 if (rc == 0) {
-                    /**
-                     * Connection succeeded but FSM moved on — release the socket.
-                     * Use Disconnect (not Abort) since the SSL object is valid.
-                     */
                     SGP_DisconnectFromServer();
                 }
                 return;

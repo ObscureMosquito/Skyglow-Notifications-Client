@@ -117,22 +117,44 @@
 typedef enum : uint8_t {
     /* Requests */
     SGCMSG_TOKEN_REQUEST       = 0x10,  /* SGCTokenRequestPayload    */
-    SGCMSG_TOKEN_REVOKE        = 0x11,  /* SGCTokenRequestPayload    */
-    SGCMSG_FEEDBACK            = 0x12,  /* SGCFeedbackPayload        */
+    /* 0x12 RESERVED — was SGCMSG_FEEDBACK; uninstall now routes through
+     * SGCMSG_DELETE_APP, no remaining callers.  Opcode kept reserved to
+     * avoid silent collisions if reintroduced. */
     SGCMSG_RELOAD_CONFIG       = 0x13,  /* (empty payload)           */
     SGCMSG_TEST_INJECT         = 0x14,  /* (empty payload)           */
-    SGCMSG_READINESS_PROBE     = 0x15,  /* (empty payload)           */
     SGCMSG_PUSH_DELIVERY       = 0x16,  /* SGCPushDeliveryPayload    */
     SGCMSG_SUBSCRIBE           = 0x17,  /* SGCSubscribePayload       */
     SGCMSG_UNSUBSCRIBE         = 0x18,  /* SGCUnsubscribePayload     */
-    SGCMSG_REGISTER_INPUT_APP  = 0x19,  /* SGCBundleIdPayload        */
-    SGCMSG_UNREGISTER_INPUT_APP= 0x1A,  /* SGCBundleIdPayload        */
+    SGCMSG_REGISTER_INPUT_APP  = 0x19,  /* SGCBundleIdPayload — debug-only path (SNDebugViewController) */
+    SGCMSG_UNREGISTER_INPUT_APP= 0x1A,  /* DEPRECATED — superseded by SGCMSG_DELETE_APP; opcode reserved */
+
+    /* Unified per-app state commands sent from the prefs bundle to the
+     * daemon.  Plist remains the user-state SSOT (written by prefs); these
+     * messages tell the daemon to sync its DB + server filter accordingly.
+     * See DOCUMENTATION.md for the full architecture. */
+    SGCMSG_ENABLE_APP          = 0x1B,  /* SGCBundleIdPayload — mint token if absent + clear mute + flush filter */
+    SGCMSG_DISABLE_APP         = 0x1C,  /* SGCBundleIdPayload — set mute + flush filter */
+    SGCMSG_DELETE_APP          = 0x1D,  /* SGCBundleIdPayload — drop DB row + flush filter + ask SB to natively deregister */
+
+    /* Daemon -> SB tweak: SB-side action requested by the daemon as part of
+     * a DELETE_APP cascade.  Tells the SB tweak to reset iOS's view of the
+     * app's push registration (via unregisterApplication: on classic, or
+     * invalidateToken… on iOS 9+) so the app's next register call hits our
+     * hook fresh.  Keeps SB-facing iOS calls inside the SB tweak. */
+    SGCMSG_RESET_APP_REGISTRATION = 0x1E, /* SGCBundleIdPayload */
+
+    /* Prefs -> SB tweak: request the list of bundles iOS currently considers
+     * push-registered (third-party apps only).  Reply uses
+     * SGCMSG_BUNDLE_ID_LIST as the response type with the list payload below.
+     * Prefs filters out anything in its own Skyglow plist; the rest are the
+     * "Apple Push" apps shown in the manual-forget section of the app list. */
+    SGCMSG_LIST_PUSH_REGISTERED_APPS = 0x1F, /* (empty payload) */
 
     /* Responses */
     SGCMSG_GENERIC_ACK         = 0x30,  /* (empty payload)           */
     SGCMSG_TOKEN_RESPONSE      = 0x31,  /* SGCTokenResponsePayload   */
     SGCMSG_ERROR_RESPONSE      = 0x32,  /* SGCErrorResponsePayload   */
-    SGCMSG_READINESS_RESPONSE  = 0x33,  /* SGCReadinessResponsePayload */
+    SGCMSG_BUNDLE_ID_LIST      = 0x33,  /* SGCBundleIdListPayload    */
 
     /* Events */
     SGCMSG_EVENT_DELIVERY      = 0x40,  /* SGCEventDeliveryPayload   */
@@ -146,11 +168,9 @@ typedef enum : uint8_t {
  * SUBSCRIBE requests and receives independent subscription IDs back.
  */
 typedef enum : uint16_t {
-    SGCEVT_STATE_CHANGED                 = 1,  /* SGCStateChangedEventData       */
-    SGCEVT_SB_RECEIVER_READY             = 2,  /* (empty data)                   */
-    SGCEVT_DAEMON_READY                  = 3,  /* (empty data)                   */
-    SGCEVT_CONFIG_RELOADED               = 4,  /* (empty data)                   */
-    SGCEVT_TOKEN_REGISTRATION_COMPLETED  = 5,  /* SGCTokenRegistrationEventData  */
+    SGCEVT_STATE_CHANGED      = 1,  /* SGCStateChangedEventData */
+    SGCEVT_SB_RECEIVER_READY  = 2,  /* (empty data)             */
+    SGCEVT_CONFIG_RELOADED    = 4,  /* (empty data)             */
 } SGControlEventType;
 
 /** Error Codes */
@@ -213,12 +233,11 @@ typedef struct {
 /** Payload Structs */
 
 /**
- * SGCMSG_TOKEN_REQUEST, SGCMSG_TOKEN_REVOKE.
+ * SGCMSG_TOKEN_REQUEST.
  *
- * Client asks the daemon to mint (or revoke) a push token for the given
- * bundle identifier.  Server replies with TOKEN_RESPONSE on success or
- * ERROR_RESPONSE otherwise.  Revoke is fire-and-forget at the wire level
- * but still returns a GENERIC_ACK so the caller can confirm receipt.
+ * Client asks the daemon to mint a push token for the given bundle
+ * identifier.  Server replies with TOKEN_RESPONSE on success or
+ * ERROR_RESPONSE otherwise.
  */
 typedef struct {
     char bundleID[SG_CONTROL_MAX_BUNDLE_ID_SIZE];
@@ -235,19 +254,6 @@ typedef struct {
     uint32_t tokenLength;
     uint8_t  tokenData[SG_CONTROL_MAX_TOKEN_SIZE];
 } SGCTokenResponsePayload;
-
-/**
- * SGCMSG_FEEDBACK.
- *
- * Used by the SpringBoard tweak to inform the daemon about app-level state
- * changes (uninstall, force-quit, etc.) so the daemon can prune tokens and
- * notify the server.  reason is a free-form short string; the daemon
- * interprets a small set of well-known values today and ignores others.
- */
-typedef struct {
-    char bundleID[SG_CONTROL_MAX_BUNDLE_ID_SIZE];
-    char reason[SG_CONTROL_MAX_REASON_SIZE];
-} SGCFeedbackPayload;
 
 /**
  * SGCMSG_PUSH_DELIVERY.
@@ -301,6 +307,31 @@ typedef struct {
 } SGCBundleIdPayload;
 
 /**
+ * SGCMSG_BUNDLE_ID_LIST (response).
+ *
+ * Packed list of bundle identifiers — variable-length encoding to avoid
+ * wasting 256 bytes per slot on entries that average ~30 characters.
+ *
+ * Wire layout:
+ *   uint16_t count         (BE-on-the-wire if cross-arch is ever a concern,
+ *                          but the channel is in-host so native order)
+ *   followed by `count` entries, each:
+ *     uint16_t bundleIdLen
+ *     uint8_t  bundleId[bundleIdLen]   (UTF-8, NOT null-terminated)
+ *
+ * Total serialized size must fit SG_CONTROL_MAX_PAYLOAD (4096).  With ~30-byte
+ * bundle IDs that's ~120 entries; enough for any realistic device.  If we
+ * ever exceed it we'll add chunking the way C_FILTER does.
+ *
+ * Consumers MUST iterate strictly via the encoded lengths — never assume
+ * null termination.
+ */
+typedef struct {
+    uint16_t count;
+    uint8_t  data[];  /* flexible array — entries packed as documented above */
+} SGCBundleIdListPayload;
+
+/**
  * SGCMSG_EVENT_DELIVERY.
  *
  * Server-initiated message sent to one subscriber.  eventType identifies the
@@ -328,20 +359,6 @@ typedef struct {
     char message[SG_CONTROL_MAX_ERROR_DETAIL_SIZE];
 } SGCErrorResponsePayload;
 
-/**
- * SGCMSG_READINESS_RESPONSE.
- *
- * Reply to READINESS_PROBE.  daemonState is the current SGState code (see
- * SGStatusServer.h), protocolVersion lets the client confirm wire
- * compatibility before relying on negotiated features, uptime is seconds
- * since daemon launch for diagnostics.
- */
-typedef struct {
-    uint8_t  daemonState;
-    uint32_t protocolVersion;
-    uint32_t uptime;
-} SGCReadinessResponsePayload;
-
 /** Event Data Structs */
 
 /**
@@ -352,17 +369,6 @@ typedef struct {
     uint8_t newState;
     char    reason[SG_CONTROL_MAX_REASON_SIZE];
 } SGCStateChangedEventData;
-
-/**
- * SGCEVT_TOKEN_REGISTRATION_COMPLETED data.  Fired after the daemon
- * receives an S_TOKEN_ACK from the server confirming the token was
- * registered.  Lets the SpringBoard tweak know its earlier TOKEN_REQUEST
- * has completed end-to-end (server-side acknowledgement, not just minted
- * locally).
- */
-typedef struct {
-    char bundleID[SG_CONTROL_MAX_BUNDLE_ID_SIZE];
-} SGCTokenRegistrationEventData;
 
 #pragma pack()
 

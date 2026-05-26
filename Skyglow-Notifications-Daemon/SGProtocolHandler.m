@@ -26,24 +26,8 @@ static SSL_CTX *_sslctx = NULL;
 static int _sock = -1;
 static pthread_mutex_t _sendLock = PTHREAD_MUTEX_INITIALIZER;
 
-/**
- * Protects _ssl object lifetime. The reader thread holds a read lock for the
- * duration of each SSL_read call. SGP_DisconnectFromServer holds the write lock
- * before calling SSL_free, ensuring no thread is inside SSL_read when we free it.
- */
 static pthread_rwlock_t _sslLock = PTHREAD_RWLOCK_INITIALIZER;
 
-/**
- * Serialises the check-then-set of _pingPendingSince / _pingSeq.
- * SGP_SendKeepAlivePing is called from two threads:
- *   - Worker thread (select timeout path in SGP_ProcessNextIncomingMessage)
- *   - Main thread   (PCPersistentTimer callback via _keepAliveTimerFired:)
- * Without this lock both threads can pass the `_pingPendingSince > 0` guard
- * simultaneously and send duplicate pings. The server pong for the first seq
- * is then orphaned, _pingPendingSince never clears, and a spurious
- * SGP_ERR_TIMEOUT disconnect follows. Separate from _sendLock (which
- * SGP_LowLevelSend acquires internally) to avoid a deadlock.
- */
 static pthread_mutex_t _pingLock = PTHREAD_MUTEX_INITIALIZER;
 
 static NSString *_userAddress = nil;
@@ -57,30 +41,13 @@ static double    _pingPendingSince = 0.0;
 static double    _lastFrameReceivedAt = 0.0;
 static uint32_t  _lastRetryHint = 0;
 
-/**
- * Clock skew correction from the last S_TIME_SYNC message.
- * Applied to time(NULL) in login/registration so the server's timestamp
- * window check doesn't reject us on devices with drifted clocks (iOS 3-5).
- *
- * On 32-bit ARM (iPhone 4/4S/5), a 64-bit write is not atomic — two
- * 32-bit stores can interleave with a reader causing a torn read.
- * Protected by _sendLock since time sync is rare and the overhead is negligible.
- */
 static int64_t _clockSkewSeconds = 0;
 
 static NSString *_regPendingAddress = nil;
-/**
- * Key material is kept as a malloc'd char* so we can memset it before free.
- * It is NEVER materialized as NSString — NSString's internal buffer is opaque
- * and cannot be zeroed, leaving private key bytes in the heap indefinitely.
- */
 static char     *_regPendingPrivKey = NULL;
 static size_t    _regPendingPrivKeyLen = 0;
 static RSA      *_regPendingRSA = NULL;
 static int64_t   _regTimestamp = 0;
-
-static NSMutableDictionary *_tokenWaiters = nil;
-static dispatch_once_t      _tokenOnce;
 
 
 static double SG_GetMonotonicSeconds(void) {
@@ -90,11 +57,6 @@ static double SG_GetMonotonicSeconds(void) {
     return (double)mach_absolute_time() * (double)tb.numer / ((double)tb.denom * 1.0e9);
 }
 
-/**
- * Returns the current time corrected by the server-observed clock skew.
- * On iOS 3-5 devices with unreliable NTP, the device clock can drift enough
- * to fail the server's CHALLENGE_WINDOW_SEC = 300 check.
- */
 static int64_t SG_GetCorrectedTime(void) {
     pthread_mutex_lock(&_sendLock);
     int64_t skew = _clockSkewSeconds;
@@ -154,15 +116,6 @@ static int SG_SSLReadExact(void *buf, int len) {
 
 static int SG_SSLWriteLocked(const void *buf, int len) {
     if (!_ssl) return -1;
-    /**
-     * Acquire the write lock (not read lock) so that SSL_write and SSL_read
-     * cannot execute concurrently on the same SSL* object. OpenSSL 1.0.x
-     * requires external serialization — concurrent SSL_read + SSL_write on
-     * the same SSL* is undefined behavior and can corrupt the record layer.
-     * Write lock is exclusive: it blocks until any in-progress SSL_read (rdlock)
-     * has returned, and blocks any new SSL_read until the write completes.
-     * Writes are brief (one keepalive ping or ack frame), so the stall is negligible.
-     */
     pthread_rwlock_wrlock(&_sslLock);
     if (!_ssl) { pthread_rwlock_unlock(&_sslLock); return -1; }
     int total = 0;
@@ -282,11 +235,6 @@ NSString *SGP_BeginFirstTimeRegistration(void) {
     BIO *privBio = BIO_new(BIO_s_mem());
     PEM_write_bio_RSAPrivateKey(privBio, rsa, NULL, NULL, 0, NULL, NULL);
     long privLen = BIO_pending(privBio);
-    /**
-     * Allocate a zeroed buffer for the PEM. We control this memory end-to-end
-     * and can wipe it with memset before free. It never becomes an NSString —
-     * NSString's internal buffer is opaque and cannot be zeroed.
-     */
     char *privBuf = calloc((size_t)privLen + 1, 1);
     if (!privBuf) {
         BIO_free(privBio);
@@ -323,10 +271,6 @@ NSString *SGP_BeginFirstTimeRegistration(void) {
     return address;
 }
 
-/**
- * Zeros and frees a PEM buffer using volatile writes to prevent dead-store
- * elimination by the compiler.
- */
 void SGP_ZeroAndFreeKeyMaterial(char *pemBuf, size_t len) {
     if (!pemBuf) return;
     volatile char *vp = pemBuf;
@@ -363,14 +307,6 @@ BOOL SGP_SendKeepAlivePing(void) {
 }
 
 void SGP_AbortConnection(void) {
-    /**
-     * Only close the socket to unblock any in-progress SSL_read.
-     * Do NOT touch _ssl here — DisconnectFromServer handles that
-     * under the write lock. After this call:
-     *   - SGP_IsConnected() returns NO (because _sock < 0)
-     *   - SSL_read returns error (fd closed underneath it)
-     *   - Worker loop exits cleanly
-     */
     int s = _sock;
     _sock = -1;
     if (s >= 0) {
@@ -382,10 +318,6 @@ void SGP_AbortConnection(void) {
 void SGP_DisconnectFromServer(void) {
     if (_userPrivKey) { RSA_free(_userPrivKey); _userPrivKey = NULL; }
 
-    /**
-     * Acquire the write lock before freeing the SSL object. This blocks until all
-     * in-progress SSL_read calls (holding read locks) have returned.
-     */
     pthread_rwlock_wrlock(&_sslLock);
     if (_ssl) { SSL_shutdown(_ssl); SSL_free(_ssl); _ssl = NULL; }
     pthread_rwlock_unlock(&_sslLock);
@@ -521,48 +453,52 @@ void SGP_FlushPendingAcknowledgements(void) {
 
 void SGP_FlushActiveTopicFilter(void) {
     if (!SGP_IsConnected()) return;
-    NSArray *keys = [[SGDatabaseManager sharedManager] allActiveRoutingKeys];
-    NSUInteger total = [keys count];
-    NSUInteger maxPerChunk = (SGP_MAX_PAYLOAD_LEN - 3) / 32;
-    NSUInteger offset = 0;
 
-    do {
-        NSUInteger count = MIN(total - offset, maxPerChunk);
-        BOOL hasMore = (offset + count < total);
-        NSMutableData *p = [NSMutableData data];
-        uint8_t flags = hasMore ? 1 : 0; [p appendBytes:&flags length:1];
-        uint8_t cBE[2] = {(uint8_t)(count >> 8), (uint8_t)(count & 0xFF)}; [p appendBytes:cBE length:2];
-        for (NSUInteger i = 0; i < count; i++) [p appendData:keys[offset + i]];
-        
-        if (SGP_LowLevelSend(SGP_C_FILTER, [p bytes], (uint32_t)[p length]) != 0) break;
-        offset += count;
-    } while (offset < total);
-}
+    NSArray *entries = [[SGDatabaseManager sharedManager] allBundleRegistrations];
+    NSUInteger total = [entries count];
 
-BOOL SGP_RegisterDeviceToken(NSData *routingKey, NSString *bundleID) {
-    if (!SGP_IsConnected()) return NO;
+    NSUInteger i = 0;
+    while (i < total || total == 0) {
+        NSMutableData *body = [NSMutableData data];
+        uint16_t count = 0;
+        const NSUInteger maxBody = SGP_MAX_PAYLOAD_LEN - 3;
 
-    dispatch_once(&_tokenOnce, ^{ _tokenWaiters = [[NSMutableDictionary alloc] init]; });
-    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-    
-    @synchronized(_tokenWaiters) { _tokenWaiters[bundleID] = [NSValue valueWithPointer:sema]; }
+        while (i < total) {
+            NSDictionary *e   = entries[i];
+            NSData       *rk  = e[@"routingKey"];
+            NSString     *bid = e[@"bundleID"];
+            BOOL          mut = [e[@"isMuted"] boolValue];
+            if ([rk length] != SGP_ROUTING_KEY_LEN || ![bid length]) { i++; continue; }
 
-    const char *bid = [bundleID UTF8String]; uint16_t bl = (uint16_t)strlen(bid);
-    NSMutableData *p = [NSMutableData data]; [p appendData:routingKey];
-    uint8_t blBE[2] = {(uint8_t)(bl >> 8), (uint8_t)(bl & 0xFF)};
-    [p appendBytes:blBE length:2]; [p appendBytes:bid length:bl];
+            const char *bidC = [bid UTF8String];
+            NSUInteger  blen = strlen(bidC);
+            if (blen > 0xFFFF) { i++; continue; }
 
-    if (SGP_LowLevelSend(SGP_C_REG_TOKEN, [p bytes], (uint32_t)[p length]) != 0) {
-        @synchronized(_tokenWaiters) { [_tokenWaiters removeObjectForKey:bundleID]; }
-        dispatch_release(sema);
-        return NO;
+            NSUInteger entrySize = 1 + SGP_ROUTING_KEY_LEN + 2 + blen;
+            if ([body length] + entrySize > maxBody) break;
+            if (count == 0xFFFF) break;
+
+            uint8_t tag = mut ? 0x02 : 0x01;
+            [body appendBytes:&tag length:1];
+            [body appendData:rk];
+            uint8_t blBE[2] = {(uint8_t)(blen >> 8), (uint8_t)(blen & 0xFF)};
+            [body appendBytes:blBE length:2];
+            [body appendBytes:bidC length:blen];
+
+            count++;
+            i++;
+        }
+
+        BOOL hasMore = (i < total);
+        NSMutableData *frame = [NSMutableData dataWithCapacity:3 + [body length]];
+        uint8_t flags = hasMore ? 1 : 0; [frame appendBytes:&flags length:1];
+        uint8_t cBE[2] = {(uint8_t)(count >> 8), (uint8_t)(count & 0xFF)}; [frame appendBytes:cBE length:2];
+        [frame appendData:body];
+
+        if (SGP_LowLevelSend(SGP_C_FILTER, [frame bytes], (uint32_t)[frame length]) != 0) return;
+
+        if (total == 0) return;
     }
-    
-    long rc = dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
-    @synchronized(_tokenWaiters) { [_tokenWaiters removeObjectForKey:bundleID]; }
-    
-    dispatch_release(sema);
-    return (rc == 0);
 }
 
 void SGP_SendClientDisconnect(void) {
@@ -583,13 +519,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         struct timeval tv = {(long)pingIntervalSec, 0};
         struct timeval *tv_ptr = (pingIntervalSec > 0.0) ? &tv : NULL;
 
-        /**
-         * Read _pingPendingSince under _pingLock. On 32-bit ARM (iPod touch 4G,
-         * iPhone 4S) a double is two 32-bit loads — not atomic. Without the lock,
-         * a concurrent write from the main thread (SGP_SendKeepAlivePing) can
-         * produce a torn read, giving a garbage elapsed value that either fires
-         * an immediate spurious SGP_ERR_TIMEOUT or suppresses the timeout.
-         */
         pthread_mutex_lock(&_pingLock);
         double pendingSince = _pingPendingSince;
         pthread_mutex_unlock(&_pingLock);
@@ -642,37 +571,19 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
 
     if (len > SGP_MAX_PAYLOAD_LEN) return SGP_ERR_PROTO;
 
-    /**
-     * Per-type payload bounds (server -> client direction).
-     * Check BEFORE allocating or reading the payload to prevent a malformed
-     * frame from forcing a full MAX_PAYLOAD allocation.
-     */
     {
         typedef struct { uint32_t min; uint32_t max; } SGPBounds;
         static const SGPBounds kServerBounds[256] = {
-            // S_HELLO (0x10):         4 bytes (version), exactly
             [SGP_S_HELLO]         = {  4,   4 },
-            // S_CHALLENGE (0x11):     32-byte nonce, exactly
             [SGP_S_CHALLENGE]     = { 32,  32 },
-            // S_AUTH_OK (0x12):       empty
             [SGP_S_AUTH_OK]       = {  0,   0 },
-            // S_NOTIFY (0x13):        70-byte fixed header + variable data + optional 12-byte IV
             [SGP_S_NOTIFY]        = { 70,  SGP_MAX_PAYLOAD_LEN },
-            // S_DISCONNECT (0x14):    1(reason) + optional 4(retryAfter)
             [SGP_S_DISCONNECT]    = {  1,   5 },
-            // S_TOKEN_ACK (0x15):     32(key)+2(bidLen)+bid  min=35  max=32+2+255=289
-            [SGP_S_TOKEN_ACK]     = { 35, 289 },
-            // S_PONG (0x16):          8-byte sequence echo, exactly
             [SGP_S_PONG]          = {  8,   8 },
-            // S_POLL_DONE (0x17):     empty
             [SGP_S_POLL_DONE]     = {  0,   0 },
-            // S_REGISTER_OK (0x18):   4(serverVersion), exactly
             [SGP_S_REGISTER_OK]   = {  4,   4 },
-            // S_REGISTER_FAIL (0x19): 1(code)+optional 2(reasonLen)+reason  min=1  max=258
             [SGP_S_REGISTER_FAIL] = {  1, 258 },
-            // S_PING (0x1A):          8-byte sequence, exactly
             [SGP_S_PING]          = {  8,   8 },
-            // S_TIME_SYNC (0x1B):     8-byte unix timestamp, exactly
             [SGP_S_TIME_SYNC]     = {  8,   8 },
         };
 
@@ -680,7 +591,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         static const uint32_t kRegisteredMask =
             (1u << SGP_S_HELLO)         | (1u << SGP_S_CHALLENGE)    |
             (1u << SGP_S_AUTH_OK)       | (1u << SGP_S_NOTIFY)       |
-            (1u << SGP_S_DISCONNECT)    | (1u << SGP_S_TOKEN_ACK)    |
+            (1u << SGP_S_DISCONNECT)    |
             (1u << SGP_S_PONG)          | (1u << SGP_S_POLL_DONE)    |
             (1u << SGP_S_REGISTER_OK)   | (1u << SGP_S_REGISTER_FAIL)|
             (1u << SGP_S_PING)          | (1u << SGP_S_TIME_SYNC);
@@ -705,13 +616,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         case SGP_S_NOTIFY:
         case SGP_S_AUTH_OK:
         case SGP_S_POLL_DONE:
-        case SGP_S_TOKEN_ACK:
         case SGP_S_PONG:
-            /**
-             * Clear _pingPendingSince under _pingLock for the same 32-bit ARM
-             * atomicity reason: without the lock, the main thread's
-             * SGP_SendKeepAlivePing may be writing the field at the same moment.
-             */
             pthread_mutex_lock(&_pingLock);
             _pingPendingSince = 0.0;
             pthread_mutex_unlock(&_pingLock);
@@ -777,25 +682,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             if (reason == SGP_DISC_REPLACED)  { result = SGP_ERR_REPLACED; goto cleanup; }
             result = SGP_ERR_CLOSED; goto cleanup;
         }
-        case SGP_S_TOKEN_ACK: {
-            uint16_t bl = ((uint16_t)raw[SGP_ROUTING_KEY_LEN] << 8) | (uint16_t)raw[SGP_ROUTING_KEY_LEN + 1];
-            if ((uint64_t)(SGP_ROUTING_KEY_LEN + 2) + bl > (uint64_t)len) {
-                result = SGP_ERR_PROTO; goto cleanup;
-            }
-
-            NSString *bid = [[[NSString alloc] initWithBytes:raw + SGP_ROUTING_KEY_LEN + 2
-                                                       length:bl
-                                                     encoding:NSUTF8StringEncoding] autorelease];
-            @synchronized(_tokenWaiters) {
-                NSValue *val = _tokenWaiters[bid];
-                if (val) {
-                    dispatch_semaphore_t sema = (dispatch_semaphore_t)[val pointerValue];
-                    dispatch_semaphore_signal(sema);
-                }
-            }
-            [_delegate protocolDidCompleteTokenRegistration:bid];
-            break;
-        }
         case SGP_S_REGISTER_OK: {
             uint32_t serverVer = SG_DecodeBE32(raw);
             NSString *capturedAddress  = [_regPendingAddress autorelease];
@@ -841,13 +727,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             uint64_t seq = _pingSeq;
             pthread_mutex_unlock(&_pingLock);
             if (SG_DecodeBE64(raw) == (int64_t)seq) {
-                /**
-                 * _pingPendingSince is already cleared in the first switch above,
-                 * but we clear it again here under the lock as the authoritative
-                 * confirmation that the pong matched our outstanding ping.
-                 * The first-switch clear is a broad "any data means the connection
-                 * is live" heuristic; this is the precise per-sequence clear.
-                 */
                 pthread_mutex_lock(&_pingLock);
                 _pingPendingSince = 0.0;
                 pthread_mutex_unlock(&_pingLock);

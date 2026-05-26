@@ -58,7 +58,6 @@ typedef enum : uint8_t {
     SGP_S_AUTH_OK        = 0x12,
     SGP_S_NOTIFY         = 0x13,
     SGP_S_DISCONNECT     = 0x14,
-    SGP_S_TOKEN_ACK      = 0x15,
     SGP_S_PONG           = 0x16,
     SGP_S_POLL_DONE      = 0x17,
     SGP_S_REGISTER_OK    = 0x18,
@@ -71,7 +70,6 @@ typedef enum : uint8_t {
     SGP_C_POLL           = 0x22,
     SGP_C_ACK            = 0x23,
     SGP_C_DISCONNECT     = 0x24,
-    SGP_C_REG_TOKEN      = 0x25,
     SGP_C_FILTER         = 0x2B,
     SGP_C_PING           = 0x27,
     SGP_C_REGISTER       = 0x28,
@@ -103,11 +101,6 @@ typedef enum : uint8_t {
  * Called when authentication completes successfully.
  */
 - (void)protocolDidAuthenticateSuccessfully;
-
-/**
- * Called when the server acknowledges a token registration.
- */
-- (void)protocolDidCompleteTokenRegistration:(NSString *)bundleIdentifier;
 
 @optional
 
@@ -202,11 +195,6 @@ void SGP_BeginLoginHandshake(NSString *address, RSA *privKey);
 int  SGP_ProcessNextIncomingMessage(double pingIntervalSec);
 
 /**
- * Synchronously registers a device token with the server, blocking up to 5 seconds.
- */
-BOOL SGP_RegisterDeviceToken(NSData *routingKey, NSString *bundleID);
-
-/**
  * Sends or persists an acknowledgement for a received notification.
  */
 void SGP_EnqueueAcknowledgement(NSData *msgID, int status);
@@ -217,7 +205,9 @@ void SGP_EnqueueAcknowledgement(NSData *msgID, int status);
 void SGP_FlushPendingAcknowledgements(void);
 
 /**
- * Sends the active routing key filter to the server in chunked C_FILTER messages.
+ * Sends the complete (routing_key, bundle_id) registration set to the server
+ * in chunked C_FILTER messages. The server treats the full multi-chunk
+ * transmission as canonical full-replace for both routing and bundle binding.
  */
 void SGP_FlushActiveTopicFilter(void);
 
