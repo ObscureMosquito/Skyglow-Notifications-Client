@@ -3,6 +3,7 @@
 #import "SNChannelGateway.h"
 #import <Preferences/PSSpecifier.h>
 #import <Preferences/PSTableCell.h>
+#import <UIKit/UIKit.h>
 #import "SNAppToggleCell.h"
 
 static NSString * const kSGNSectionPropKey = @"sgnSection";
@@ -10,6 +11,10 @@ static NSString * const kSGNSectionSkyglow = @"skyglow";
 static NSString * const kSGNSectionAPNs    = @"apns";
 static NSString * const kSGNSectionGroupPropKey = @"sgnSectionGroup";
 static NSString * const kSGNPlaceholderPropKey  = @"sgnPlaceholder";
+static NSString * const kSGNSkyglowEmptyFooter = @"Applications that have registered with Skyglow Notifications will appear here.";
+static NSString * const kSGNAPNsEmptyFooter = @"Applications that have registered with Apple Push Notifications will appear here.";
+static NSString * const kSGNSkyglowPopulatedFooter = @"Toggle to mute Skyglow notifications for an app. Swipe to forget, the app will prompt you for a provider next time it asks for notifications.";
+static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered with Apple Push for notifications. Swipe to forget, the app will prompt you for a provider next time it opens.";
 
 @interface SNAppListController ()
 @property (nonatomic, strong) NSArray *apsdBundles;
@@ -27,10 +32,8 @@ static NSString * const kSGNPlaceholderPropKey  = @"sgnPlaceholder";
         SNDataManager *dm = [SNDataManager shared];
         NSDictionary *appStatus = [dm appStatus] ?: @{};
         NSSet *dbBundleIDs = [dm registeredBundleIDs] ?: [NSSet set];
-        NSArray *pending = [dm pendingDeletions] ?: @[];
         NSMutableSet *exclude = [NSMutableSet setWithArray:[appStatus allKeys]];
         [exclude unionSet:dbBundleIDs];
-        [exclude addObjectsFromArray:pending];
 
         NSMutableArray *filtered = [NSMutableArray array];
         for (NSString *bid in bundleIds) {
@@ -57,7 +60,7 @@ static NSString * const kSGNPlaceholderPropKey  = @"sgnPlaceholder";
 }
 
 - (void)_buildSkyglowSectionInto:(NSMutableArray *)specs {
-    PSSpecifier *groupSpec = [PSSpecifier preferenceSpecifierNamed:@"Toggle Notifications"
+    PSSpecifier *groupSpec = [PSSpecifier preferenceSpecifierNamed:@"Skyglow Notifications"
                                                             target:self
                                                                set:NULL
                                                                get:NULL
@@ -72,13 +75,9 @@ static NSString * const kSGNPlaceholderPropKey  = @"sgnPlaceholder";
     SNDataManager *dm = [SNDataManager shared];
     NSDictionary *appStatus    = [dm appStatus];
     NSSet        *dbBundleIDs  = [dm registeredBundleIDs];
-    NSArray      *pending      = [dm pendingDeletions];
 
     NSMutableSet *allBundleIDs = [NSMutableSet setWithArray:[appStatus allKeys]];
     [allBundleIDs unionSet:dbBundleIDs];
-    if (pending.count > 0) {
-        [allBundleIDs minusSet:[NSSet setWithArray:pending]];
-    }
 
     if ([allBundleIDs count] == 0) {
         PSSpecifier *placeholder = [PSSpecifier preferenceSpecifierNamed:@"No registered applications."
@@ -91,8 +90,7 @@ static NSString * const kSGNPlaceholderPropKey  = @"sgnPlaceholder";
         [placeholder setProperty:kSGNSectionSkyglow forKey:kSGNSectionPropKey];
         [placeholder setProperty:@YES forKey:kSGNPlaceholderPropKey];
         [specs addObject:placeholder];
-        [groupSpec setProperty:@"Toggle to mute Skyglow notifications for an app. Swipe to forget, the app will prompt you for a provider next time it asks for notifications."
-                        forKey:@"footerText"];
+        [groupSpec setProperty:kSGNSkyglowEmptyFooter forKey:@"footerText"];
         return;
     }
 
@@ -113,14 +111,11 @@ static NSString * const kSGNPlaceholderPropKey  = @"sgnPlaceholder";
         [specs addObject:spec];
     }
 
-    [groupSpec setProperty:@"Toggle to mute Skyglow notifications for an app. Swipe to forget, the app will prompt you for a provider next time it asks for notifications."
-                    forKey:@"footerText"];
+    [groupSpec setProperty:kSGNSkyglowPopulatedFooter forKey:@"footerText"];
 }
 
 - (void)_buildAPNsSectionInto:(NSMutableArray *)specs {
-    if (self.apsdBundles.count == 0) return;
-
-    PSSpecifier *groupSpec = [PSSpecifier preferenceSpecifierNamed:@"Apps Using Apple Push"
+    PSSpecifier *groupSpec = [PSSpecifier preferenceSpecifierNamed:@"Apple Push Notifications"
                                                             target:self
                                                                set:NULL
                                                                get:NULL
@@ -130,9 +125,24 @@ static NSString * const kSGNPlaceholderPropKey  = @"sgnPlaceholder";
     [groupSpec setProperty:@YES forKey:@"isDeletionGroup"];
     [groupSpec setProperty:kSGNSectionAPNs forKey:kSGNSectionPropKey];
     [groupSpec setProperty:@YES forKey:kSGNSectionGroupPropKey];
-    [groupSpec setProperty:@"These apps were registered for push notifications before Skyglow was installed, or you picked Apple Push for them. Swipe to forget, the app will prompt you for a provider next time it asks for notifications."
-                    forKey:@"footerText"];
     [specs addObject:groupSpec];
+
+    if (self.apsdBundles.count == 0) {
+        [groupSpec setProperty:kSGNAPNsEmptyFooter forKey:@"footerText"];
+        PSSpecifier *placeholder = [PSSpecifier preferenceSpecifierNamed:@"No registered applications."
+                                                                  target:self
+                                                                     set:NULL
+                                                                     get:NULL
+                                                                  detail:Nil
+                                                                    cell:PSStaticTextCell
+                                                                    edit:Nil];
+        [placeholder setProperty:kSGNSectionAPNs forKey:kSGNSectionPropKey];
+        [placeholder setProperty:@YES forKey:kSGNPlaceholderPropKey];
+        [specs addObject:placeholder];
+        return;
+    }
+
+    [groupSpec setProperty:kSGNAPNsPopulatedFooter forKey:@"footerText"];
 
     for (NSString *bundleId in self.apsdBundles) {
         PSSpecifier *spec = [PSSpecifier preferenceSpecifierNamed:bundleId
@@ -165,6 +175,19 @@ static NSString * const kSGNPlaceholderPropKey  = @"sgnPlaceholder";
     return placeholder;
 }
 
+- (PSSpecifier *)_apnsEmptyPlaceholderSpecifier {
+    PSSpecifier *placeholder = [PSSpecifier preferenceSpecifierNamed:@"No registered applications."
+                                                              target:self
+                                                                 set:NULL
+                                                                 get:NULL
+                                                              detail:Nil
+                                                                cell:PSStaticTextCell
+                                                                edit:Nil];
+    [placeholder setProperty:kSGNSectionAPNs forKey:kSGNSectionPropKey];
+    [placeholder setProperty:@YES forKey:kSGNPlaceholderPropKey];
+    return placeholder;
+}
+
 - (PSSpecifier *)_groupSpecifierForSection:(NSString *)section {
     for (PSSpecifier *candidate in [self specifiers]) {
         if ([[candidate propertyForKey:kSGNSectionPropKey] isEqualToString:section] &&
@@ -173,6 +196,12 @@ static NSString * const kSGNPlaceholderPropKey  = @"sgnPlaceholder";
         }
     }
     return nil;
+}
+
+- (void)_setEmptyFooterForGroup:(PSSpecifier *)group section:(NSString *)section {
+    NSString *footer = [section isEqualToString:kSGNSectionAPNs] ? kSGNAPNsEmptyFooter : kSGNSkyglowEmptyFooter;
+    [group setProperty:footer forKey:@"footerText"];
+    [self reloadSpecifier:group animated:YES];
 }
 
 - (NSUInteger)_bundleRowCountForSection:(NSString *)section excludingSpecifier:(PSSpecifier *)excluded {
@@ -210,12 +239,30 @@ static NSString * const kSGNPlaceholderPropKey  = @"sgnPlaceholder";
     [self removeSpecifier:specifier animated:YES];
 
     if ([section isEqualToString:kSGNSectionSkyglow] && group) {
+        [self _setEmptyFooterForGroup:group section:section];
         [self insertSpecifier:[self _skyglowEmptyPlaceholderSpecifier]
                afterSpecifier:group
                      animated:YES];
     } else if ([section isEqualToString:kSGNSectionAPNs] && group) {
-        [self removeSpecifier:group animated:YES];
+        [self _setEmptyFooterForGroup:group section:section];
+        [self insertSpecifier:[self _apnsEmptyPlaceholderSpecifier]
+               afterSpecifier:group
+                     animated:YES];
     }
+}
+
+- (void)_showDeletionErrorForBundleId:(NSString *)bundleId message:(NSString *)message {
+    NSString *title = @"Could Not Forget App";
+    NSString *body = message.length ? message : @"Could not communicate with SpringBoard. Try again after respringing.";
+    if (bundleId.length) {
+        body = [NSString stringWithFormat:@"%@\n\n%@", bundleId, body];
+    }
+
+    [[[UIAlertView alloc] initWithTitle:title
+                                message:body
+                               delegate:nil
+                      cancelButtonTitle:@"OK"
+                      otherButtonTitles:nil] show];
 }
 
 - (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -273,16 +320,19 @@ static NSString * const kSGNPlaceholderPropKey  = @"sgnPlaceholder";
     if (!bundleId) return;
 
     NSString *section = [spec propertyForKey:kSGNSectionPropKey];
+    [tableView setEditing:NO animated:YES];
 
-    if ([section isEqualToString:kSGNSectionAPNs]) {
-        [SNChannelGateway postDeleteAppForBundleId:bundleId];
+    [SNChannelGateway deleteAppForBundleId:bundleId completion:^(BOOL ok, NSString *message) {
+        if (!ok) {
+            [self _showDeletionErrorForBundleId:bundleId message:message];
+            return;
+        }
+
+        if ([section isEqualToString:kSGNSectionSkyglow]) {
+            [[SNDataManager shared] removeAppStatusForBundleId:bundleId];
+        }
         [self _removeBundleSpecifier:spec section:section bundleId:bundleId];
-        return;
-    }
-
-    [[SNDataManager shared] scheduleAppDeletion:bundleId];
-    [SNChannelGateway postDeleteAppForBundleId:bundleId];
-    [self _removeBundleSpecifier:spec section:section bundleId:bundleId];
+    }];
 }
 
 @end

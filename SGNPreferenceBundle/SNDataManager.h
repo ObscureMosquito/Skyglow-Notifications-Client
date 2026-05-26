@@ -19,21 +19,9 @@
 - (BOOL)isEnabled;
 - (NSDictionary *)appStatus;
 - (void)setAppStatusValue:(BOOL)value forBundleId:(NSString *)bundleId;
+- (void)removeAppStatusForBundleId:(NSString *)bundleId;
 - (void)setMainPrefValue:(id)value forKey:(NSString *)key;
 - (NSString *)serverAddressInput;
-
-/** Pending Deletions
- *
- * `scheduleAppDeletion:` is the unified delete-intent write: a single atomic
- * plist write that both removes the bundle from appStatus AND adds it to
- * pendingDeletions.  The daemon's DELETE_APP cascade clears the entry once
- * the operational state is torn down; on reboot, reconcileTokensWithPlist
- * processes anything that remained.  `pendingDeletions` exposes the current
- * set so the UI can hide bundles that have been requested for deletion but
- * not yet processed (DB row may still exist transiently).
- */
-- (void)scheduleAppDeletion:(NSString *)bundleId;
-- (NSArray *)pendingDeletions;
 
 /** Profile — active profile shortcuts (delegates to active profile index) */
 - (NSDictionary *)profile;

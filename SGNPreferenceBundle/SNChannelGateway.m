@@ -10,6 +10,20 @@ static SGControlChannel *gSpringBoardClient = nil;
 static dispatch_once_t   gDaemonOnce;
 static dispatch_once_t   gSpringBoardOnce;
 
+static void SNCopyCString(char *dst, size_t dstSize, const char *src) {
+    if (!dst || dstSize == 0) return;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    size_t i = 0;
+    while (i + 1 < dstSize && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
 static SGControlChannel *DaemonClient(void) {
     dispatch_once(&gDaemonOnce, ^{
         gDaemonClient = [SGControlChannel clientForServiceName:SKYGLOW_CONTROL_SERVICE_DAEMON];
@@ -44,7 +58,7 @@ static SGControlChannel *SpringBoardClient(void) {
     if (bundleId.length == 0) return;
     SGCBundleIdPayload payload;
     memset(&payload, 0, sizeof(payload));
-    strlcpy(payload.bundleID, [bundleId UTF8String], sizeof(payload.bundleID));
+    SNCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
     [SpringBoardClient() sendRequest:SGCMSG_REGISTER_INPUT_APP
                              payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
                              timeout:0
@@ -55,7 +69,7 @@ static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
     if (bundleId.length == 0) return;
     SGCBundleIdPayload payload;
     memset(&payload, 0, sizeof(payload));
-    strlcpy(payload.bundleID, [bundleId UTF8String], sizeof(payload.bundleID));
+    SNCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
     [DaemonClient() sendRequest:messageType
                         payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
                         timeout:0
@@ -70,8 +84,34 @@ static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
     SendBundleCommandToDaemon(SGCMSG_DISABLE_APP, bundleId);
 }
 
-+ (void)postDeleteAppForBundleId:(NSString *)bundleId {
-    SendBundleCommandToDaemon(SGCMSG_DELETE_APP, bundleId);
++ (void)deleteAppForBundleId:(NSString *)bundleId completion:(SNChannelCommandCompletion)completion {
+    if (bundleId.length == 0) {
+        if (completion) completion(NO, @"The selected application could not be identified.");
+        return;
+    }
+
+    SGCBundleIdPayload payload;
+    memset(&payload, 0, sizeof(payload));
+    SNCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
+
+    [DaemonClient() sendRequest:SGCMSG_DELETE_APP
+                        payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
+                        timeout:12.0
+                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
+        BOOL ok = (err == SGCERR_OK);
+        NSString *message = nil;
+        if (!ok) {
+            if (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE) {
+                message = @"Could not communicate with SpringBoard. Try again after respringing.";
+            } else {
+                message = @"SpringBoard could not reset this application's notification registration.";
+            }
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(ok, message);
+        });
+    }];
 }
 
 + (void)queryNativelyPushRegisteredBundlesWithCompletion:(void (^)(NSArray *bundleIds))completion {

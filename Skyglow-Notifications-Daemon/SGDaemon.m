@@ -323,7 +323,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     SGDatabaseManager *db = [SGDatabaseManager sharedManager];
     [db removeTokenForBundleIdentifier:bundleID];
     [db removeLocalPendingDeliveriesForBundleIdentifier:bundleID];
-    [self dispatchResetRegistrationForBundleIdentifier:bundleID];
 }
 
 - (void)reconcileTokensWithPlist {
@@ -988,8 +987,16 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     [self handleEvent:SGEventSystemDidWake payload:nil];
 }
 
-- (void)dispatchResetRegistrationForBundleIdentifier:(NSString *)bundleID {
-    if (!_springBoardClient || ![bundleID length]) return;
+- (void)dispatchResetRegistrationForBundleIdentifier:(NSString *)bundleID
+                                          completion:(void (^)(SGControlError err))completion {
+    if (![bundleID length]) {
+        if (completion) completion(SGCERR_INVALID_REQUEST);
+        return;
+    }
+    if (!_springBoardClient) {
+        if (completion) completion(SGCERR_UNREACHABLE);
+        return;
+    }
 
     SGCBundleIdPayload payload;
     memset(&payload, 0, sizeof(payload));
@@ -999,7 +1006,10 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     [_springBoardClient sendRequest:SGCMSG_RESET_APP_REGISTRATION
                             payload:data
                             timeout:0
-                         completion:nil];
+                         completion:^(SGControlError err, const SGControlChannelMessage *response) {
+        (void)response;
+        if (completion) completion(err);
+    }];
 }
 
 - (void)clearPendingDeletionForBundleIdentifier:(NSString *)bundleID {

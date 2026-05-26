@@ -43,6 +43,20 @@ static SGControlChannel *gSGCSBServer     = nil;
 
 #pragma mark - Utility Helpers
 
+static void SGNCopyCString(char *dst, size_t dstSize, const char *src) {
+    if (!dst || dstSize == 0) return;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    size_t i = 0;
+    while (i + 1 < dstSize && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
 static id GetIvar(id obj, const char *name) {
     if (!obj || !name) return nil;
     Ivar iv = class_getInstanceVariable(object_getClass(obj), name);
@@ -123,7 +137,7 @@ static void SendDeleteAppToDaemon(NSString *bundleId) {
 
     SGCBundleIdPayload payload;
     memset(&payload, 0, sizeof(payload));
-    strlcpy(payload.bundleID, [bundleId UTF8String], sizeof(payload.bundleID));
+    SGNCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
 
     [gSGCDaemonClient sendRequest:SGCMSG_DELETE_APP
                           payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
@@ -188,7 +202,7 @@ static void SGN_AsyncFetchAndDeliverToken(NSString *bundleId,
 
     SGCTokenRequestPayload payload;
     memset(&payload, 0, sizeof(payload));
-    strlcpy(payload.bundleID, [safeBundleId UTF8String], sizeof(payload.bundleID));
+    SGNCopyCString(payload.bundleID, sizeof(payload.bundleID), [safeBundleId UTF8String]);
     NSData *payloadData = [NSData dataWithBytes:&payload length:sizeof(payload)];
 
     [gSGCDaemonClient sendRequest:SGCMSG_TOKEN_REQUEST

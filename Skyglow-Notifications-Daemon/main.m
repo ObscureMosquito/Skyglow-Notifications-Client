@@ -199,13 +199,35 @@ int main(int argc, char *argv[]) {
             NSString *bundleID = [[NSString alloc] initWithBytes:bp->bundleID
                                                           length:strnlen(bp->bundleID, sizeof(bp->bundleID))
                                                         encoding:NSUTF8StringEncoding];
-            if (bundleID.length) {
-                [daemon _runDeletionCascadeForBundle:bundleID];
-                SGP_FlushActiveTopicFilter();
-                [daemon clearPendingDeletionForBundleIdentifier:bundleID];
+            if (!bundleID.length) {
+                [bundleID release];
+                replyError(SGCERR_INVALID_REQUEST, @"delete bundle id missing");
+                return;
             }
+
+            NSString *bundleRet = [bundleID retain];
+            SGControlReplyBlock replyCopy = [reply copy];
+            SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
+
+            [daemon dispatchResetRegistrationForBundleIdentifier:bundleRet
+                                                      completion:^(SGControlError err) {
+                if (err == SGCERR_OK) {
+                    [daemon _runDeletionCascadeForBundle:bundleRet];
+                    SGP_FlushActiveTopicFilter();
+                    [daemon clearPendingDeletionForBundleIdentifier:bundleRet];
+                    replyCopy(SGCMSG_GENERIC_ACK, nil);
+                } else {
+                    NSString *detail = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                        ? @"SpringBoard did not respond"
+                        : @"SpringBoard rejected the reset request";
+                    replyErrorCopy(err, detail);
+                }
+
+                [bundleRet release];
+                [replyCopy release];
+                [replyErrorCopy release];
+            }];
             [bundleID release];
-            reply(SGCMSG_GENERIC_ACK, nil);
         } forMessageType:SGCMSG_DELETE_APP];
 
         if (![controlChannel start]) {

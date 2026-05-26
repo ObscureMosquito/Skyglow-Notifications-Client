@@ -33,6 +33,20 @@ static inline NSString * SGProfilePath() {
 static inline NSString * SGDBPath()        { return SGPath(@"/var/mobile/Library/SkyglowNotifications/sqlite.db"); }
 static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_status.sock") UTF8String]; }
 
+static void SNCopyCString(char *dst, size_t dstSize, const char *src) {
+    if (!dst || dstSize == 0) return;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    size_t i = 0;
+    while (i + 1 < dstSize && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
 @interface SNDataManager ()
 @property (nonatomic, assign) int watchSocketFD;
 @property (nonatomic, assign) BOOL isWatching;
@@ -97,7 +111,7 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
     [prefs writeToFile:SGMainPrefsPath() atomically:YES];
 }
 
-- (void)scheduleAppDeletion:(NSString *)bundleId {
+- (void)removeAppStatusForBundleId:(NSString *)bundleId {
     if (!bundleId) return;
     NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()] ?: [NSMutableDictionary dictionary];
 
@@ -105,17 +119,7 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
     [appSt removeObjectForKey:bundleId];
     [prefs setObject:appSt forKey:@"appStatus"];
 
-    NSMutableArray *pending = [NSMutableArray arrayWithArray:[prefs objectForKey:@"pendingDeletions"] ?: @[]];
-    if (![pending containsObject:bundleId]) {
-        [pending addObject:bundleId];
-    }
-    [prefs setObject:pending forKey:@"pendingDeletions"];
-
     [prefs writeToFile:SGMainPrefsPath() atomically:YES];
-}
-
-- (NSArray *)pendingDeletions {
-    return [[self mainPrefs] objectForKey:@"pendingDeletions"] ?: @[];
 }
 
 - (NSString *)serverAddressInput {
@@ -168,7 +172,7 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strlcpy(addr.sun_path, SGPocketPath(), sizeof(addr.sun_path));
+    SNCopyCString(addr.sun_path, sizeof(addr.sun_path), SGPocketPath());
 
     struct timeval tv = {0, 300000};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -229,10 +233,10 @@ static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_s
         }
         self.watchSocketFD = fd;
 
-        struct sockaddr_un addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sun_family = AF_UNIX;
-        strlcpy(addr.sun_path, SGPocketPath(), sizeof(addr.sun_path));
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    SNCopyCString(addr.sun_path, sizeof(addr.sun_path), SGPocketPath());
 
         struct timeval connectTv = {1, 0};
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &connectTv, sizeof(connectTv));

@@ -4,6 +4,7 @@
 #import <Foundation/Foundation.h>
 #import "SGProtocolHandler.h"
 #import "SGStatusServer.h"
+#import "SGControlChannelProtocol.h"
 
 /** State Machine Timing Constants */
 #define SG_INITIAL_BACKOFF_SECONDS        2
@@ -92,13 +93,11 @@ typedef NS_ENUM(NSInteger, SGEvent) {
 - (void)handleSystemWake;
 
 /**
- * Asks the SpringBoard tweak (via the attached SB client) to reset iOS's
- * view of the bundle's push registration so its next register call hits
- * our hook fresh.  Fire-and-forget; silently no-ops if no SB client is
- * attached.  Used by the DELETE_APP cascade — see the daemon's
- * SGCMSG_DELETE_APP handler in main.m.
+ * Asks the SpringBoard tweak to reset iOS's view of the bundle's push
+ * registration so its next register call hits our hook fresh.
  */
-- (void)dispatchResetRegistrationForBundleIdentifier:(NSString *)bundleID;
+- (void)dispatchResetRegistrationForBundleIdentifier:(NSString *)bundleID
+                                          completion:(void (^)(SGControlError err))completion;
 
 /**
  * Atomically removes the given bundle from the plist's pendingDeletions
@@ -110,13 +109,9 @@ typedef NS_ENUM(NSInteger, SGEvent) {
 - (void)clearPendingDeletionForBundleIdentifier:(NSString *)bundleID;
 
 /**
- * Per-bundle operational cleanup: drops the DB row, scrubs queued local
- * pending deliveries, and dispatches a native iOS registration reset to
- * the SB tweak.  Idempotent.  Shared by the live SGCMSG_DELETE_APP
- * handler and reconcile-on-startup so both paths produce identical
- * results.  Does NOT flush the server filter or clear pendingDeletions —
- * those are caller-batchable (one flush per batch, plist write per call
- * site).
+ * Per-bundle operational cleanup: drops the DB row and scrubs queued
+ * local pending deliveries.  Idempotent.  Does NOT flush the server filter
+ * or clear pendingDeletions.
  */
 - (void)_runDeletionCascadeForBundle:(NSString *)bundleID;
 

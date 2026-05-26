@@ -115,6 +115,20 @@ static kern_return_t SGCSendMessage(mach_port_t remotePort,
                     0, MACH_PORT_NULL, kSGCSendTimeoutMs, MACH_PORT_NULL);
 }
 
+static void SGCCopyCString(char *dst, size_t dstSize, const char *src) {
+    if (!dst || dstSize == 0) return;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    size_t i = 0;
+    while (i + 1 < dstSize && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
 static void *SGCRecvThreadEntry(void *arg) {
     SGControlChannel *self = (__bridge SGControlChannel *)arg;
     [self _runReceiveLoop];
@@ -550,7 +564,7 @@ static void *SGCRecvThreadEntry(void *arg) {
         SGLOGW(SGControlChannel, "no handler registered for messageType=0x%02x", type);
         SGCErrorResponsePayload err;
         memset(&err, 0, sizeof(err));
-        strlcpy(err.message, "unknown message type", sizeof(err.message));
+        SGCCopyCString(err.message, sizeof(err.message), "unknown message type");
         SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
                        SGCMSG_ERROR_RESPONSE, 0, SGCERR_INVALID_REQUEST,
                        requestId, 0, &err, sizeof(err));
@@ -571,7 +585,7 @@ static void *SGCRecvThreadEntry(void *arg) {
     SGControlReplyErrorBlock replyError = ^(SGControlError errCode, NSString *detail) {
         SGCErrorResponsePayload payload;
         memset(&payload, 0, sizeof(payload));
-        if (detail) strlcpy(payload.message, [detail UTF8String], sizeof(payload.message));
+        if (detail) SGCCopyCString(payload.message, sizeof(payload.message), [detail UTF8String]);
         SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
                        SGCMSG_ERROR_RESPONSE, 0, (uint16_t)errCode, requestId, 0,
                        &payload, sizeof(payload));
@@ -588,7 +602,7 @@ static void *SGCRecvThreadEntry(void *arg) {
 - (void)_serverHandleSubscribeLocked:(SGControlChannelMessage *)msg replyPort:(mach_port_t)replyPort {
     if (msg->payloadLength < sizeof(SGCSubscribePayload)) {
         SGCErrorResponsePayload err; memset(&err, 0, sizeof(err));
-        strlcpy(err.message, "subscribe payload too short", sizeof(err.message));
+        SGCCopyCString(err.message, sizeof(err.message), "subscribe payload too short");
         SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
                        SGCMSG_ERROR_RESPONSE, 0, SGCERR_INVALID_REQUEST, msg->requestId, 0,
                        &err, sizeof(err));
@@ -740,11 +754,21 @@ static void *SGCRecvThreadEntry(void *arg) {
     dispatch_resume(source);
 }
 
+- (void)_clientRemoveQueuedRequestLocked:(uint64_t)requestId {
+    for (NSInteger i = (NSInteger)[_pendingQueue count] - 1; i >= 0; i--) {
+        NSDictionary *entry = [_pendingQueue objectAtIndex:(NSUInteger)i];
+        if ([entry[@"rid"] unsignedLongLongValue] == requestId) {
+            [_pendingQueue removeObjectAtIndex:(NSUInteger)i];
+        }
+    }
+}
+
 - (void)_clientFailPendingRequestLocked:(uint64_t)requestId error:(SGControlError)error {
     NSDictionary *entry = _pendingRequests[@(requestId)];
     if (!entry) return;
     SGC_PIN(entry);
     [_pendingRequests removeObjectForKey:@(requestId)];
+    [self _clientRemoveQueuedRequestLocked:requestId];
 
     dispatch_source_t src = (dispatch_source_t)entry[@"source"];
     if (src && src != (id)[NSNull null]) {

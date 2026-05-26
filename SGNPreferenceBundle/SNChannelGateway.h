@@ -8,10 +8,10 @@
  * daemon (config reload, debug injection), one to the SpringBoard tweak
  * (register/unregister an input app).  Lookup is lazy; the first call to
  * any post method allocates the relevant channel and kicks its connect
- * loop.  All operations are fire-and-forget — the UI does not wait for
- * an acknowledgement, mirroring the previous Darwin-notification semantics
- * they replace.
+ * loop.
  */
+typedef void (^SNChannelCommandCompletion)(BOOL ok, NSString *message);
+
 @interface SNChannelGateway : NSObject
 
 /**
@@ -45,7 +45,7 @@
  */
 + (void)postEnableAppForBundleId:(NSString *)bundleId;
 + (void)postDisableAppForBundleId:(NSString *)bundleId;
-+ (void)postDeleteAppForBundleId:(NSString *)bundleId;
++ (void)deleteAppForBundleId:(NSString *)bundleId completion:(SNChannelCommandCompletion)completion;
 
 /**
  * Asynchronously requests the list of bundles iOS considers push-registered
