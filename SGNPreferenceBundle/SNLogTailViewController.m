@@ -53,10 +53,6 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
 @property (nonatomic, strong) UIBarButtonItem     *pauseItem;
 @property (nonatomic, strong) UIBarButtonItem     *pasteboardItem;
 
-/** Cached paragraph style — char-wrap forces long unbroken strings (hex,
- *  paths) to fold instead of overflowing horizontally. */
-@property (nonatomic, strong) NSParagraphStyle    *charWrapParagraph;
-
 /** Last-rendered raw tail, returned by Copy verbatim for bug reports. */
 @property (nonatomic, copy)   NSString            *rawTailContent;
 
@@ -76,6 +72,13 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
 
 @implementation SNLogTailViewController
 
+/* iOS 4-5 PSRootController calls these on every pushed VC during the
+ * back-pop sequence, even on plain UIViewControllers.  Crashes with
+ * "unrecognized selector" otherwise. */
+- (void)setRootController:(id)controller   {}
+- (void)setParentController:(id)controller {}
+- (void)setSpecifier:(id)specifier         {}
+
 #pragma mark - Lifecycle
 
 - (id)init {
@@ -84,6 +87,7 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
         self.title = @"Daemon Log";
         _filterLevel = SNLogFilterAll;
         _cachedFilterLevel = -1;   /* force first render */
+        _cachedSize = (off_t)-1;
     }
     return self;
 }
@@ -95,7 +99,6 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
     [self buildTableFooter];
     [self buildTextView];
     [self buildNavItems];
-    [self buildParagraphStyle];
 
     /**
      * The log cell is the only row and lives inside its standard grouped
@@ -133,10 +136,8 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     /**
-     * The first read + parse + attributedText assignment is the slowest
-     * single operation in this VC's lifetime — reading 64KB, splitting
-     * into hundreds of NSString lines, building an attributed string,
-     * and triggering TextKit layout.  Doing it in viewWillAppear: blocked
+     * The first read + parse + text assignment is the slowest single
+     * operation in this VC's lifetime. Doing it in viewWillAppear: blocked
      * the navigation push animation, which the user perceived as "load
      * lag".  Deferring to viewDidAppear: lets the push complete cleanly;
      * the placeholder set in viewDidLoad covers the visible gap.
@@ -154,14 +155,10 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
 
 - (void)setPlaceholderText:(NSString *)text {
     if (text.length == 0) return;
-    UIColor *dim = [UIColor colorWithWhite:0.50f alpha:1.0f];
-    NSDictionary *attrs = @{ NSFontAttributeName: [UIFont systemFontOfSize:13.0f],
-                             NSForegroundColorAttributeName: dim,
-                             NSParagraphStyleAttributeName: self.charWrapParagraph
-                                                          ?: [NSParagraphStyle defaultParagraphStyle] };
-    NSAttributedString *as = [[NSAttributedString alloc]
-        initWithString:[@"\n" stringByAppendingString:text] attributes:attrs];
-    self.textView.attributedText = as;
+    self.textView.font = [UIFont systemFontOfSize:13.0f];
+    self.textView.textColor = [UIColor colorWithWhite:0.50f alpha:1.0f];
+    self.textView.text = [@"\n" stringByAppendingString:text];
+    [self clampTextViewToVerticalScrolling];
 }
 
 #pragma mark - View construction
@@ -182,6 +179,7 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
             action:@selector(filterDidChange:)
   forControlEvents:UIControlEventValueChanged];
     self.filterControl = seg;
+    [seg release];
 
     CGFloat width = self.view.bounds.size.width > 10.0f
                   ? self.view.bounds.size.width
@@ -191,14 +189,15 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
     header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     header.backgroundColor = [UIColor clearColor];
 
-    seg.frame = CGRectMake(kSNLogSegmentSideInset,
+    self.filterControl.frame = CGRectMake(kSNLogSegmentSideInset,
                            kSNLogHeaderTopPad,
                            width - kSNLogSegmentSideInset * 2.0f,
                            kSNLogSegmentHeight);
-    seg.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [header addSubview:seg];
+    self.filterControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [header addSubview:self.filterControl];
 
     self.tableView.tableHeaderView = header;
+    [header release];
 }
 
 - (void)buildTableFooter {
@@ -227,7 +226,7 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
     label.textColor = [UIColor colorWithRed:0.30f green:0.34f blue:0.42f alpha:1.0f];
     label.shadowColor = [UIColor colorWithWhite:1.0f alpha:0.7f];
     label.shadowOffset = CGSizeMake(0, 1);
-    label.textAlignment = NSTextAlignmentCenter;
+    label.textAlignment = (NSTextAlignment)UITextAlignmentCenter;
     label.numberOfLines = 1;
 
     [footer addSubview:label];
@@ -235,10 +234,14 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
     self.footerView = footer;
     self.footerLabel = label;
     self.tableView.tableFooterView = footer;
+    [footer release];
+    [label release];
 }
 
 - (void)buildTextView {
-    self.textView = [[UITextView alloc] init];
+    UITextView *tv = [[UITextView alloc] init];
+    self.textView = tv;
+    [tv release];
     self.textView.editable        = NO;
     self.textView.scrollEnabled   = YES;
     self.textView.alwaysBounceVertical   = YES;
@@ -258,11 +261,8 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
     self.textView.backgroundColor = [UIColor clearColor];
 
     UIEdgeInsets inset = UIEdgeInsetsMake(8, 6, 8, 6);
-    if ([self.textView respondsToSelector:@selector(setTextContainerInset:)]) {
-        self.textView.textContainerInset = inset;
-    } else {
-        self.textView.contentInset = inset;
-    }
+    self.textView.contentInset = inset;
+    self.textView.scrollIndicatorInsets = inset;
 
     self.textView.delegate = self;
     self.textView.dataDetectorTypes = UIDataDetectorTypeNone;
@@ -271,34 +271,34 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
         initWithTarget:self action:@selector(logViewTapped:)];
     tap.cancelsTouchesInView = NO;
     [self.textView addGestureRecognizer:tap];
+    [tap release];
 }
 
 - (void)buildNavItems {
-    self.pasteboardItem = [[UIBarButtonItem alloc]
+    UIBarButtonItem *share = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemAction
                              target:self
                              action:@selector(presentShareSheet:)];
+    self.pasteboardItem = share;
+    [share release];
 
-    self.pauseItem = [[UIBarButtonItem alloc]
+    UIBarButtonItem *pause = [[UIBarButtonItem alloc]
         initWithTitle:@"Pause"
                 style:UIBarButtonItemStyleBordered
                target:self
                action:@selector(togglePause:)];
+    self.pauseItem = pause;
+    [pause release];
 
-    self.navigationItem.rightBarButtonItems = @[self.pasteboardItem, self.pauseItem];
-}
-
-- (void)buildParagraphStyle {
-    /**
-     * NSLineBreakByCharWrapping forces long unbroken sequences (hex token
-     * dumps, IPv6 literals, paths with no spaces) to fold inside the text
-     * container width.  Without it, those overflow the view bounds and the
-     * underlying scroll view starts allowing horizontal pan — which is
-     * what made the log feel "non-standard".
-     */
-    NSMutableParagraphStyle *p = [[NSMutableParagraphStyle alloc] init];
-    p.lineBreakMode = NSLineBreakByCharWrapping;
-    self.charWrapParagraph = p;
+    /* rightBarButtonItems: (plural, takes an array) is iOS 5+.  On iOS 4
+     * the navigation item only supports a single right item.  Pause is the
+     * more critical control for live log viewing — share is a convenience
+     * the user can still reach by copying log content elsewhere. */
+    if ([self.navigationItem respondsToSelector:@selector(setRightBarButtonItems:)]) {
+        self.navigationItem.rightBarButtonItems = @[self.pasteboardItem, self.pauseItem];
+    } else {
+        self.navigationItem.rightBarButtonItem = self.pauseItem;
+    }
 }
 
 #pragma mark - Refresh timer
@@ -348,11 +348,9 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kSNLogTextCellID];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                      reuseIdentifier:kSNLogTextCellID];
+        cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                      reuseIdentifier:kSNLogTextCellID] autorelease];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        /* Let the cell's natural rounded background paint; nothing inside
-         * should fight it for the corners. */
         cell.contentView.backgroundColor = [UIColor clearColor];
         cell.contentView.clipsToBounds = YES;
     }
@@ -365,6 +363,7 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
                                        | UIViewAutoresizingFlexibleHeight;
         [cell.contentView addSubview:self.textView];
     }
+    [self clampTextViewToVerticalScrolling];
     return cell;
 }
 
@@ -407,8 +406,7 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
      * installed.  Bug reports want absolute timestamps and process
      * metadata, not the trimmed on-screen form.
      *
-     * UIActivityViewController is iOS 6+ (matches our floor).  Older
-     * targets, should iOS 3-5 support ever materialise, fall through to a
+     * UIActivityViewController is iOS 6+. Older targets fall through to a
      * plain pasteboard write with an alert so the action is never silent.
      */
     NSString *raw = self.rawTailContent;
@@ -421,8 +419,8 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
 
     Class activityCls = NSClassFromString(@"UIActivityViewController");
     if (activityCls) {
-        id vc = [[activityCls alloc] initWithActivityItems:@[content]
-                                     applicationActivities:nil];
+        id vc = [[[activityCls alloc] initWithActivityItems:@[content]
+                                     applicationActivities:nil] autorelease];
 
         /* iPad: pin the popover to the share bar button.  iPhone presents
          * modally and ignores this entirely.  popoverPresentationController
@@ -448,15 +446,14 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
 
 - (void)showSilentActionAlert:(NSString *)message {
     /* UIAlertView is deprecated on iOS 8+ but still functional all the
-     * way down to iOS 2; the bundle Makefile silences the deprecation
-     * warning.  Since we only need a single-button "OK" confirmation, the
-     * full UIAlertController dance is overkill here. */
+     * way down to iOS 2. */
     UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Daemon Log"
                                                  message:message
                                                 delegate:nil
                                        cancelButtonTitle:@"OK"
                                        otherButtonTitles:nil];
     [av show];
+    [av release];
 }
 
 #pragma mark - Filtering
@@ -500,9 +497,9 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
     [fh closeFile];
     if (!data) return nil;
 
-    NSString *raw = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    NSString *raw = [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] autorelease];
     if (!raw) {
-        raw = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+        raw = [[[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding] autorelease];
     }
     NSRange firstNewline = [raw rangeOfString:@"\n"];
     if (start > 0 && firstNewline.location != NSNotFound) {
@@ -539,19 +536,8 @@ static BOOL SNLogParseLine(NSString *line, NSString **outTrimmed, unichar *outLe
     return YES;
 }
 
-- (NSAttributedString *)attributedStringForLines:(NSArray *)lines countOut:(NSUInteger *)countOut {
-    UIFont *font = self.textView.font;
-
-    UIColor *baseColor = [UIColor colorWithRed:0.18f green:0.18f blue:0.20f alpha:1.0f];
-    UIColor *errColor  = [UIColor colorWithRed:0.72f green:0.10f blue:0.12f alpha:1.0f];
-    UIColor *warnColor = [UIColor colorWithRed:0.78f green:0.45f blue:0.05f alpha:1.0f];
-    UIColor *dimColor  = [UIColor colorWithWhite:0.50f alpha:1.0f];
-
-    NSDictionary *baseAttrs = @{ NSFontAttributeName: font,
-                                 NSForegroundColorAttributeName: baseColor,
-                                 NSParagraphStyleAttributeName: self.charWrapParagraph };
-
-    NSMutableAttributedString *out = [[NSMutableAttributedString alloc] init];
+- (NSString *)stringForLines:(NSArray *)lines countOut:(NSUInteger *)countOut {
+    NSMutableString *out = [NSMutableString string];
     NSUInteger shown = 0;
 
     for (NSString *line in lines) {
@@ -564,37 +550,17 @@ static BOOL SNLogParseLine(NSString *line, NSString **outTrimmed, unichar *outLe
         if (parsed && ![self levelPassesFilter:level]) continue;
         if (!parsed && self.filterLevel != SNLogFilterAll) continue;
 
-        UIColor *color = baseColor;
-        if (parsed) {
-            switch (level) {
-                case 'E': color = errColor;  break;
-                case 'W': color = warnColor; break;
-                case 'D':
-                case 'T': color = dimColor;  break;
-                default:  color = baseColor; break;
-            }
-        }
-
-        NSDictionary *attrs = @{ NSFontAttributeName: font,
-                                 NSForegroundColorAttributeName: color,
-                                 NSParagraphStyleAttributeName: self.charWrapParagraph };
         NSString *display = parsed ? trimmed : line;
-        [out appendAttributedString:[[NSAttributedString alloc]
-                                     initWithString:display attributes:attrs]];
-        [out appendAttributedString:[[NSAttributedString alloc]
-                                     initWithString:@"\n" attributes:baseAttrs]];
+        [out appendString:display];
+        [out appendString:@"\n"];
         shown++;
     }
 
     if (out.length == 0) {
-        NSDictionary *emptyAttrs = @{ NSFontAttributeName: [UIFont systemFontOfSize:13.0f],
-                                      NSForegroundColorAttributeName: dimColor,
-                                      NSParagraphStyleAttributeName: self.charWrapParagraph };
         NSString *empty = (self.filterLevel == SNLogFilterAll)
             ? @"\nLog file is empty or has not been created yet."
             : @"\nNo matching lines in the current tail window.";
-        [out appendAttributedString:[[NSAttributedString alloc]
-                                     initWithString:empty attributes:emptyAttrs]];
+        [out appendString:empty];
     }
 
     if (countOut) *countOut = shown;
@@ -618,7 +584,10 @@ static BOOL SNLogParseLine(NSString *line, NSString **outTrimmed, unichar *outLe
             self.cachedMTimeNSec = 0;
             self.rawTailContent = @"";
             self.lastVisibleLineCount = 0;
-            self.textView.attributedText = [self attributedStringForLines:@[] countOut:NULL];
+            self.textView.font = [UIFont systemFontOfSize:13.0f];
+            self.textView.textColor = [UIColor colorWithWhite:0.50f alpha:1.0f];
+            self.textView.text = [self stringForLines:[NSArray array] countOut:NULL];
+            [self clampTextViewToVerticalScrolling];
             [self updateFooterStatus];
         }
         return;
@@ -654,11 +623,16 @@ static BOOL SNLogParseLine(NSString *line, NSString **outTrimmed, unichar *outLe
     }
 
     NSUInteger shown = 0;
-    NSAttributedString *rendered = [self attributedStringForLines:lines countOut:&shown];
+    NSString *rendered = [self stringForLines:lines countOut:&shown];
 
     BOOL countChanged = (shown != self.lastVisibleLineCount);
     self.lastVisibleLineCount = shown;
-    self.textView.attributedText = rendered;
+    self.textView.font = [UIFont fontWithName:@"Menlo" size:10.5f]
+                       ?: [UIFont fontWithName:@"Courier" size:10.5f]
+                       ?: [UIFont systemFontOfSize:10.5f];
+    self.textView.textColor = [UIColor colorWithRed:0.18f green:0.18f blue:0.20f alpha:1.0f];
+    self.textView.text = rendered;
+    [self clampTextViewToVerticalScrolling];
 
     if (!self.userScrolledAway) {
         [self scrollToBottom];
@@ -690,15 +664,41 @@ static BOOL SNLogParseLine(NSString *line, NSString **outTrimmed, unichar *outLe
 }
 
 - (void)scrollToBottom {
-    NSUInteger len = self.textView.attributedText.length;
+    NSUInteger len = self.textView.text.length;
     if (len == 0) return;
     [self.textView scrollRangeToVisible:NSMakeRange(len - 1, 1)];
+    [self clampTextViewToVerticalScrolling];
+}
+
+- (void)clampTextViewToVerticalScrolling {
+    if (!self.textView) return;
+
+    self.textView.alwaysBounceHorizontal = NO;
+    self.textView.showsHorizontalScrollIndicator = NO;
+
+    CGPoint offset = self.textView.contentOffset;
+    if (offset.x != 0.0f) {
+        offset.x = 0.0f;
+        self.textView.contentOffset = offset;
+    }
+
+    CGSize contentSize = self.textView.contentSize;
+    CGFloat maxWidth = self.textView.bounds.size.width;
+    if (maxWidth > 0.0f && contentSize.width > maxWidth) {
+        contentSize.width = maxWidth;
+        self.textView.contentSize = contentSize;
+    }
 }
 
 #pragma mark - UIScrollViewDelegate
 
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
     if (scrollView != self.textView) return;
+    if (scrollView.contentOffset.x != 0.0f) {
+        CGPoint offset = scrollView.contentOffset;
+        offset.x = 0.0f;
+        scrollView.contentOffset = offset;
+    }
     CGFloat distanceFromBottom =
         (scrollView.contentSize.height - scrollView.contentOffset.y) - scrollView.bounds.size.height;
     BOOL away = (distanceFromBottom > 40.0f);
@@ -706,6 +706,20 @@ static BOOL SNLogParseLine(NSString *line, NSString **outTrimmed, unichar *outLe
         self.userScrolledAway = away;
         [self updateFooterStatus];
     }
+}
+
+- (void)dealloc {
+    [self stopTimer];
+
+    [_textView release];
+    [_filterControl release];
+    [_footerView release];
+    [_footerLabel release];
+    [_refreshTimer release];
+    [_pauseItem release];
+    [_pasteboardItem release];
+    [_rawTailContent release];
+    [super dealloc];
 }
 
 @end

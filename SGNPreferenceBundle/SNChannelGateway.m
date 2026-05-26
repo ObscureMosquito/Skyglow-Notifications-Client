@@ -138,9 +138,9 @@ static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
                 memcpy(&len, p, sizeof(len));
                 p += 2;
                 if ((NSInteger)(end - p) < (NSInteger)len) break;
-                NSString *bid = [[NSString alloc] initWithBytes:p
-                                                         length:len
-                                                       encoding:NSUTF8StringEncoding];
+                NSString *bid = [[[NSString alloc] initWithBytes:p
+                                                          length:len
+                                                        encoding:NSUTF8StringEncoding] autorelease];
                 if (bid.length) [out addObject:bid];
                 p += len;
             }

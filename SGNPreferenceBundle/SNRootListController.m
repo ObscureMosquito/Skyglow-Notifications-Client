@@ -21,6 +21,7 @@
                                                                 target:nil
                                                                 action:nil];
     self.navigationItem.backBarButtonItem = backItem;
+    [backItem release];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -90,11 +91,16 @@
     [header addSubview:bodyLabel];
 
     self.table.tableHeaderView = header;
+
+    [iconView release];
+    [titleLabel release];
+    [bodyLabel release];
+    [header release];
 }
 
 - (NSArray *)specifiers {
     if (!_specifiers) {
-        _specifiers = [self loadSpecifiersFromPlistName:@"Root" target:self];
+        _specifiers = [[self loadSpecifiersFromPlistName:@"Root" target:self] retain];
     }
     return _specifiers;
 }
@@ -124,11 +130,13 @@
 - (void)pushDebugView {
     SNDebugViewController *vc = [[SNDebugViewController alloc] init];
     [self.navigationController pushViewController:vc animated:YES];
+    [vc release];
 }
 
 - (void)pushCustomizationView {
     SNCustomizationViewController *vc = [[SNCustomizationViewController alloc] init];
     [self.navigationController pushViewController:vc animated:YES];
+    [vc release];
 }
 
 - (NSString *)getServerAddressFromPreferences {
@@ -174,6 +182,13 @@
         [self addSubview:_versionLabel];
     }
     return self;
+}
+
+- (void)dealloc {
+    [_versionLabel release];
+    [_creditsLabel release];
+    [_logoView release];
+    [super dealloc];
 }
 
 - (CGFloat)preferredHeightForWidth:(CGFloat)width {

@@ -58,12 +58,14 @@ typedef enum {
 
 - (void)loadStats {
     SNDataManager *dm = [SNDataManager shared];
-    
-    _appCount = [NSString stringWithFormat:@"%ld", (long)[dm registeredTokenCount]];
-    
+
+    [_appCount release];
+    _appCount = [[NSString stringWithFormat:@"%ld", (long)[dm registeredTokenCount]] retain];
+
     unsigned long long size = [dm dbFileSize];
-    _dbSize = size > 0 ? [NSString stringWithFormat:@"%.1f KB", size / 1024.0] : @"0 B";
-    
+    [_dbSize release];
+    _dbSize = [(size > 0 ? [NSString stringWithFormat:@"%.1f KB", size / 1024.0] : @"0 B") retain];
+
     [_savedApps removeAllObjects];
     [_savedApps addObjectsFromArray:[dm allRegisteredTokens]];
 }
@@ -131,8 +133,8 @@ typedef enum {
         if (indexPath.row == 0) {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:inputCellID];
             if (!cell) {
-                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                              reuseIdentifier:inputCellID];
+                cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                              reuseIdentifier:inputCellID] autorelease];
                 CGFloat cellH = 44.0;
                 UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(15, 0, 290, cellH)];
                 tf.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -143,15 +145,17 @@ typedef enum {
                 tf.autocapitalizationType = UITextAutocapitalizationTypeNone;
                 tf.returnKeyType = UIReturnKeyDone;
                 [cell.contentView addSubview:tf];
+
                 _manualBundleIDParams = tf;
+                [tf release];
             }
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
             return cell;
         } else {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:buttonCellID];
             if (!cell) {
-                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                              reuseIdentifier:buttonCellID];
+                cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                              reuseIdentifier:buttonCellID] autorelease];
                 cell.textLabel.textAlignment = NSTextAlignmentCenter;
             }
             cell.selectionStyle = UITableViewCellSelectionStyleBlue;
@@ -168,8 +172,8 @@ typedef enum {
     if (indexPath.section == SectionSavedTokens) {
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:tokenCellID];
         if (!cell) {
-            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                          reuseIdentifier:tokenCellID];
+            cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                          reuseIdentifier:tokenCellID] autorelease];
         }
         
         if (_savedApps.count == 0) {
@@ -194,8 +198,8 @@ typedef enum {
     if (indexPath.section == SectionStats) {
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:valueCellID];
         if (!cell) {
-            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
-                                          reuseIdentifier:valueCellID];
+            cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                          reuseIdentifier:valueCellID] autorelease];
         }
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
         cell.detailTextLabel.textColor = [UIColor darkGrayColor];
@@ -211,8 +215,8 @@ typedef enum {
     
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:buttonCellID];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                      reuseIdentifier:buttonCellID];
+        cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                      reuseIdentifier:buttonCellID] autorelease];
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
     }
     
@@ -284,6 +288,7 @@ typedef enum {
     } else if (indexPath.section == SectionLogs) {
         SNLogTailViewController *vc = [[SNLogTailViewController alloc] init];
         [self.navigationController pushViewController:vc animated:YES];
+        [vc release];
 
     } else if (indexPath.section == SectionDaemon) {
         [self reloadDaemon];
@@ -326,7 +331,8 @@ typedef enum {
                          withRowAnimation:UITableViewRowAnimationAutomatic];
     }
     
-    _appCount = [NSString stringWithFormat:@"%lu", (unsigned long)_savedApps.count];
+    [_appCount release];
+    _appCount = [[NSString stringWithFormat:@"%lu", (unsigned long)_savedApps.count] retain];
     [tableView reloadSections:[NSIndexSet indexSetWithIndex:SectionStats]
              withRowAnimation:UITableViewRowAnimationNone];
 }
@@ -359,7 +365,15 @@ typedef enum {
                                            cancelButtonTitle:@"OK"
                                            otherButtonTitles:nil];
         [av show];
+        [av release];
     }
+}
+
+- (void)dealloc {
+    [_appCount release];
+    [_dbSize release];
+    [_savedApps release];
+    [super dealloc];
 }
 
 @end

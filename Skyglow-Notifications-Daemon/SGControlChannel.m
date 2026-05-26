@@ -252,7 +252,9 @@ static void *SGCRecvThreadEntry(void *arg) {
             [_pendingRequests removeAllObjects];
             for (NSNumber *rid in snapshot) {
                 NSDictionary *entry = snapshot[rid];
-                dispatch_source_t src = (dispatch_source_t)entry[@"source"];
+                id srcObj = entry[@"source"];
+                dispatch_source_t src = (srcObj && srcObj != (id)[NSNull null])
+                    ? (dispatch_source_t)[(NSValue *)srcObj pointerValue] : NULL;
                 if (src) { dispatch_source_cancel(src); SGC_DISPATCH_RELEASE(src); }
                 SGControlClientCompletion comp = (SGControlClientCompletion)entry[@"completion"];
                 if (comp) {
@@ -746,9 +748,12 @@ static void *SGCRecvThreadEntry(void *arg) {
         dispatch_source_cancel(source);
     });
 
+    /* Wrap the source pointer in NSValue rather than letting the dictionary
+     * literal retain it as an Obj-C object dispatch_source_t is only
+     * bridged to Obj-C from iOS 6 onward*/
     _pendingRequests[@(requestId)] = @{
         @"completion": (id)compCopy ?: (id)[NSNull null],
-        @"source":     source
+        @"source":     [NSValue valueWithPointer:(const void *)source]
     };
     SGC_RELEASE(compCopy);
     dispatch_resume(source);
@@ -770,8 +775,10 @@ static void *SGCRecvThreadEntry(void *arg) {
     [_pendingRequests removeObjectForKey:@(requestId)];
     [self _clientRemoveQueuedRequestLocked:requestId];
 
-    dispatch_source_t src = (dispatch_source_t)entry[@"source"];
-    if (src && src != (id)[NSNull null]) {
+    id srcObj = entry[@"source"];
+    dispatch_source_t src = (srcObj && srcObj != (id)[NSNull null])
+        ? (dispatch_source_t)[(NSValue *)srcObj pointerValue] : NULL;
+    if (src) {
         dispatch_source_cancel(src);
         SGC_DISPATCH_RELEASE(src);
     }
@@ -795,8 +802,10 @@ static void *SGCRecvThreadEntry(void *arg) {
     SGC_PIN(entry);
     [_pendingRequests removeObjectForKey:@(rid)];
 
-    dispatch_source_t src = (dispatch_source_t)entry[@"source"];
-    if (src && src != (id)[NSNull null]) {
+    id srcObj = entry[@"source"];
+    dispatch_source_t src = (srcObj && srcObj != (id)[NSNull null])
+        ? (dispatch_source_t)[(NSValue *)srcObj pointerValue] : NULL;
+    if (src) {
         dispatch_source_cancel(src);
         SGC_DISPATCH_RELEASE(src);
     }

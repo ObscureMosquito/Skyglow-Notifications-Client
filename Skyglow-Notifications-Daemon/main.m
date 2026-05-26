@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import "SGDaemon.h"
+#import "SGCompatibilityShim.h"
 #import "SGServerLocator.h"
 #import "SGConfiguration.h"
 #import "SGDatabaseManager.h"
@@ -22,6 +23,8 @@ static int64_t _sgDaemonStartTime = 0;
 int main(int argc, char *argv[]) {
     @autoreleasepool {
         signal(SIGPIPE, SIG_IGN);
+
+        SGNInstallCompatibilityShim();
 
         SGLog_SetProcessName("SkyglowNotificationsDaemon");
         if (SGLog_OpenFile([SGPath(SG_LOG_PATH) UTF8String],

@@ -1,4 +1,4 @@
-TARGET := iphone:clang:7.0:7.0
+TARGET := iphone:clang:7.0:4.0
 ARCHS = armv7 armv7s arm64
 
 export ADDITIONAL_CFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -fno-builtin -fno-stack-protector
@@ -23,7 +23,8 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/SGReachabilityMonitor.m \
     Skyglow-Notifications-Daemon/SGDaemon.m \
     Skyglow-Notifications-Daemon/SGAvailability.m \
-    Skyglow-Notifications-Daemon/SGControlChannel.m
+    Skyglow-Notifications-Daemon/SGControlChannel.m \
+    Skyglow-Notifications-Daemon/SGCompatibilityShim.m
 SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result -I$(THEOS_PROJECT_DIR)/openssl/include
 SkyglowNotificationsDaemon_LDFLAGS = \
   $(THEOS_PROJECT_DIR)/libraries/openssl/lib/libssl.a \

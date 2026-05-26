@@ -30,7 +30,7 @@
 - (NSDictionary *)mobileInstallationPlist {
     static NSDictionary *cached = nil;
     if (!cached) {
-        cached = [NSDictionary dictionaryWithContentsOfFile:
+        cached = [[NSDictionary alloc] initWithContentsOfFile:
                   @"/var/mobile/Library/Caches/com.apple.mobile.installation.plist"];
     }
     return cached;
@@ -174,6 +174,8 @@
     NSString *name = [helper getAppNameForBundleId:bundleId];
     _appNameLabel.text = name ?: bundleId;
 
+    [helper release];
+
     [self syncAccessoryState];
 
     if (_toggleSwitch) {
@@ -202,6 +204,14 @@
         [SNChannelGateway postDisableAppForBundleId:bundleId];
     }
     NSLog(@"[SNAppToggleCell] %@ → %@", bundleId, sender.isOn ? @"ON" : @"OFF");
+}
+
+- (void)dealloc {
+    [_appIconView release];
+    [_appNameLabel release];
+    [_toggleSwitch release];
+    [_activityIndicator release];
+    [super dealloc];
 }
 
 @end

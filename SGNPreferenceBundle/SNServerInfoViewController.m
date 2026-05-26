@@ -6,6 +6,22 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
+/* SFPFilePicker is a non-PS UIViewController subclass, so iOS 4-5
+ * PSRootController hits the same "unrecognized selector" crash on
+ * back-pop as our own non-PS VCs do.  Same fix: empty stubs.  We can't
+ * edit the library source from here, so attach them via a category. */
+@interface SFPFilePickerViewController (SkyglowPSStubs)
+- (void)setRootController:(id)controller;
+- (void)setParentController:(id)controller;
+- (void)setSpecifier:(id)specifier;
+@end
+
+@implementation SFPFilePickerViewController (SkyglowPSStubs)
+- (void)setRootController:(id)controller   {}
+- (void)setParentController:(id)controller {}
+- (void)setSpecifier:(id)specifier         {}
+@end
+
 static void SNPostReloadConfig(void) {
     [SNChannelGateway postReloadConfig];
 }
@@ -38,12 +54,19 @@ static const NSInteger kAlertTagUnregister  = 2;
 @property (nonatomic, strong) NSString    *pendingServerAddress;
 @property (nonatomic, strong) NSString    *pendingPEMPath;
 @property (nonatomic, assign) BOOL         autoFetchInProgress;
-@property (nonatomic, weak)   UITextField *serverAddressField;
-@property (nonatomic, weak)   UITextField *registeredAddressField;
+@property (nonatomic, unsafe_unretained) UITextField *serverAddressField;
+@property (nonatomic, unsafe_unretained) UITextField *registeredAddressField;
 
 @end
 
 @implementation SNServerInfoViewController
+
+/* iOS 4-5 PSRootController calls these on every pushed VC during the
+ * back-pop sequence, even on plain UIViewControllers.  Crashes with
+ * "unrecognized selector" otherwise. */
+- (void)setRootController:(id)controller   {}
+- (void)setParentController:(id)controller {}
+- (void)setSpecifier:(id)specifier         {}
 
 - (id)init {
     return [self initWithProfileIndex:[[SNDataManager shared] activeProfileIndex]];
@@ -79,17 +102,17 @@ static const NSInteger kAlertTagUnregister  = 2;
 
         NSBundle *bundle = [NSBundle bundleForClass:[self class]];
 
-        UIView *iconGroup = [[UIView alloc] initWithFrame:CGRectMake(startX, topPad, totalGroupWidth, iconSize)];
+        UIView *iconGroup = [[[UIView alloc] initWithFrame:CGRectMake(startX, topPad, totalGroupWidth, iconSize)] autorelease];
         iconGroup.backgroundColor = [UIColor clearColor];
         iconGroup.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
 
         UIImage *webIcon = [UIImage imageWithContentsOfFile:[bundle pathForResource:@"web" ofType:@"png"]];
-        UIImageView *webIconView = [[UIImageView alloc] initWithImage:webIcon];
+        UIImageView *webIconView = [[[UIImageView alloc] initWithImage:webIcon] autorelease];
         webIconView.contentMode   = UIViewContentModeScaleAspectFit;
         webIconView.clipsToBounds = YES;
         webIconView.frame = CGRectMake(0, 0, iconSize, iconSize);
 
-        UILabel *arrowLabel = [[UILabel alloc] initWithFrame:CGRectMake(iconSize + spacing, 0, arrowWidth, iconSize)];
+        UILabel *arrowLabel = [[[UILabel alloc] initWithFrame:CGRectMake(iconSize + spacing, 0, arrowWidth, iconSize)] autorelease];
         arrowLabel.text = @"➔";
         arrowLabel.font = [UIFont boldSystemFontOfSize:25.0f];
         arrowLabel.textColor = [UIColor colorWithRed:0.55f green:0.55f blue:0.58f alpha:1.0f];
@@ -99,7 +122,7 @@ static const NSInteger kAlertTagUnregister  = 2;
         arrowLabel.textAlignment = NSTextAlignmentCenter;
 
         UIImage *settingsIcon = [UIImage imageWithContentsOfFile:[bundle pathForResource:@"icon-settings" ofType:@"png"]];
-        UIImageView *settingsIconView = [[UIImageView alloc] initWithImage:settingsIcon];
+        UIImageView *settingsIconView = [[[UIImageView alloc] initWithImage:settingsIcon] autorelease];
         settingsIconView.contentMode   = UIViewContentModeScaleAspectFit;
         settingsIconView.clipsToBounds = YES;
 
@@ -118,7 +141,7 @@ static const NSInteger kAlertTagUnregister  = 2;
         CGFloat botPad    = 18.0f;
         CGFloat sideInset = 24.0f;
 
-        UILabel *titleLabel     = [[UILabel alloc] init];
+        UILabel *titleLabel     = [[[UILabel alloc] init] autorelease];
         titleLabel.text         = @"Skyglow Notifications";
         titleLabel.font         = [UIFont boldSystemFontOfSize:17.0f];
         titleLabel.textColor    = [UIColor colorWithRed:0.18f green:0.18f blue:0.18f alpha:1.0f];
@@ -131,7 +154,7 @@ static const NSInteger kAlertTagUnregister  = 2;
         [titleLabel sizeToFit];
         titleLabel.frame = CGRectMake((w - titleLabel.frame.size.width) / 2.0f, titleY, titleLabel.frame.size.width, titleLabel.frame.size.height);
 
-        UILabel *bodyLabel      = [[UILabel alloc] init];
+        UILabel *bodyLabel      = [[[UILabel alloc] init] autorelease];
         bodyLabel.text          = @"Enter your server address below, then select\nyour server\xe2\x80\x99s public certificate to get started.";
         bodyLabel.font          = [UIFont systemFontOfSize:13.0f];
         bodyLabel.textColor     = [UIColor colorWithRed:0.38f green:0.38f blue:0.42f alpha:1.0f];
@@ -146,12 +169,12 @@ static const NSInteger kAlertTagUnregister  = 2;
         bodyLabel.frame = CGRectMake((w - bodyFit.width) / 2.0f, bodyY, bodyFit.width, bodyFit.height);
 
         CGFloat totalH = bodyY + bodyFit.height + bodyGap + botPad;
-        UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, totalH)];
+        UIView *header = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, w, totalH)] autorelease];
         header.backgroundColor = [UIColor clearColor];
         header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        
+
         [header addSubview:iconGroup];
-        
+
         [header addSubview:titleLabel];
         [header addSubview:bodyLabel];
 
@@ -220,11 +243,11 @@ static const NSInteger kAlertTagUnregister  = 2;
         if (indexPath.section == WizardSectionServer) {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"TFCell"];
             if (!cell) {
-                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                              reuseIdentifier:@"TFCell"];
+                cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                              reuseIdentifier:@"TFCell"] autorelease];
                 cell.selectionStyle = UITableViewCellSelectionStyleNone;
 
-                UITextField *tf = [[UITextField alloc] init];
+                UITextField *tf = [[[UITextField alloc] init] autorelease];
                 tf.placeholder              = @"Hostname or IP address";
                 tf.autocorrectionType       = UITextAutocorrectionTypeNo;
                 tf.autocapitalizationType   = UITextAutocapitalizationTypeNone;
@@ -251,8 +274,8 @@ static const NSInteger kAlertTagUnregister  = 2;
         NSString *reuseID = isAuto ? @"AutoCertCell" : @"ManualCertCell";
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:reuseID];
         if (!cell) {
-            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                          reuseIdentifier:reuseID];
+            cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                          reuseIdentifier:reuseID] autorelease];
         }
 
         BOOL hasAddress = (self.pendingServerAddress.length > 0);
@@ -267,6 +290,7 @@ static const NSInteger kAlertTagUnregister  = 2;
                     initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
                 [spinner startAnimating];
                 cell.accessoryView = spinner;
+                [spinner release];
             } else {
                 cell.accessoryView = nil;
                 cell.accessoryType = hasAddress ? UITableViewCellAccessoryDisclosureIndicator
@@ -287,8 +311,8 @@ static const NSInteger kAlertTagUnregister  = 2;
 
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"InfoCell"];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
-                                      reuseIdentifier:@"InfoCell"];
+        cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                      reuseIdentifier:@"InfoCell"] autorelease];
     }
 
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -308,7 +332,7 @@ static const NSInteger kAlertTagUnregister  = 2;
             if (indexPath.row == 0) {
                 cell.textLabel.text = @"Domain";
 
-                UITextField *tf = [[UITextField alloc] init];
+                UITextField *tf = [[[UITextField alloc] init] autorelease];
                 tf.text                     = [prof objectForKey:@"server_address"] ?: @"";
                 tf.placeholder              = @"hostname or IP";
                 tf.autocorrectionType       = UITextAutocorrectionTypeNo;
@@ -384,6 +408,8 @@ static const NSInteger kAlertTagUnregister  = 2;
                                                          delegate:self];
             picker.showsCancelButton = NO;
             [self.navigationController pushViewController:picker animated:YES];
+            [picker release];
+            [filter release];
         }
         return;
     }
@@ -458,9 +484,8 @@ static const NSInteger kAlertTagUnregister  = 2;
 
         NSString *capturedAddress = self.pendingServerAddress;
         NSString *capturedPath    = path;
-        __weak typeof(self) weakSelf = self;
         void (^confirmBlock)(id) = ^(id action) {
-            [weakSelf _confirmImportFromPath:capturedPath serverAddress:capturedAddress];
+            [self _confirmImportFromPath:capturedPath serverAddress:capturedAddress];
         };
         id importAction = makeAction(actionClass, actionSel, @"Import", 0, confirmBlock);
 
@@ -481,6 +506,7 @@ static const NSInteger kAlertTagUnregister  = 2;
                        otherButtonTitles:@"Import", nil];
         av.tag = kAlertTagPEMConfirm;
         [av show];
+        [av release];
     }
 }
 
@@ -492,14 +518,11 @@ static const NSInteger kAlertTagUnregister  = 2;
     [self.navigationItem setHidesBackButton:YES animated:YES];
     [self _reloadCertSections];
 
-    __weak typeof(self) weakSelf = self;
     [[SNDataManager shared] fetchServerCertificateForAddress:address
                                                   completion:^(NSString *pem, NSString *errorMessage) {
-        typeof(self) strongSelf = weakSelf;
-        if (!strongSelf) return;
-        strongSelf.autoFetchInProgress = NO;
-        [strongSelf.navigationItem setHidesBackButton:NO animated:YES];
-        [strongSelf _reloadCertSections];
+        self.autoFetchInProgress = NO;
+        [self.navigationItem setHidesBackButton:NO animated:YES];
+        [self _reloadCertSections];
 
         if (errorMessage) {
             UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Auto-Fetch Failed"
@@ -508,9 +531,10 @@ static const NSInteger kAlertTagUnregister  = 2;
                                                cancelButtonTitle:@"OK"
                                                otherButtonTitles:nil];
             [av show];
+            [av release];
             return;
         }
-        [strongSelf _confirmInstallFetchedPEM:pem serverAddress:address];
+        [self _confirmInstallFetchedPEM:pem serverAddress:address];
     }];
 }
 
@@ -545,11 +569,10 @@ static const NSInteger kAlertTagUnregister  = 2;
             (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
 
         id cancelAction = makeAction(actionClass, actionSel, @"Cancel", 1, nil);
-        __weak typeof(self) weakSelf = self;
         NSString *capturedAddress = serverAddress;
         NSString *capturedPEM     = pem;
         void (^installBlock)(id) = ^(id action) {
-            [weakSelf _commitInstallFetchedPEM:capturedPEM serverAddress:capturedAddress];
+            [self _commitInstallFetchedPEM:capturedPEM serverAddress:capturedAddress];
         };
         id installAction = makeAction(actionClass, actionSel, @"Install", 0, installBlock);
 
@@ -582,6 +605,7 @@ static const NSInteger kAlertTagUnregister  = 2;
                                            cancelButtonTitle:@"OK"
                                            otherButtonTitles:nil];
         [av show];
+        [av release];
     }
 }
 
@@ -603,6 +627,7 @@ static const NSInteger kAlertTagUnregister  = 2;
                        cancelButtonTitle:@"OK"
                        otherButtonTitles:nil];
         [av show];
+        [av release];
     }
 }
 
@@ -661,8 +686,7 @@ static const NSInteger kAlertTagUnregister  = 2;
 
         id cancelAction = makeAction(actionClass, actionSel, @"Cancel", 1, nil);
 
-        __weak typeof(self) weakSelf = self;
-        void (^unregBlock)(id) = ^(id action) { [weakSelf _performUnregister]; };
+        void (^unregBlock)(id) = ^(id action) { [self _performUnregister]; };
         id unregAction = makeAction(actionClass, actionSel, @"Unregister", 2 /* Destructive */, unregBlock);
 
         SEL addSel = NSSelectorFromString(@"addAction:");
@@ -682,6 +706,7 @@ static const NSInteger kAlertTagUnregister  = 2;
                        otherButtonTitles:@"Unregister", nil];
         av.tag = kAlertTagUnregister;
         [av show];
+        [av release];
     }
 }
 
@@ -698,6 +723,13 @@ static const NSInteger kAlertTagUnregister  = 2;
             [self _performUnregister];
         }
     }
+}
+
+- (void)dealloc {
+    [_pendingServerAddress release];
+    [_pendingPEMPath release];
+
+    [super dealloc];
 }
 
 @end

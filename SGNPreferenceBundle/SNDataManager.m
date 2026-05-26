@@ -65,6 +65,12 @@ static void SNCopyCString(char *dst, size_t dstSize, const char *src) {
     if ((self = [super init])) { _buffer = [[NSMutableData alloc] init]; }
     return self;
 }
+- (void)dealloc {
+    [_buffer release];
+    [_error release];
+    [super dealloc];
+}
+- (void)connection:(NSURLConnection *)c didFailWithError:(NSError *)e { _error = [e retain]; _done = YES; }
 - (BOOL)connection:(NSURLConnection *)c canAuthenticateAgainstProtectionSpace:(NSURLProtectionSpace *)space {
     return [[space authenticationMethod] isEqualToString:NSURLAuthenticationMethodServerTrust];
 }
@@ -82,7 +88,6 @@ static void SNCopyCString(char *dst, size_t dstSize, const char *src) {
 }
 - (void)connection:(NSURLConnection *)c didReceiveData:(NSData *)data { [_buffer appendData:data]; }
 - (void)connectionDidFinishLoading:(NSURLConnection *)c { _done = YES; }
-- (void)connection:(NSURLConnection *)c didFailWithError:(NSError *)e { _error = e; _done = YES; }
 @end
 
 @implementation SNDataManager
@@ -629,6 +634,7 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
                                                                  delegate:del
                                                          startImmediately:NO];
         if (!conn) {
+            [del release];
             dispatch_async(dispatch_get_main_queue(), ^{
                 completion(nil, @"Could not create network connection.");
             });
@@ -645,10 +651,15 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
         }
         if (!del.done) [conn cancel];
 
-        NSError   *connErr = del.error;
+        /* Snapshot results onto autoreleased storage that the main-queue
+         * block can safely outlive the delegate/connection cleanup below. */
+        NSError   *connErr = [[del.error retain] autorelease];
         NSInteger  code    = del.statusCode;
-        NSData    *body    = del.buffer;
+        NSData    *body    = [[del.buffer retain] autorelease];
         BOOL       timedOut = !del.done && !connErr;
+
+        [conn release];
+        [del release];
 
         dispatch_async(dispatch_get_main_queue(), ^{
             if (timedOut) {
@@ -666,8 +677,8 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
                     @"Server responded HTTP %ld at %@", (long)code, [certURL absoluteString]]);
                 return;
             }
-            NSString *pem = body ? [[NSString alloc] initWithData:body
-                                                          encoding:NSUTF8StringEncoding] : nil;
+            NSString *pem = body ? [[[NSString alloc] initWithData:body
+                                                          encoding:NSUTF8StringEncoding] autorelease] : nil;
             if (!pem || [pem rangeOfString:@"BEGIN"].location == NSNotFound) {
                 completion(nil, @"Server returned data that is not a PEM certificate.");
                 return;

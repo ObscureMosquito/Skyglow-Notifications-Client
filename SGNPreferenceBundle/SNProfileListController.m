@@ -35,6 +35,13 @@ enum {
     NSMutableArray *_profileIndices;
 }
 
+/* iOS 4-5 PSRootController calls these on every pushed VC during the
+ * back-pop sequence, even on plain UIViewControllers.  Crashes with
+ * "unrecognized selector" otherwise. */
+- (void)setRootController:(id)controller   {}
+- (void)setParentController:(id)controller {}
+- (void)setSpecifier:(id)specifier         {}
+
 - (id)init {
     self = [super initWithStyle:UITableViewStyleGrouped];
     if (self) {
@@ -97,8 +104,8 @@ enum {
     if (indexPath.section == SectionProfiles) {
         ProfileCell *cell = (ProfileCell *)[tableView dequeueReusableCellWithIdentifier:@"ProfileCell"];
         if (!cell) {
-            cell = [[ProfileCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                    reuseIdentifier:@"ProfileCell"];
+            cell = [[[ProfileCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                    reuseIdentifier:@"ProfileCell"] autorelease];
         }
 
         NSInteger idx = [[_profileIndices objectAtIndex:indexPath.row] integerValue];
@@ -118,8 +125,8 @@ enum {
 
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"AddCell"];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                      reuseIdentifier:@"AddCell"];
+        cell = [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                      reuseIdentifier:@"AddCell"] autorelease];
     }
     cell.textLabel.text      = @"Add Profile";
     cell.textLabel.textColor = [UIColor colorWithRed:0.05f green:0.42f blue:0.86f alpha:1.0f];
@@ -145,6 +152,7 @@ enum {
 
         SNServerInfoViewController *vc = [[SNServerInfoViewController alloc] initWithProfileIndex:newIdx];
         [self.navigationController pushViewController:vc animated:YES];
+        [vc release];
         return;
     }
 
@@ -155,6 +163,7 @@ enum {
     if (isActive) {
         SNServerInfoViewController *vc = [[SNServerInfoViewController alloc] initWithProfileIndex:idx];
         [self.navigationController pushViewController:vc animated:YES];
+        [vc release];
     } else {
         [self _showActionSheetForProfileIndex:idx];
     }
@@ -216,21 +225,21 @@ enum {
         id (*makeAction)(Class, SEL, id, NSInteger, id) =
             (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
 
-        __weak typeof(self) weakSelf = self;
         NSInteger capturedIdx = idx;
 
         id setActiveAction = makeAction(actionClass, actionSel, @"Set Active", 0,
             ^(id action) {
                 [[SNDataManager shared] setActiveProfileIndex:capturedIdx];
                 SNPostReloadConfig();
-                [weakSelf.tableView reloadData];
+                [self.tableView reloadData];
             });
 
         id viewAction = makeAction(actionClass, actionSel, @"View Details", 0,
             ^(id action) {
                 SNServerInfoViewController *vc =
                     [[SNServerInfoViewController alloc] initWithProfileIndex:capturedIdx];
-                [weakSelf.navigationController pushViewController:vc animated:YES];
+                [self.navigationController pushViewController:vc animated:YES];
+                [vc release];
             });
 
         id cancelAction = makeAction(actionClass, actionSel, @"Cancel", 1, nil);
@@ -253,6 +262,7 @@ enum {
                          otherButtonTitles:@"Set Active", @"View Details", nil];
         as.tag = idx;
         [as showInView:self.view];
+        [as release];
     }
 }
 
@@ -266,7 +276,13 @@ enum {
         SNServerInfoViewController *vc =
             [[SNServerInfoViewController alloc] initWithProfileIndex:idx];
         [self.navigationController pushViewController:vc animated:YES];
+        [vc release];
     }
+}
+
+- (void)dealloc {
+    [_profileIndices release];
+    [super dealloc];
 }
 
 @end

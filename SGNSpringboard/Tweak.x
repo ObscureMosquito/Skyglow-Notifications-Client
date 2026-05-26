@@ -7,6 +7,7 @@
 #import "../Skyglow-Notifications-Daemon/SGControlChannel.h"
 #import "../Skyglow-Notifications-Daemon/SGControlChannelProtocol.h"
 #import "../Skyglow-Notifications-Daemon/SGSharedConstants.h"
+#import "../Skyglow-Notifications-Daemon/SGCompatibilityShim.h"
 
 #pragma mark - Private Class Interfaces
 
@@ -872,6 +873,11 @@ static void SGN_InstallTokenGuard(void) {
 #pragma mark - Constructor
 
 %ctor {
+    /* Install subscripting + environ stubs before any Foundation calls.
+     * No-op on iOS 6+.  (Also runs via the file's __attribute__((constructor));
+     * this explicit call is defensive coverage against constructor ordering.) */
+    SGNInstallCompatibilityShim();
+
     StartSpringBoardControlChannel();
     StartDaemonControlChannelClient();
 

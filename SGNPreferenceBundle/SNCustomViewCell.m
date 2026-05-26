@@ -24,15 +24,20 @@
         UIView *emptyBG = [[UIView alloc] init];
         emptyBG.backgroundColor = [UIColor clearColor];
         self.backgroundView = emptyBG;
+        [emptyBG release];
 
         self.contentView.clipsToBounds = NO;
         self.clipsToBounds             = NO;
 
-        self.logViewController = [[SNLogViewController alloc] init];
+        SNLogViewController *lvc = [[SNLogViewController alloc] init];
+        self.logViewController = lvc;
+        [lvc release];
         self.logViewController.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [self.contentView addSubview:self.logViewController.view];
 
-        self.tapOverlay = [[UIView alloc] initWithFrame:self.logViewController.view.bounds];
+        UIView *overlay = [[UIView alloc] initWithFrame:self.logViewController.view.bounds];
+        self.tapOverlay = overlay;
+        [overlay release];
         self.tapOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth |
                                            UIViewAutoresizingFlexibleHeight;
         self.tapOverlay.backgroundColor        = [UIColor clearColor];
@@ -42,6 +47,12 @@
         self.selectionStyle = UITableViewCellSelectionStyleNone;
     }
     return self;
+}
+
+- (void)dealloc {
+    [_logViewController release];
+    [_tapOverlay release];
+    [super dealloc];
 }
 
 - (void)layoutSubviews {

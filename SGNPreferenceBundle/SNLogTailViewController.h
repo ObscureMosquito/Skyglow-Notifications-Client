@@ -4,8 +4,8 @@
  * SNLogTailViewController — live tail of /var/log/skyglow.log.
  *
  * Reads the trailing window of the daemon's log file on a 1Hz timer,
- * applies a level filter, colourises lines by severity, and auto-follows
- * unless the user has scrolled away from the bottom.  Designed to be
+ * applies a level filter, trims long daemon prefixes, and auto-follows
+ * unless the user has scrolled away from the bottom. Designed to be
  * pushed from SNDebugViewController.
  *
  * Built as a grouped UITableViewController so it inherits the Settings

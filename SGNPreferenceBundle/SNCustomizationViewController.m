@@ -43,9 +43,6 @@ static NSString * const kStatusBarIndicatorEnabledKey = @"statusBarIndicatorEnab
         _polaroidCard.layer.shadowRadius  = 1.0f;
         _polaroidCard.layer.shadowOpacity = 0.22f;
         [self.contentView addSubview:_polaroidCard];
-
-        /* Colour values mirror -[SNDataManager colorForState:] so the legend
-         * matches what the live banner actually paints. */
         NSArray *colors = @[
             [UIColor colorWithRed:0.20f green:0.70f blue:0.20f alpha:0.8f],
             [UIColor colorWithRed:1.00f green:0.55f blue:0.05f alpha:0.8f],
@@ -69,6 +66,7 @@ static NSString * const kStatusBarIndicatorEnabledKey = @"statusBarIndicatorEnab
             swatch.backgroundColor = colors[i];
             [self.contentView addSubview:swatch];
             [swatches addObject:swatch];
+            [swatch release];
 
             UILabel *name = [[UILabel alloc] init];
             name.text             = titles[i];
@@ -79,6 +77,7 @@ static NSString * const kStatusBarIndicatorEnabledKey = @"statusBarIndicatorEnab
             name.backgroundColor  = [UIColor clearColor];
             [self.contentView addSubview:name];
             [names addObject:name];
+            [name release];
 
             UILabel *desc = [[UILabel alloc] init];
             desc.text             = details[i];
@@ -89,12 +88,22 @@ static NSString * const kStatusBarIndicatorEnabledKey = @"statusBarIndicatorEnab
             desc.backgroundColor  = [UIColor clearColor];
             [self.contentView addSubview:desc];
             [descs addObject:desc];
+            [desc release];
         }
-        _swatchViews  = swatches;
-        _titleLabels  = names;
-        _detailLabels = descs;
+        /* Retain the arrays for layoutSubviews; +1 each via copy. */
+        _swatchViews  = [swatches copy];
+        _titleLabels  = [names copy];
+        _detailLabels = [descs copy];
     }
     return self;
+}
+
+- (void)dealloc {
+    [_polaroidCard release];
+    [_swatchViews release];
+    [_titleLabels release];
+    [_detailLabels release];
+    [super dealloc];
 }
 
 - (void)layoutSubviews {
@@ -159,6 +168,13 @@ typedef enum {
 
 @implementation SNCustomizationViewController
 
+/* iOS 4-5 PSRootController calls these on every pushed VC during the
+ * back-pop sequence, even on plain UIViewControllers.  Crashes with
+ * "unrecognized selector" otherwise. */
+- (void)setRootController:(id)controller   {}
+- (void)setParentController:(id)controller {}
+- (void)setSpecifier:(id)specifier         {}
+
 - (id)init {
     if ((self = [super initWithStyle:UITableViewStyleGrouped])) {
         self.title = @"Customization";
@@ -202,7 +218,9 @@ typedef enum {
             cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                           reuseIdentifier:@"ToggleCell"];
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
-            self.indicatorSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
+            UISwitch *sw = [[UISwitch alloc] initWithFrame:CGRectZero];
+            self.indicatorSwitch = sw;
+            [sw release];
             [self.indicatorSwitch addTarget:self
                                      action:@selector(_indicatorSwitchChanged:)
                            forControlEvents:UIControlEventValueChanged];
@@ -227,6 +245,11 @@ typedef enum {
 
 - (void)_indicatorSwitchChanged:(UISwitch *)sw {
     [[SNDataManager shared] setMainPrefValue:@(sw.on) forKey:kStatusBarIndicatorEnabledKey];
+}
+
+- (void)dealloc {
+    [_indicatorSwitch release];
+    [super dealloc];
 }
 
 @end

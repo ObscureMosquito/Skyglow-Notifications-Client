@@ -30,6 +30,17 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
 
 @implementation SNAppListController
 
+- (void)dealloc {
+    [_apsdBundles release];
+    [_apsdLoadErrorMessage release];
+    [_deletingBundleIDs release];
+    [_pendingDeletionBundleIDs release];
+    [_failedDeletionSpecifier release];
+    [_failedDeletionIndexPath release];
+    [_failedDeletionBundleId release];
+    [super dealloc];
+}
+
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self _refreshAPNsList];
@@ -245,12 +256,12 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
 }
 
 - (NSMutableSet *)deletingBundleIDs {
-    if (!_deletingBundleIDs) _deletingBundleIDs = [NSMutableSet set];
+    if (!_deletingBundleIDs) _deletingBundleIDs = [[NSMutableSet alloc] init];
     return _deletingBundleIDs;
 }
 
 - (NSMutableSet *)pendingDeletionBundleIDs {
-    if (!_pendingDeletionBundleIDs) _pendingDeletionBundleIDs = [NSMutableSet set];
+    if (!_pendingDeletionBundleIDs) _pendingDeletionBundleIDs = [[NSMutableSet alloc] init];
     return _pendingDeletionBundleIDs;
 }
 
@@ -349,11 +360,13 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
         body = [NSString stringWithFormat:@"%@\n\n%@", bundleId, body];
     }
 
-    [[[UIAlertView alloc] initWithTitle:title
-                                message:body
-                               delegate:self
-                      cancelButtonTitle:@"OK"
-                      otherButtonTitles:nil] show];
+    UIAlertView *av = [[UIAlertView alloc] initWithTitle:title
+                                                 message:body
+                                                delegate:self
+                                       cancelButtonTitle:@"OK"
+                                       otherButtonTitles:nil];
+    [av show];
+    [av release];
 }
 
 - (void)_clearFailedDeletionState {

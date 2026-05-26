@@ -1,7 +1,5 @@
 #import "SNLogViewController.h"
 #import "SNDataManager.h"
-#import <objc/runtime.h>
-#import <objc/message.h>
 
 @interface SNLogViewController ()
 @property (nonatomic, strong) UILabel *statusLabel;
@@ -13,14 +11,23 @@
 
 @implementation SNLogViewController
 
+/* iOS 4-5 PSRootController calls these on every pushed VC during the
+ * back-pop sequence, even on plain UIViewControllers.  Crashes with
+ * "unrecognized selector" otherwise. */
+- (void)setRootController:(id)controller   {}
+- (void)setParentController:(id)controller {}
+- (void)setSpecifier:(id)specifier         {}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
 
     self.view.backgroundColor = [UIColor clearColor];
 
-    self.statusLabel = [[UILabel alloc] initWithFrame:self.view.bounds];
+    UILabel *label = [[UILabel alloc] initWithFrame:self.view.bounds];
+    self.statusLabel = label;
+    [label release];
     self.statusLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    self.statusLabel.textAlignment = NSTextAlignmentCenter;
+    self.statusLabel.textAlignment = (NSTextAlignment)UITextAlignmentCenter;
     self.statusLabel.clipsToBounds = YES;
     self.statusLabel.font = [UIFont boldSystemFontOfSize:13.0];
     self.statusLabel.textColor = [UIColor whiteColor];
@@ -31,8 +38,10 @@
 
     self.gradientLayer = [CAGradientLayer layer];
     self.gradientLayer.frame = self.view.bounds;
-    self.gradientLayer.colors = @[(id)[[UIColor colorWithWhite:1.0 alpha:0.15] CGColor],
-                                  (id)[[UIColor colorWithWhite:0.0 alpha:0.15] CGColor]];
+    self.gradientLayer.colors = [NSArray arrayWithObjects:
+                                 (id)[[UIColor colorWithWhite:1.0 alpha:0.15] CGColor],
+                                 (id)[[UIColor colorWithWhite:0.0 alpha:0.15] CGColor],
+                                 nil];
     [self.statusLabel.layer addSublayer:self.gradientLayer];
 
     NSBundle *bundle = [NSBundle bundleForClass:[self class]];
@@ -47,12 +56,16 @@
     overlay.alpha = 0.4;
     [self.statusLabel addSubview:overlay];
 
+    [overlay release];
+
     self.statusLabel.numberOfLines = 2;
     self.statusLabel.userInteractionEnabled = NO;
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
         initWithTarget:self action:@selector(_statusLabelTapped)];
     tap.cancelsTouchesInView = NO;
     [self.statusLabel addGestureRecognizer:tap];
+
+    [tap release];
 
     self.lastKnownState = (SGState)-1;
 
@@ -65,9 +78,17 @@
 }
 
 - (void)viewDidLayoutSubviews {
-    [super viewDidLayoutSubviews];
+    if ([[UIViewController class] instancesRespondToSelector:@selector(viewDidLayoutSubviews)]) {
+        [super viewDidLayoutSubviews];
+    }
     self.statusLabel.frame = self.view.bounds;
     self.gradientLayer.frame = self.statusLabel.bounds;
+}
+
+- (void)viewDidUnload {
+    [super viewDidUnload];
+    self.statusLabel = nil;
+    self.gradientLayer = nil;
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -83,11 +104,22 @@
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [[SNDataManager shared] stopWatchingDaemonStatus];
+
+    [_statusLabel release];
+    [_gradientLayer release];
+    [_currentErrorDetail release];
+    [_currentRecoverySuggestion release];
+
+    [super dealloc];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
-    if ([self isMovingFromParentViewController] || [self isBeingDismissed]) {
+    BOOL leaving = YES;
+    if ([self respondsToSelector:@selector(isMovingFromParentViewController)]) {
+        leaving = [self isMovingFromParentViewController] || [self isBeingDismissed];
+    }
+    if (leaving) {
         [[NSNotificationCenter defaultCenter] removeObserver:self name:@"SNDaemonStatusUpdated" object:nil];
         [[SNDataManager shared] stopWatchingDaemonStatus];
     }
@@ -153,43 +185,14 @@
         [msg appendString:suggestion];
     }
 
-    Class alertControllerClass = NSClassFromString(@"UIAlertController");
-    if (alertControllerClass) {
-        SEL createSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
-        id (*create)(Class, SEL, id, id, NSInteger) =
-            (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
-        id alert = create(alertControllerClass, createSel, @"Status Detail", msg, 1);
-
-        Class actionClass = NSClassFromString(@"UIAlertAction");
-        SEL actionSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
-        id (*makeAction)(Class, SEL, id, NSInteger, id) =
-            (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
-        id okAction = makeAction(actionClass, actionSel, @"OK", 1, nil);
-
-        SEL addSel = NSSelectorFromString(@"addAction:");
-        void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
-        addAction(alert, addSel, okAction);
-
-        UIViewController *presenter = self;
-        while (presenter.parentViewController) presenter = presenter.parentViewController;
-        if (!presenter.view.window) {
-            UIResponder *r = self.view;
-            while (r && ![r isKindOfClass:[UIViewController class]]) r = [r nextResponder];
-            if (r) presenter = (UIViewController *)r;
-        }
-
-        SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
-        void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
-        present(presenter, presentSel, alert, YES, nil);
-    } else {
-        UIAlertView *av = [[UIAlertView alloc]
-                           initWithTitle:@"Status Detail"
-                                 message:msg
-                                delegate:nil
-                       cancelButtonTitle:@"OK"
-                       otherButtonTitles:nil];
-        [av show];
-    }
+    UIAlertView *av = [[UIAlertView alloc]
+                       initWithTitle:@"Status Detail"
+                             message:msg
+                            delegate:nil
+                   cancelButtonTitle:@"OK"
+                   otherButtonTitles:nil];
+    [av show];
+    [av release];
 }
 
 @end
