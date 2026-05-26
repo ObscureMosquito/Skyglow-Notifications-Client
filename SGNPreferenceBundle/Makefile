@@ -23,12 +23,12 @@ SGNPreferenceBundle_FILES = \
 SGNPreferenceBundle_FRAMEWORKS = UIKit CoreGraphics CFNetwork CoreFoundation QuartzCore
 SGNPreferenceBundle_PRIVATE_FRAMEWORKS = Preferences
 SGNPreferenceBundle_LDFLAGS = \
-  $(THEOS_PROJECT_DIR)/openssl/lib/libssl.a \
-  $(THEOS_PROJECT_DIR)/openssl/lib/libcrypto.a \
-  SFPFilePicker/lib/SFPFilePicker.a \
+  $(THEOS_PROJECT_DIR)/libraries/openssl/lib/libssl.a \
+  $(THEOS_PROJECT_DIR)/libraries/openssl/lib/libcrypto.a \
+  $(THEOS_PROJECT_DIR)/libraries/SFPFilePicker/lib/SFPFilePicker.a \
   -lsqlite3
 SGNPreferenceBundle_INSTALL_PATH = /Library/PreferenceBundles
-SGNPreferenceBundle_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -I$(THEOS_PROJECT_DIR)/openssl/include -I..
+SGNPreferenceBundle_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -I$(THEOS_PROJECT_DIR)/libraries/openssl/include -I..
 ADDITIONAL_CFLAGS += -D"API_AVAILABLE(...)= " -D"API_DEPRECATED(...)= " -D"API_UNAVAILABLE(...)= " -D"instancetype=id"
 
 include $(THEOS_MAKE_PATH)/bundle.mk

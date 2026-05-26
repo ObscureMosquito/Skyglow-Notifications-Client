@@ -26,8 +26,8 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/SGControlChannel.m
 SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result -I$(THEOS_PROJECT_DIR)/openssl/include
 SkyglowNotificationsDaemon_LDFLAGS = \
-  $(THEOS_PROJECT_DIR)/openssl/lib/libssl.a \
-  $(THEOS_PROJECT_DIR)/openssl/lib/libcrypto.a
+  $(THEOS_PROJECT_DIR)/libraries/openssl/lib/libssl.a \
+  $(THEOS_PROJECT_DIR)/libraries/openssl/lib/libcrypto.a
 SkyglowNotificationsDaemon_CODESIGN_FLAGS = -Sentitlements.plist
 SkyglowNotificationsDaemon_INSTALL_PATH = /usr/local/bin
 SkyglowNotificationsDaemon_FRAMEWORKS = UIKit SystemConfiguration CFNetwork Security IOKit PersistentConnection
