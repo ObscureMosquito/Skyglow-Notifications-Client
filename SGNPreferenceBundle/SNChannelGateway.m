@@ -114,7 +114,7 @@ static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
     }];
 }
 
-+ (void)queryNativelyPushRegisteredBundlesWithCompletion:(void (^)(NSArray *bundleIds))completion {
++ (void)queryNativelyPushRegisteredBundlesWithCompletion:(SNChannelBundleListCompletion)completion {
     if (!completion) return;
 
     [SpringBoardClient() sendRequest:SGCMSG_LIST_PUSH_REGISTERED_APPS
@@ -122,8 +122,10 @@ static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
                              timeout:0
                           completion:^(SGControlError err, const SGControlChannelMessage *response) {
         NSMutableArray *out = [NSMutableArray array];
+        BOOL ok = (err == SGCERR_OK);
+        NSString *message = nil;
 
-        if (err == SGCERR_OK && response &&
+        if (ok && response &&
             response->payloadLength >= offsetof(SGCBundleIdListPayload, data)) {
             SGCBundleIdListPayload *body = (SGCBundleIdListPayload *)response->payload;
             uint16_t count = body->count;
@@ -142,10 +144,19 @@ static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
                 if (bid.length) [out addObject:bid];
                 p += len;
             }
+        } else if (!ok) {
+            if (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE) {
+                message = @"Could not communicate with SpringBoard. Try again after respringing.";
+            } else {
+                message = @"SpringBoard could not return Apple Push registrations.";
+            }
+        } else {
+            ok = NO;
+            message = @"SpringBoard returned an invalid Apple Push registration list.";
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            completion(out);
+            completion(ok, out, message);
         });
     }];
 }

@@ -12,4 +12,9 @@
 /** Toggle controlling whether Skyglow handles notifications for this app. */
 @property (nonatomic, strong) UISwitch *toggleSwitch;
 
+/** Activity indicator shown while a forget request is in flight. */
+@property (nonatomic, strong) UIActivityIndicatorView *activityIndicator;
+
+- (void)setDeletingAccessoryVisible:(BOOL)deleting;
+
 @end

@@ -11,6 +11,7 @@
  * loop.
  */
 typedef void (^SNChannelCommandCompletion)(BOOL ok, NSString *message);
+typedef void (^SNChannelBundleListCompletion)(BOOL ok, NSArray *bundleIds, NSString *message);
 
 @interface SNChannelGateway : NSObject
 
@@ -55,9 +56,9 @@ typedef void (^SNChannelCommandCompletion)(BOOL ok, NSString *message);
  * "Apple Push" section after subtracting bundles already in our own
  * Skyglow plist.
  *
- * Completion fires on the main queue with the array of NSString bundle IDs,
- * or an empty array if the channel is unreachable / SB tweak isn't loaded.
+ * Completion fires on the main queue with either the array of NSString
+ * bundle IDs or a user-facing error if the SB tweak is unreachable.
  */
-+ (void)queryNativelyPushRegisteredBundlesWithCompletion:(void (^)(NSArray *bundleIds))completion;
++ (void)queryNativelyPushRegisteredBundlesWithCompletion:(SNChannelBundleListCompletion)completion;
 
 @end

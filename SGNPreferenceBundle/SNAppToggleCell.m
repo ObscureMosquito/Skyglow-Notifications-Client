@@ -112,14 +112,6 @@
         _appNameLabel.textColor = [UIColor blackColor];
         [self.contentView addSubview:_appNameLabel];
         
-        if (![[specifier propertyForKey:@"sgnHideToggle"] boolValue]) {
-            _toggleSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
-            _toggleSwitch.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-            [_toggleSwitch addTarget:self action:@selector(toggleChanged:)
-                    forControlEvents:UIControlEventValueChanged];
-            self.accessoryView = _toggleSwitch;
-        }
-
         NSString *bundleId = [specifier propertyForKey:@"bundleId"];
         if (bundleId) [self configureCellForBundleId:bundleId];
     }
@@ -139,6 +131,40 @@
     _appNameLabel.centerY = h / 2.0;
 }
 
+- (void)syncAccessoryState {
+    BOOL deleting = [[self.specifier propertyForKey:@"sgnDeleting"] boolValue];
+    BOOL hideToggle = [[self.specifier propertyForKey:@"sgnHideToggle"] boolValue];
+
+    if (deleting) {
+        if (!_activityIndicator) {
+            _activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
+        }
+        [_activityIndicator startAnimating];
+        self.accessoryView = _activityIndicator;
+        return;
+    }
+
+    [_activityIndicator stopAnimating];
+    if (hideToggle) {
+        self.accessoryView = nil;
+        return;
+    }
+
+    if (!_toggleSwitch) {
+        _toggleSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
+        _toggleSwitch.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+        [_toggleSwitch addTarget:self action:@selector(toggleChanged:)
+                forControlEvents:UIControlEventValueChanged];
+    }
+    self.accessoryView = _toggleSwitch;
+}
+
+- (void)setDeletingAccessoryVisible:(BOOL)deleting {
+    [self.specifier setProperty:@(deleting) forKey:@"sgnDeleting"];
+    [self syncAccessoryState];
+    self.userInteractionEnabled = !deleting;
+}
+
 - (void)configureCellForBundleId:(NSString *)bundleId {
     AppInfoHelper *helper = [[AppInfoHelper alloc] init];
 
@@ -147,6 +173,8 @@
 
     NSString *name = [helper getAppNameForBundleId:bundleId];
     _appNameLabel.text = name ?: bundleId;
+
+    [self syncAccessoryState];
 
     if (_toggleSwitch) {
         NSDictionary *appStatus = [[SNDataManager shared] appStatus];
@@ -159,6 +187,7 @@
         }
     }
 
+    self.userInteractionEnabled = ![[self.specifier propertyForKey:@"sgnDeleting"] boolValue];
     self.selectionStyle = UITableViewCellSelectionStyleNone;
 }
 
