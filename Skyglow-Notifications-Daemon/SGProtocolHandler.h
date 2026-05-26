@@ -195,6 +195,16 @@ void SGP_BeginLoginHandshake(NSString *address, RSA *privKey);
 int  SGP_ProcessNextIncomingMessage(double pingIntervalSec);
 
 /**
+ * Returns a stable symbolic name for SGP_OK / SGP_ERR_* return codes.
+ */
+const char *SGP_ErrorName(int code);
+
+/**
+ * Returns a stable symbolic name for SGP_ConnectToServer setup failures.
+ */
+const char *SGP_ConnectErrorName(int code);
+
+/**
  * Sends or persists an acknowledgement for a received notification.
  */
 void SGP_EnqueueAcknowledgement(NSData *msgID, int status);

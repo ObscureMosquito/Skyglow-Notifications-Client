@@ -10,6 +10,7 @@
 #import "SGControlChannel.h"
 #import "SGLog.h"
 #include <signal.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -24,7 +25,8 @@ static int64_t _sgDaemonStartTime = 0;
 int main(int argc, char *argv[]) {
     @autoreleasepool {
         if (setgid(0) != 0 || setuid(0) != 0) {
-            fprintf(stderr, "[Skyglow] FATAL: could not acquire root privileges.\n");
+            fprintf(stderr, "code=%s result=failed reason=privilege_elevation\n",
+                    SGND_DAEMON_PRIVILEGE_FAILED);
             exit(EXIT_FAILURE);
         }
 
@@ -35,7 +37,8 @@ int main(int argc, char *argv[]) {
         SGLog_SetProcessName("SkyglowNotificationsDaemon");
         if (SGLog_OpenFile([SGPath(SG_LOG_PATH) UTF8String],
                            SG_LOG_ROTATE_BYTES) != 0) {
-            NSLog(@"[Skyglow] WARNING: could not open log file — running with syslog only.");
+            SGLOGW_CODE(Skyglow, SGND_DAEMON_LOG_FILE_UNAVAILABLE,
+                        "path=%s result=syslog_only", [SGPath(SG_LOG_PATH) UTF8String]);
         }
 
         SGConfiguration *config = [SGConfiguration sharedConfiguration];
@@ -43,14 +46,16 @@ int main(int argc, char *argv[]) {
 
         int pid_fd = open([SGPath(SG_PID_PATH) UTF8String], O_RDWR | O_CREAT, 0666);
         if (pid_fd < 0) {
-            SGLOGE(Skyglow, "FATAL: Could not create or open PID file.");
+            SGLOGE_CODE(Skyglow, SGND_DAEMON_PID_FILE_FAILED,
+                        "path=%s result=failed errno=%d", [SGPath(SG_PID_PATH) UTF8String], errno);
             exit(EXIT_FAILURE);
         }
 
         fchmod(pid_fd, 0666);
 
         if (flock(pid_fd, LOCK_EX | LOCK_NB) != 0) {
-            SGLOGE(Skyglow, "FATAL: Another instance of Skyglow Notifications Daemon is already running! Aborting.");
+            SGLOGE_CODE(Skyglow, SGND_DAEMON_ALREADY_RUNNING,
+                        "path=%s result=exiting errno=%d", [SGPath(SG_PID_PATH) UTF8String], errno);
             close(pid_fd);
             exit(EXIT_FAILURE);
         }
@@ -58,8 +63,8 @@ int main(int argc, char *argv[]) {
         ftruncate(pid_fd, 0);
         dprintf(pid_fd, "%d\n", getpid());
 
-        SGLOGI(Skyglow, "Speedy Execution Is The Mother Of Good Fortune");
-        SGLOGI(Skyglow, "Daemon starting (pid=%d)", (int)getpid());
+        SGLOGI_CODE(Skyglow, SGND_DAEMON_STARTED,
+                    "pid=%d result=starting", (int)getpid());
 
         _sgDaemonStartTime = (int64_t)time(NULL);
         SGStatusServer_Start([SGPath(SG_STATUS_SOCK_PATH) UTF8String], _sgDaemonStartTime);
@@ -68,7 +73,8 @@ int main(int argc, char *argv[]) {
         dispatch_source_t sigtermSource = dispatch_source_create(
             DISPATCH_SOURCE_TYPE_SIGNAL, SIGTERM, 0, dispatch_get_main_queue());
         dispatch_source_set_event_handler(sigtermSource, ^{
-            SGLOGI(Skyglow, "SIGTERM received — initiating graceful shutdown.");
+            SGLOGI_CODE(Skyglow, SGND_DAEMON_SHUTDOWN_REQUESTED,
+                        "signal=SIGTERM action=stop_runloop");
             CFRunLoopStop(CFRunLoopGetMain());
         });
         dispatch_resume(sigtermSource);
@@ -146,7 +152,8 @@ int main(int argc, char *argv[]) {
         [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                           SGControlReplyBlock reply,
                                           SGControlReplyErrorBlock replyError) {
-            SGLOGI(Skyglow, "Control channel: TEST_INJECT received.");
+            SGLOGI_CODE(Skyglow, SGND_DAEMON_TEST_INJECT,
+                        "message=TEST_INJECT result=received");
             reply(SGCMSG_GENERIC_ACK, nil);
         } forMessageType:SGCMSG_TEST_INJECT];
 
@@ -168,8 +175,9 @@ int main(int argc, char *argv[]) {
                 NSData *tok = [tm synchronizedTokenForBundleIdentifier:bundleID error:&err];
                 [tm release];
                 if (!tok) {
-                    SGLOGE(Skyglow, "ENABLE_APP: token mint failed for %s: %s",
-                           [bundleID UTF8String], [[err description] UTF8String]);
+                    SGLOGE_CODE(Skyglow, SGND_TOKEN_GENERATE_FAILED,
+                                "bundle=%s result=failed reason=%s",
+                                [bundleID UTF8String], [[err description] UTF8String]);
                 }
                 [db setMuted:NO forBundleIdentifier:bundleID];
                 SGP_FlushActiveTopicFilter();
@@ -240,7 +248,8 @@ int main(int argc, char *argv[]) {
         } forMessageType:SGCMSG_DELETE_APP];
 
         if (![controlChannel start]) {
-            SGLOGE(Skyglow, "SGControlChannel server failed to start.");
+            SGLOGE_CODE(Skyglow, SGND_DAEMON_CONTROL_START_FAILED,
+                        "service=%s result=failed", SKYGLOW_CONTROL_SERVICE_DAEMON);
         } else {
             [daemon attachControlChannel:controlChannel];
         }
@@ -254,7 +263,8 @@ int main(int argc, char *argv[]) {
 
         CFRunLoopRun();
 
-        SGLOGI(Skyglow, "SGDaemon shutting down...");
+        SGLOGI_CODE(Skyglow, SGND_DAEMON_SHUTTING_DOWN,
+                    "pid=%d result=stopping", (int)getpid());
         [daemon requestGracefulDisconnect];
 
         [daemon attachControlChannel:nil];

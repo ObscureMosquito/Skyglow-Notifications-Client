@@ -183,6 +183,32 @@ void SGLog_Flush(void) {
     pthread_mutex_unlock(&_logLock);
 }
 
+void SGLog_WriteDiagnostic(SGLogLevel level, const char *tag, const char *code,
+                           const char *fmt, ...) {
+    if (level < SGLogLevelError) level = SGLogLevelError;
+    if (level > SGLogLevelTrace) level = SGLogLevelTrace;
+
+    pthread_mutex_lock(&_logLock);
+    SGLogLevel min = _minLevel;
+    pthread_mutex_unlock(&_logLock);
+    if (level > min) return;
+
+    char body[900];
+    va_list ap;
+    va_start(ap, fmt);
+    int bodyLen = vsnprintf(body, sizeof(body), fmt ? fmt : "(null fmt)", ap);
+    va_end(ap);
+    if (bodyLen < 0) return;
+    if ((size_t)bodyLen >= sizeof(body)) bodyLen = (int)sizeof(body) - 1;
+
+    const char *safeCode = (code && code[0] != '\0') ? code : "SGN_UNCLASSIFIED";
+    if (body[0] != '\0') {
+        SGLog_Write(level, tag, "code=%s %s", safeCode, body);
+    } else {
+        SGLog_Write(level, tag, "code=%s", safeCode);
+    }
+}
+
 void SGLog_Write(SGLogLevel level, const char *tag, const char *fmt, ...) {
     /* Cheap level gate first — no formatting if the line will be dropped. */
     if (level < SGLogLevelError) level = SGLogLevelError;

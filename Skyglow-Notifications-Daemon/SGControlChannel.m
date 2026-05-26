@@ -54,6 +54,7 @@
     NSMutableArray        *_pendingQueue;        /* requests issued while disconnected, replayed on connect */
     uint64_t               _nextRequestId;
     uint32_t               _reconnectAttempt;
+    uint32_t               _lookupFailureCount;
     SGControlConnectionHandler _connectionHandler;
 
     /* Receive thread */
@@ -192,12 +193,16 @@ static void *SGCRecvThreadEntry(void *arg) {
         if (_isServer) {
             kern_return_t kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &_servicePort);
             if (kr != KERN_SUCCESS) {
-                SGLOGE(SGControlChannel, "server: mach_port_allocate failed kr=%d for %s", kr, _serviceName);
+                SGLOGE_CODE(SGControlChannel, SGND_CONTROL_SERVER_PORT_FAILED,
+                            "role=server service=%s operation=mach_port_allocate kr=%d result=failed",
+                            _serviceName, kr);
                 return;
             }
             kr = mach_port_insert_right(mach_task_self(), _servicePort, _servicePort, MACH_MSG_TYPE_MAKE_SEND);
             if (kr != KERN_SUCCESS) {
-                SGLOGE(SGControlChannel, "server: mach_port_insert_right failed kr=%d for %s", kr, _serviceName);
+                SGLOGE_CODE(SGControlChannel, SGND_CONTROL_SERVER_PORT_FAILED,
+                            "role=server service=%s operation=mach_port_insert_right kr=%d result=failed",
+                            _serviceName, kr);
                 mach_port_mod_refs(mach_task_self(), _servicePort, MACH_PORT_RIGHT_RECEIVE, -1);
                 _servicePort = MACH_PORT_NULL;
                 return;
@@ -209,21 +214,28 @@ static void *SGCRecvThreadEntry(void *arg) {
             kr = bootstrap_register(bsPort, _serviceName, _servicePort);
 #pragma clang diagnostic pop
             if (kr != KERN_SUCCESS) {
-                SGLOGE(SGControlChannel, "server: bootstrap_register failed kr=%d for %s", kr, _serviceName);
+                SGLOGE_CODE(SGControlChannel, SGND_CONTROL_SERVER_PORT_FAILED,
+                            "role=server service=%s operation=bootstrap_register kr=%d result=failed",
+                            _serviceName, kr);
                 mach_port_mod_refs(mach_task_self(), _servicePort, MACH_PORT_RIGHT_RECEIVE, -1);
                 _servicePort = MACH_PORT_NULL;
                 return;
             }
-            SGLOGI(SGControlChannel, "server: listening on %s", _serviceName);
+            SGLOGI_CODE(SGControlChannel, SGND_CONTROL_SERVER_READY,
+                        "role=server service=%s result=listening", _serviceName);
         } else {
             kern_return_t kr = mach_port_allocate(mach_task_self(), MACH_PORT_RIGHT_RECEIVE, &_replyPort);
             if (kr != KERN_SUCCESS) {
-                SGLOGE(SGControlChannel, "client: mach_port_allocate failed kr=%d for %s", kr, _serviceName);
+                SGLOGE_CODE(SGControlChannel, SGND_CONTROL_CLIENT_PORT_FAILED,
+                            "role=client service=%s operation=mach_port_allocate kr=%d result=failed",
+                            _serviceName, kr);
                 return;
             }
             kr = mach_port_insert_right(mach_task_self(), _replyPort, _replyPort, MACH_MSG_TYPE_MAKE_SEND);
             if (kr != KERN_SUCCESS) {
-                SGLOGE(SGControlChannel, "client: mach_port_insert_right failed kr=%d for %s", kr, _serviceName);
+                SGLOGE_CODE(SGControlChannel, SGND_CONTROL_CLIENT_PORT_FAILED,
+                            "role=client service=%s operation=mach_port_insert_right kr=%d result=failed",
+                            _serviceName, kr);
                 mach_port_mod_refs(mach_task_self(), _replyPort, MACH_PORT_RIGHT_RECEIVE, -1);
                 _replyPort = MACH_PORT_NULL;
                 return;
@@ -303,7 +315,8 @@ static void *SGCRecvThreadEntry(void *arg) {
 
 - (void)registerHandler:(SGControlMessageHandler)handler forMessageType:(SGControlMessageType)messageType {
     if (!_isServer) {
-        SGLOGE(SGControlChannel, "registerHandler: called on client channel — ignored");
+        SGLOGE_CODE(SGControlChannel, SGND_CONTROL_API_MISUSE,
+                    "method=registerHandler role=client result=ignored");
         return;
     }
     SGControlMessageHandler copied = [handler copy];
@@ -315,7 +328,8 @@ static void *SGCRecvThreadEntry(void *arg) {
 
 - (void)postEvent:(SGControlEventType)eventType payload:(NSData *)payloadOrNil {
     if (!_isServer) {
-        SGLOGE(SGControlChannel, "postEvent: called on client channel — ignored");
+        SGLOGE_CODE(SGControlChannel, SGND_CONTROL_API_MISUSE,
+                    "method=postEvent role=client result=ignored");
         return;
     }
 
@@ -341,8 +355,9 @@ static void *SGCRecvThreadEntry(void *arg) {
                                               0, [subId unsignedLongLongValue],
                                               [payloadCopy bytes], (uint32_t)[payloadCopy length]);
             if (kr != KERN_SUCCESS) {
-                SGLOGW(SGControlChannel, "event delivery failed kr=%d subId=%llu — pruning subscription",
-                       kr, [subId unsignedLongLongValue]);
+                SGLOGW_CODE(SGControlChannel, SGND_CONTROL_EVENT_SEND_FAILED,
+                            "event=%u subscription=%llu kr=%d action=prune",
+                            eventType, [subId unsignedLongLongValue], kr);
                 [_subscriptions removeObjectForKey:subId];
             }
         }
@@ -357,7 +372,8 @@ static void *SGCRecvThreadEntry(void *arg) {
             timeout:(NSTimeInterval)timeout
          completion:(SGControlClientCompletion)completion {
     if (_isServer) {
-        SGLOGE(SGControlChannel, "sendRequest: called on server channel — ignored");
+        SGLOGE_CODE(SGControlChannel, SGND_CONTROL_API_MISUSE,
+                    "method=sendRequest role=server result=ignored");
         if (completion) completion(SGCERR_INVALID_REQUEST, NULL);
         return;
     }
@@ -399,7 +415,8 @@ static void *SGCRecvThreadEntry(void *arg) {
                  handler:(SGControlEventHandler)handler
               completion:(SGControlSubscribeCompletion)completion {
     if (_isServer) {
-        SGLOGE(SGControlChannel, "subscribeToEvent: called on server channel — ignored");
+        SGLOGE_CODE(SGControlChannel, SGND_CONTROL_API_MISUSE,
+                    "method=subscribeToEvent role=server result=ignored");
         if (completion) completion(SGCERR_INVALID_REQUEST, 0);
         return;
     }
@@ -432,7 +449,8 @@ static void *SGCRecvThreadEntry(void *arg) {
 
 - (void)setConnectionHandler:(SGControlConnectionHandler)handler {
     if (_isServer) {
-        SGLOGE(SGControlChannel, "setConnectionHandler: called on server channel — ignored");
+        SGLOGE_CODE(SGControlChannel, SGND_CONTROL_API_MISUSE,
+                    "method=setConnectionHandler role=server result=ignored");
         return;
     }
     SGControlConnectionHandler copied = [handler copy];
@@ -517,8 +535,9 @@ static void *SGCRecvThreadEntry(void *arg) {
     }
 
     if (msg->magic != SG_CONTROL_MAGIC || msg->version != SG_CONTROL_VERSION) {
-        SGLOGW(SGControlChannel, "discarding malformed envelope magic=0x%02x version=0x%02x mid=%d",
-               msg->magic, msg->version, mid);
+        SGLOGW_CODE(SGControlChannel, SGND_CONTROL_ENVELOPE_MALFORMED,
+                    "magic=0x%02x version=0x%02x message_id=%d action=discard",
+                    msg->magic, msg->version, mid);
         return;
     }
 
@@ -563,7 +582,8 @@ static void *SGCRecvThreadEntry(void *arg) {
 
     SGControlMessageHandler handler = _handlers[@(type)];
     if (!handler) {
-        SGLOGW(SGControlChannel, "no handler registered for messageType=0x%02x", type);
+        SGLOGW_CODE(SGControlChannel, SGND_CONTROL_HANDLER_MISSING,
+                    "type=0x%02x result=invalid_request", type);
         SGCErrorResponsePayload err;
         memset(&err, 0, sizeof(err));
         SGCCopyCString(err.message, sizeof(err.message), "unknown message type");
@@ -637,7 +657,8 @@ static void *SGCRecvThreadEntry(void *arg) {
     mach_dead_name_notification_t *note = (mach_dead_name_notification_t *)msg;
     mach_port_t deadPort = note->not_port;
 
-    SGLOGI(SGControlChannel, "server: client port %u died — pruning state", deadPort);
+    SGLOGI_CODE(SGControlChannel, SGND_CONTROL_CLIENT_DIED,
+                "role=server port=%u action=prune", deadPort);
 
     NSNumber *portKey = @(deadPort);
     if ([_clientPorts containsObject:portKey]) {
@@ -660,7 +681,15 @@ static void *SGCRecvThreadEntry(void *arg) {
     mach_port_t serverPort = MACH_PORT_NULL;
     kern_return_t kr = bootstrap_look_up(bsPort, _serviceName, &serverPort);
     if (kr != KERN_SUCCESS) {
-        SGLOGW(SGControlChannel, "client: bootstrap_look_up failed kr=%d for %s — will retry", kr, _serviceName);
+        _lookupFailureCount++;
+        if (_lookupFailureCount == 1) {
+            SGLOGW_CODE(SGControlChannel, SGND_CONTROL_LOOKUP_FAILED,
+                        "role=client service=%s kr=%d action=retry", _serviceName, kr);
+        } else {
+            SGLOGD_CODE(SGControlChannel, SGND_CONTROL_LOOKUP_RETRY,
+                        "role=client service=%s kr=%d attempt=%u action=retry",
+                        _serviceName, kr, _lookupFailureCount);
+        }
         _connected = NO;
         [self _clientScheduleReconnectLocked];
         return;
@@ -669,6 +698,12 @@ static void *SGCRecvThreadEntry(void *arg) {
     _serverPort = serverPort;
     _connected = YES;
     _reconnectAttempt = 0;
+    if (_lookupFailureCount > 1) {
+        SGLOGI_CODE(SGControlChannel, SGND_CONTROL_LOOKUP_RECOVERED,
+                    "role=client service=%s suppressed_retries=%u result=connected",
+                    _serviceName, _lookupFailureCount - 1);
+    }
+    _lookupFailureCount = 0;
 
     /* Dead-name notification fires to our reply port if the server dies. */
     mach_port_t prev = MACH_PORT_NULL;
@@ -676,7 +711,8 @@ static void *SGCRecvThreadEntry(void *arg) {
                                    _replyPort, MACH_MSG_TYPE_MAKE_SEND_ONCE, &prev);
     if (prev != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), prev);
 
-    SGLOGI(SGControlChannel, "client: connected to %s (port=%u)", _serviceName, _serverPort);
+    SGLOGI_CODE(SGControlChannel, SGND_CONTROL_CONNECTED,
+                "role=client service=%s port=%u result=connected", _serviceName, _serverPort);
 
     if (_connectionHandler) {
         SGControlConnectionHandler handlerCopy = SGC_RETAIN(_connectionHandler);
@@ -706,7 +742,8 @@ static void *SGCRecvThreadEntry(void *arg) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                    _stateQueue, ^{
         if (_stopping || _connected) return;
-        SGLOGD(SGControlChannel, "client: reconnect attempt %u for %s", _reconnectAttempt, _serviceName);
+        SGLOGD_CODE(SGControlChannel, SGND_CONTROL_LOOKUP_RETRY,
+                    "role=client service=%s attempt=%u", _serviceName, _reconnectAttempt);
         [self _clientAttemptLookupLocked];
     });
 }
@@ -727,7 +764,8 @@ static void *SGCRecvThreadEntry(void *arg) {
                                       type, 0, 0, requestId, 0,
                                       [payload bytes], (uint32_t)[payload length]);
     if (kr != KERN_SUCCESS) {
-        SGLOGW(SGControlChannel, "client: send failed kr=%d type=0x%02x — completing with UNREACHABLE", kr, type);
+        SGLOGW_CODE(SGControlChannel, SGND_CONTROL_SEND_FAILED,
+                    "role=client type=0x%02x kr=%d result=unreachable", type, kr);
         [self _clientFailPendingRequestLocked:requestId error:SGCERR_UNREACHABLE];
     }
 }
@@ -796,7 +834,8 @@ static void *SGCRecvThreadEntry(void *arg) {
     uint64_t rid = msg->requestId;
     NSDictionary *entry = _pendingRequests[@(rid)];
     if (!entry) {
-        SGLOGD(SGControlChannel, "client: response for unknown requestId=%llu — already timed out?", rid);
+        SGLOGD_CODE(SGControlChannel, SGND_CONTROL_UNKNOWN_RESPONSE,
+                    "role=client request=%llu action=ignore", rid);
         return;
     }
     SGC_PIN(entry);
@@ -834,12 +873,15 @@ static void *SGCRecvThreadEntry(void *arg) {
     uint64_t subId = msg->subscriptionId;
     SGControlEventHandler handler = _eventHandlers[@(subId)];
     if (!handler) {
-        SGLOGD(SGControlChannel, "client: event for unknown subscriptionId=%llu — ignoring", subId);
+        SGLOGD_CODE(SGControlChannel, SGND_CONTROL_UNKNOWN_EVENT,
+                    "role=client subscription=%llu action=ignore", subId);
         return;
     }
 
     if (msg->payloadLength < offsetof(SGCEventDeliveryPayload, data)) {
-        SGLOGW(SGControlChannel, "client: event payload too short (%u bytes) — ignoring", msg->payloadLength);
+        SGLOGW_CODE(SGControlChannel, SGND_CONTROL_EVENT_MALFORMED,
+                    "role=client bytes=%u minimum=%lu action=ignore",
+                    msg->payloadLength, (unsigned long)offsetof(SGCEventDeliveryPayload, data));
         return;
     }
     SGCEventDeliveryPayload *dp = (SGCEventDeliveryPayload *)msg->payload;
@@ -865,7 +907,8 @@ static void *SGCRecvThreadEntry(void *arg) {
         return;
     }
 
-    SGLOGI(SGControlChannel, "client: server port died — entering reconnect (service=%s)", _serviceName);
+    SGLOGI_CODE(SGControlChannel, SGND_CONTROL_PEER_DIED,
+                "role=client service=%s action=reconnect", _serviceName);
     mach_port_deallocate(mach_task_self(), _serverPort);
     _serverPort = MACH_PORT_NULL;
     _connected = NO;

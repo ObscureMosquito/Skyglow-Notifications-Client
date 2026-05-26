@@ -11,6 +11,8 @@
 #import "SGReachabilityMonitor.h"
 #import "SGLog.h"
 #include <openssl/pem.h>
+#include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
@@ -127,6 +129,25 @@ static BOOL isValidPort(NSString *port) {
     if ([port rangeOfCharacterFromSet:nonDigits].location != NSNotFound) return NO;
     int p = [port intValue];
     return (p > 0 && p <= 65535);
+}
+
+static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
+    if (!out || outSize == 0) return;
+    out[0] = '\0';
+    if (!msgID || [msgID length] == 0) {
+        strlcpy(out, "none", outSize);
+        return;
+    }
+
+    const uint8_t *bytes = (const uint8_t *)[msgID bytes];
+    NSUInteger len = MIN([msgID length], (NSUInteger)SGP_MSG_ID_LEN);
+    size_t pos = 0;
+    for (NSUInteger i = 0; i < len && pos + 2 < outSize; i++) {
+        int written = snprintf(out + pos, outSize - pos, "%02x", bytes[i]);
+        if (written != 2) break;
+        pos += 2;
+    }
+    out[pos] = '\0';
 }
 
 @implementation SGDaemon {
@@ -295,13 +316,15 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                                               SG_IOPowerCallback,
                                               &_powerNotifier);
     if (_powerRootPort == MACH_PORT_NULL) {
-        SGLOGW(SGDaemon, "IOKit power notification registration failed — wake recovery disabled.");
+        SGLOGW_CODE(SGDaemon, SGND_AVAILABILITY_POWER_NOTIFY_FAILED,
+                    "result=disabled reason=iokit_registration_failed");
         return;
     }
     CFRunLoopAddSource(CFRunLoopGetMain(),
                        IONotificationPortGetRunLoopSource(_powerNotifyPort),
                        kCFRunLoopDefaultMode);
-    SGLOGI(SGDaemon, "IOKit power notifications registered.");
+    SGLOGI_CODE(SGDaemon, SGND_AVAILABILITY_POWER_NOTIFY_READY,
+                "result=registered");
 }
 
 - (void)_stopPowerMonitoring {
@@ -335,7 +358,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     if ([pending count] > 0) {
         for (NSString *bundleID in pending) {
             [self _runDeletionCascadeForBundle:bundleID];
-            SGLOGI(SGDaemon, "Recovered pending deletion: %s", [bundleID UTF8String]);
+            SGLOGI_CODE(SGDaemon, SGND_DAEMON_PENDING_DELETION_RECOVERED,
+                        "bundle=%s action=recover_pending_deletion", [bundleID UTF8String]);
         }
         [self _clearPendingDeletionsInPlistForBundles:pending];
     }
@@ -371,14 +395,16 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 NSError *err = nil;
                 NSData *token = [tokenMgr synchronizedTokenForBundleIdentifier:bundleID error:&err];
                 if (token) {
-                    SGLOGI(SGDaemon, "Generated missing token for: %s", [bundleID UTF8String]);
+                    SGLOGI_CODE(SGDaemon, SGND_TOKEN_MISSING_GENERATED,
+                                "bundle=%s result=generated", [bundleID UTF8String]);
                     if ([plistNo containsObject:bundleID]) {
                         [db setMuted:YES forBundleIdentifier:bundleID];
                     }
                     mutated = YES;
                 } else {
-                    SGLOGE(SGDaemon, "Failed to generate token for %s: %s",
-                           [bundleID UTF8String], [[err description] UTF8String]);
+                    SGLOGE_CODE(SGDaemon, SGND_TOKEN_GENERATE_FAILED,
+                                "bundle=%s result=failed reason=%s",
+                                [bundleID UTF8String], [[err description] UTF8String]);
                 }
             }
         }
@@ -388,7 +414,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         [allOptedIn unionSet:plistNo];
         for (NSString *bundleID in allOptedIn) {
             if (![dbBundles containsObject:bundleID]) {
-                SGLOGI(SGDaemon, "App %s needs a token but device is unregistered — will generate after registration", [bundleID UTF8String]);
+                SGLOGI_CODE(SGDaemon, SGND_TOKEN_DEFER_UNREGISTERED,
+                            "bundle=%s action=defer_until_registration", [bundleID UTF8String]);
             }
         }
     }
@@ -402,7 +429,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     SGStatusServer_Current(&currentStatus);
     SGState currentState = (SGState)currentStatus.state;
     
-    SGLOGD(SGDaemon, "FSM Rx Event: %ld in State: %s", (long)event, SGState_GetName(currentState));
+    SGLOGD_CODE(SGDaemon, SGND_FSM_EVENT,
+                "event=%ld state=%s", (long)event, SGState_GetName(currentState));
 
     if (event == SGEventStopRequested ||
        (event == SGEventConfigReloaded && ![[SGConfiguration sharedConfiguration] isEnabled])) {
@@ -469,7 +497,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 if (event == SGEventNetworkUp) _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             } else if (event == SGEventSystemDidWake) {
-                SGLOGI(SGDaemon, "System wake received during backoff — skipping remaining wait.");
+                SGLOGI_CODE(SGDaemon, SGND_WAKE_BACKOFF_RESET,
+                            "state=BackingOff action=retry_now");
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             }
             break;
@@ -540,7 +569,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             } else if (event == SGEventSystemDidWake) {
-                SGLOGI(SGDaemon, "System wake received in circuit-open idle — resetting failures and retrying.");
+                SGLOGI_CODE(SGDaemon, SGND_WAKE_CIRCUIT_RESET,
+                            "state=IdleCircuitOpen action=reset_failures");
                 _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             }
@@ -557,8 +587,9 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     SGStatusPayload current;
     SGStatusServer_Current(&current);
     if (!isLegalTransition((SGState)current.state, newState) && current.state != newState) {
-        SGLOGE(SGDaemon, "ILLEGAL TRANSITION REJECTED: %s -> %s",
-               SGState_GetName((SGState)current.state), SGState_GetName(newState));
+        SGLOGE_CODE(SGDaemon, SGND_FSM_TRANSITION_INVALID,
+                    "from=%s to=%s result=rejected",
+                    SGState_GetName((SGState)current.state), SGState_GetName(newState));
         return;
     }
 
@@ -577,7 +608,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     uint32_t activeProfile = (uint32_t)[[SGConfiguration sharedConfiguration] activeProfileIndex];
     SGStatusServer_Post(newState, (uint32_t)_consecutiveFailures, backoff,
                         resolvedIP, _lastErrorDetail, activeProfile);
-    SGLOGD(SGDaemon, "Transitioned to %s (gen=%u)", SGState_GetName(newState), capturedGen);
+    SGLOGD_CODE(SGDaemon, SGND_FSM_TRANSITION,
+                "to=%s generation=%u", SGState_GetName(newState), capturedGen);
 
     if (_controlChannel) {
         SGCStateChangedEventData ev;
@@ -650,7 +682,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     _consecutiveFailures++;
     
     if (_consecutiveFailures >= SG_MAX_CONSECUTIVE_FAILURES) {
-        SGLOGW(SGDaemon, "Max failures (%d) reached after ~1h. Idling until network change.", SG_MAX_CONSECUTIVE_FAILURES);
+        SGLOGW_CODE(SGDaemon, SGND_BACKOFF_CIRCUIT_OPEN,
+                    "failures=%d action=idle_until_network_change", SG_MAX_CONSECUTIVE_FAILURES);
         strlcpy(_lastErrorDetail, "Too many consecutive failures \xe2\x80\x94 paused", sizeof(_lastErrorDetail));
         [self executeTransitionToState:SGStateIdleCircuitOpen backoff:0 ip:NULL];
     } 
@@ -665,10 +698,13 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         uint32_t serverHint = SGP_GetLastDisconnectRetryAfter();
         if (serverHint > finalDelay) {
             finalDelay = serverHint;
-            SGLOGI(SGDaemon, "Server requested retry-after %us, honoring.", serverHint);
+            SGLOGI_CODE(SGDaemon, SGND_BACKOFF_RETRY_AFTER,
+                        "retry_after=%u action=honor", serverHint);
         }
 
-        SGLOGI(SGDaemon, "Backing off for %u seconds (Failure %d/%d)", finalDelay, _consecutiveFailures, SG_MAX_CONSECUTIVE_FAILURES);
+        SGLOGI_CODE(SGDaemon, SGND_BACKOFF_SCHEDULED,
+                    "delay=%u failure=%d max=%d",
+                    finalDelay, _consecutiveFailures, SG_MAX_CONSECUTIVE_FAILURES);
         [self executeTransitionToState:SGStateBackingOff backoff:finalDelay ip:NULL];
     }
 }
@@ -690,7 +726,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
     RSA *privKey = SG_CryptoGetClientPrivateKey();
     if (!privKey) {
-        SGLOGW(SGDaemon, "Profile contains device_address but missing/invalid privateKey! Wiping profile for re-registration.");
+        SGLOGW_CODE(SGDaemon, SGND_REGISTRATION_PROFILE_INVALID,
+                    "reason=missing_or_invalid_private_key action=wipe_profile");
         [self handleEvent:SGEventAuthFailed payload:nil];
         return;
     }
@@ -720,17 +757,20 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         NSData *msgID = messageDict[@"msg_id"];
         if (!msgID || [msgID length] != SGP_MSG_ID_LEN) return;
 
-        SGLOGI(SGDaemon, "Processing Push Notification (MSG_ID: %s)", [[msgID description] UTF8String]);
+        char msgHex[SGP_MSG_ID_LEN * 2 + 1];
+        SGCopyMessageIDHex(msgID, msgHex, sizeof(msgHex));
 
         SGDatabaseManager *db = [SGDatabaseManager sharedManager];
 
         if ([db hasSeenMessageID:msgID]) {
-            SGLOGD(SGDaemon, "Already-seen msg_id — re-ACKing SUCCESS without re-delivery.");
+            SGLOGD_CODE(SGDaemon, SGND_DELIVERY_DUPLICATE,
+                        "msg=%s ack=success action=redeliver_ack_only", msgHex);
             SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
             return;
         }
         if ([db hasLocalPendingDeliveryForMessageID:msgID]) {
-            SGLOGD(SGDaemon, "Retransmit of in-flight local-pending msg — dropping silently; drain timer owns the ACK.");
+            SGLOGD_CODE(SGDaemon, SGND_DELIVERY_LOCAL_PENDING_DUPLICATE,
+                        "msg=%s action=ignore_pending_retry", msgHex);
             return;
         }
         @synchronized(_seenMessageIDs) {
@@ -744,8 +784,9 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         int64_t expiresAt = expiresAtNum ? [expiresAtNum longLongValue] : 0;
         int64_t now = (int64_t)time(NULL);
         if (expiresAt > 0 && now > expiresAt) {
-            SGLOGW(SGDaemon, "DROP: Notification expired %llds ago (expires_at=%lld now=%lld)",
-                   now - expiresAt, expiresAt, now);
+            SGLOGI_CODE(SGDaemon, SGND_DELIVERY_EXPIRED,
+                        "msg=%s age=%llds expires_at=%lld now=%lld ack=expired",
+                        msgHex, now - expiresAt, expiresAt, now);
             SGP_EnqueueAcknowledgement(msgID, SGP_ACK_EXPIRED);
             [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
             return;
@@ -758,13 +799,15 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         NSData *routingKey = messageDict[@"routing_key"];
         NSDictionary *routingData = [db tokenDataForRoutingKey:routingKey];
         if (!routingData) {
-            SGLOGW(SGDaemon, "DROP: Routing Key not found in local Database.");
+            SGLOGW_CODE(SGDaemon, SGND_DELIVERY_ROUTING_MISSING,
+                        "msg=%s action=drop reason=routing_key_missing", msgHex);
             goto cleanup_assertion;
         }
 
         if ([db isMutedForRoutingKey:routingKey]) {
-            SGLOGI(SGDaemon, "DROP: muted bundle (%s); ACKing success without delivery.",
-                   [routingData[@"bundleID"] UTF8String]);
+            SGLOGI_CODE(SGDaemon, SGND_DELIVERY_MUTED,
+                        "msg=%s bundle=%s ack=success action=suppress",
+                        msgHex, [routingData[@"bundleID"] UTF8String]);
             SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
             [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
             goto cleanup_assertion;
@@ -772,24 +815,35 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
         NSData *payloadBytes = messageDict[@"data"];
         if (!payloadBytes) {
-            SGLOGW(SGDaemon, "DROP: Payload data is empty.");
+            SGLOGW_CODE(SGDaemon, SGND_DELIVERY_PAYLOAD_EMPTY,
+                        "msg=%s ack=parse_failed action=drop", msgHex);
             SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
             [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
             goto cleanup_assertion;
         }
 
+        SGLOGI_CODE(SGDaemon, SGND_DELIVERY_RECEIVED,
+                    "msg=%s bundle=%s encrypted=%s bytes=%lu result=received",
+                    msgHex, [routingData[@"bundleID"] UTF8String],
+                    [messageDict[@"is_encrypted"] boolValue] ? "yes" : "no",
+                    (unsigned long)[payloadBytes length]);
+
         if ([messageDict[@"is_encrypted"] boolValue]) {
-            SGLOGD(SGDaemon, "Payload is encrypted. Attempting AES-256-GCM decryption...");
+            SGLOGD_CODE(SGDaemon, SGND_DELIVERY_PAYLOAD_ENCRYPTED,
+                        "msg=%s bytes=%lu action=decrypt",
+                        msgHex, (unsigned long)[payloadBytes length]);
             if ([payloadBytes length] < SGP_GCM_TAG_LEN) {
-                SGLOGW(SGDaemon, "DROP: Encrypted payload too short for GCM tag (%lu < %d).",
-                       (unsigned long)[payloadBytes length], SGP_GCM_TAG_LEN);
+                SGLOGW_CODE(SGDaemon, SGND_DELIVERY_CIPHERTEXT_SHORT,
+                            "msg=%s bytes=%lu min=%d ack=decrypt_failed action=drop",
+                            msgHex, (unsigned long)[payloadBytes length], SGP_GCM_TAG_LEN);
                 SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED);
                 [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
                 goto cleanup_assertion;
             }
             NSData *iv = messageDict[@"iv"];
             if (!iv) {
-                SGLOGW(SGDaemon, "DROP: Missing IV for decryption.");
+                SGLOGW_CODE(SGDaemon, SGND_DELIVERY_IV_MISSING,
+                            "msg=%s ack=decrypt_failed action=drop", msgHex);
                 SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED);
                 [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
                 goto cleanup_assertion;
@@ -797,25 +851,30 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
             payloadBytes = SG_CryptoDecryptAESGCM(payloadBytes, routingData[@"e2eeKey"], iv, nil);
             if (!payloadBytes) {
-                SGLOGE(SGDaemon, "DROP: Decryption failed (bad key or MAC tag tampering).");
+                SGLOGE_CODE(SGDaemon, SGND_DELIVERY_DECRYPT_FAILED,
+                            "msg=%s ack=decrypt_failed action=drop", msgHex);
                 SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED);
                 [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
                 goto cleanup_assertion;
             }
         } else {
-            SGLOGD(SGDaemon, "Payload is plaintext TLV.");
+            SGLOGD_CODE(SGDaemon, SGND_DELIVERY_PAYLOAD_PLAINTEXT,
+                        "msg=%s bytes=%lu", msgHex, (unsigned long)[payloadBytes length]);
         }
 
         NSDictionary *parsed = SG_PayloadParseBinaryData((const uint8_t *)payloadBytes.bytes, (uint32_t)payloadBytes.length);
         if (!parsed || parsed.count == 0) {
-            SGLOGW(SGDaemon, "DROP: TLV parser returned empty dictionary. Malformed binary data?");
+            SGLOGW_CODE(SGDaemon, SGND_DELIVERY_PARSE_FAILED,
+                        "msg=%s bytes=%lu ack=parse_failed action=drop",
+                        msgHex, (unsigned long)[payloadBytes length]);
             SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
             [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
             goto cleanup_assertion;
         }
 
-        SGLOGI(SGDaemon, "Sending push to app [%s]: %s",
-               [routingData[@"bundleID"] UTF8String], [[parsed description] UTF8String]);
+        SGLOGI_CODE(SGDaemon, SGND_DELIVERY_DISPATCHING,
+                    "msg=%s bundle=%s keys=%lu action=send_to_springboard",
+                    msgHex, [routingData[@"bundleID"] UTF8String], (unsigned long)[parsed count]);
 
         NSNumber *seqNum = messageDict[@"device_seq"];
         int64_t arrivedSeq = seqNum ? [seqNum longLongValue] : 0;
@@ -839,13 +898,13 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                                                     payload:serialized
                                                   deviceSeq:arrivedSeq
                                                   expiresAt:effective];
-                SGLOGW(SGDaemon,
-                       "Mach delivery failed kr=%d for %s — queued for local retry (deadline=%s).",
-                       deliveryKr, [routingData[@"bundleID"] UTF8String],
-                       (expiresAt > now) ? "wire expiry" : "fallback");
+                SGLOGW_CODE(SGDaemon, SGND_DELIVERY_LOCAL_RETRY_QUEUED,
+                            "msg=%s bundle=%s kr=%d deadline=%s action=queue_local_retry",
+                            msgHex, [routingData[@"bundleID"] UTF8String], deliveryKr,
+                            (expiresAt > now) ? "wire_expiry" : "fallback");
             } else {
-                SGLOGE(SGDaemon,
-                       "Mach delivery failed and payload not plist-encodable — ACKing PARSE_FAILED to halt server resends.");
+                SGLOGE_CODE(SGDaemon, SGND_DELIVERY_LOCAL_RETRY_BAD_PAYLOAD,
+                            "msg=%s kr=%d ack=parse_failed action=halt_resends", msgHex, deliveryKr);
                 SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
                 [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
             }
@@ -875,12 +934,14 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 }
 
 - (void)protocolDidFinishOfflineQueueDrain {
-    SGLOGI(SGDaemon, "Server confirmed all offline messages delivered.");
+    SGLOGI_CODE(SGDaemon, SGND_REGISTRATION_OFFLINE_DONE,
+                "result=drained");
 }
 
 - (void)protocolDidReceiveTimeSyncWithOffset:(int64_t)offsetSeconds {
     if (llabs(offsetSeconds) > 60) {
-        SGLOGW(SGDaemon, "Significant clock drift detected: %lld seconds", offsetSeconds);
+        SGLOGW_CODE(SGDaemon, SGND_REGISTRATION_CLOCK_DRIFT,
+                    "offset=%llds result=detected", offsetSeconds);
     }
 }
 
@@ -927,7 +988,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     pemKey = NULL;
 
     if (!keyWritten) {
-        SGLOGE(SGDaemon, "Failed to write private key to disk — aborting registration.");
+        SGLOGE_CODE(SGDaemon, SGND_REGISTRATION_KEY_WRITE_FAILED,
+                    "path=%s result=failed", [absoluteKeyPath UTF8String]);
         [[NSFileManager defaultManager] removeItemAtPath:absoluteKeyPath error:nil];
         [self handleEvent:SGEventDisconnected payload:nil];
         return;
@@ -946,7 +1008,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
     RSA *privKey = SG_CryptoGetClientPrivateKey();
     if (!privKey) {
-        SGLOGE(SGDaemon, "Freshly-written key failed to reload — wiping profile for re-registration.");
+        SGLOGE_CODE(SGDaemon, SGND_REGISTRATION_KEY_RELOAD_FAILED,
+                    "profile=%ld action=wipe_profile", (long)profileIdx);
         [self handleEvent:SGEventAuthFailed payload:nil];
         return;
     }
@@ -1062,7 +1125,9 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
 - (kern_return_t)_deliverPushTopic:(NSString *)topic payload:(NSDictionary *)payload {
     if (!_springBoardClient) {
-        SGLOGW(SGDaemon, "Push delivery requested but no SpringBoard client attached.");
+        SGLOGW_CODE(SGDaemon, SGND_DELIVERY_SPRINGBOARD_UNAVAILABLE,
+                    "bundle=%s result=unavailable",
+                    [topic length] ? [topic UTF8String] : "none");
         return KERN_FAILURE;
     }
     if (!topic || [topic length] == 0) return KERN_INVALID_ARGUMENT;
@@ -1077,8 +1142,10 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     if (!plistData) plistData = [NSData data];
 
     if ([plistData length] > SG_CONTROL_MAX_USERINFO_SIZE) {
-        SGLOGE(SGDaemon, "Push payload too large for wire (%lu > %d).",
-               (unsigned long)[plistData length], SG_CONTROL_MAX_USERINFO_SIZE);
+        SGLOGE_CODE(SGDaemon, SGND_DELIVERY_PAYLOAD_TOO_LARGE,
+                    "bundle=%s bytes=%lu max=%d result=failed",
+                    [topic UTF8String], (unsigned long)[plistData length],
+                    SG_CONTROL_MAX_USERINFO_SIZE);
         return KERN_RESOURCE_SHORTAGE;
     }
 
@@ -1176,11 +1243,13 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 NSData   *serialized = entry[@"payload"];
                 int64_t   deviceSeq  = [entry[@"deviceSeq"] longLongValue];
                 int64_t   expiresAt  = [entry[@"expiresAt"] longLongValue];
+                char msgHex[SGP_MSG_ID_LEN * 2 + 1];
+                SGCopyMessageIDHex(msgID, msgHex, sizeof(msgHex));
 
                 if (now > expiresAt) {
-                    SGLOGW(SGDaemon,
-                           "Local-pending notification expired in retry queue (msg_id=%s) — ACKing EXPIRED.",
-                           [[msgID description] UTF8String]);
+                    SGLOGW_CODE(SGDaemon, SGND_DELIVERY_LOCAL_RETRY_EXPIRED,
+                                "msg=%s bundle=%s ack=expired action=remove",
+                                msgHex, [bundleID UTF8String]);
                     SGP_EnqueueAcknowledgement(msgID, SGP_ACK_EXPIRED);
                     [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
                     [db removeLocalPendingDeliveryForMessageID:msgID];
@@ -1193,9 +1262,9 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                                   format:NULL
                         errorDescription:NULL];
                 if (![parsed isKindOfClass:[NSDictionary class]]) {
-                    SGLOGE(SGDaemon,
-                           "Could not deserialize pending payload (msg_id=%s) — ACKing PARSE_FAILED.",
-                           [[msgID description] UTF8String]);
+                    SGLOGE_CODE(SGDaemon, SGND_DELIVERY_LOCAL_RETRY_BAD_PAYLOAD,
+                                "msg=%s bundle=%s ack=parse_failed action=remove",
+                                msgHex, [bundleID UTF8String]);
                     SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
                     [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
                     [db removeLocalPendingDeliveryForMessageID:msgID];
@@ -1204,9 +1273,9 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
                 kern_return_t kr = [self _deliverPushTopic:bundleID payload:parsed];
                 if (kr == KERN_SUCCESS) {
-                    SGLOGI(SGDaemon,
-                           "Local retry succeeded for msg_id=%s after earlier Mach failure.",
-                           [[msgID description] UTF8String]);
+                    SGLOGI_CODE(SGDaemon, SGND_DELIVERY_LOCAL_RETRY_SUCCEEDED,
+                                "msg=%s bundle=%s result=delivered",
+                                msgHex, [bundleID UTF8String]);
                     SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
                     [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
                     [self _advanceLastDeliveredSeqIfNeeded:deviceSeq];
@@ -1258,7 +1327,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
         [[SGAvailability shared] schedulePersistentTimer:self->_keepAliveTimer inRunLoop:[NSRunLoop mainRunLoop]];
 
-        SGLOGI(SGDaemon, "PCPersistentTimer scheduled: %.0fs (survives sleep)", interval);
+        SGLOGI_CODE(SGDaemon, SGND_KEEPALIVE_TIMER_SCHEDULED,
+                    "interval=%.0fs result=scheduled", interval);
     });
 }
 
@@ -1274,17 +1344,20 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
 - (void)_keepAliveTimerFired:(id)timer {
     if (!SGP_IsConnected()) {
-        SGLOGD(SGDaemon, "PCPersistentTimer fired but not connected — ignoring.");
+        SGLOGD_CODE(SGDaemon, SGND_KEEPALIVE_TIMER_IGNORED,
+                    "reason=not_connected action=ignore");
         return;
     }
 
-    SGLOGD(SGDaemon, "PCPersistentTimer fired — sending keepalive ping.");
+    SGLOGD_CODE(SGDaemon, SGND_KEEPALIVE_TIMER_FIRED,
+                "action=send_ping");
     BOOL sent = SGP_SendKeepAlivePing();
 
     if (sent) {
         [self _scheduleKeepAliveTimer];
     } else {
-        SGLOGD(SGDaemon, "PCPersistentTimer: ping not sent (already pending or send failed).");
+        SGLOGD_CODE(SGDaemon, SGND_KEEPALIVE_PING_SKIPPED,
+                    "reason=pending_or_send_failed");
     }
 }
 
@@ -1323,7 +1396,11 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     NSString *cert = [[SGConfiguration sharedConfiguration] serverPubKeyPEM];
 
     if (!ip || !portStr || !cert) {
-        SGLOGE(SGDaemon, "Missing IP, Port, or Certificate. Aborting connection.");
+        SGLOGE_CODE(SGDaemon, SGND_CONFIG_BAD_SERVER_FIELDS,
+                    "ip=%s port=%s cert=%s result=failed",
+                    ip ? "set" : "missing",
+                    portStr ? "set" : "missing",
+                    cert ? "set" : "missing");
         strlcpy(_lastErrorDetail, "Missing server IP, port, or certificate", sizeof(_lastErrorDetail));
         [self handleEvent:SGEventConnectFailed payload:nil];
         return;
@@ -1350,8 +1427,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             }
 
             int rc = SGP_ConnectToServer([ipCopy UTF8String], port, certCopy);
-
-            [ipCopy release];
             [certCopy release];
 
             [self->_stateLock lock];
@@ -1362,14 +1437,21 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 if (rc == 0) {
                     SGP_DisconnectFromServer();
                 }
+                [ipCopy release];
                 return;
             }
 
             if (rc == 0) {
+                SGLOGI_CODE(SGDaemon, SGND_PROTOCOL_CONNECT_SUCCEEDED,
+                            "ip=%s port=%d result=connected", [ipCopy UTF8String], port);
                 [self handleEvent:SGEventConnectSuccess payload:nil];
             } else {
+                SGLOGW_CODE(SGDaemon, SGND_PROTOCOL_CONNECT_FAILED,
+                            "ip=%s port=%d rc=%d name=%s result=failed",
+                            [ipCopy UTF8String], port, rc, SGP_ConnectErrorName(rc));
                 [self handleEvent:SGEventConnectFailed payload:nil];
             }
+            [ipCopy release];
         }
     });
 }
@@ -1379,7 +1461,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     _workerActive = YES;
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        SGLOGI(SGDaemon, "Connection worker started.");
+        SGLOGI_CODE(SGDaemon, SGND_PROTOCOL_WORKER_STARTED,
+                    "result=started");
         while (SGP_IsConnected()) {
             [self->_stateLock lock];
             double pingInterval = [self _currentKeepAliveInterval];
@@ -1388,7 +1471,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             int rc = SGP_ProcessNextIncomingMessage(pingInterval);
             
             if (rc != SGP_OK) {
-                SGLOGI(SGDaemon, "Connection worker exited with code: %d", rc);
+                SGLOGI_CODE(SGDaemon, SGND_PROTOCOL_WORKER_EXITED,
+                            "rc=%d name=%s result=exited", rc, SGP_ErrorName(rc));
                 if (rc == SGP_ERR_AUTH) {
                     [self handleEvent:SGEventAuthFailed payload:nil];
                 } else {
@@ -1402,7 +1486,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             self->_workerActive = NO;
             [self->_stateLock unlock];
         });
-        SGLOGI(SGDaemon, "Connection worker stopped.");
+        SGLOGI_CODE(SGDaemon, SGND_PROTOCOL_WORKER_STOPPED,
+                    "result=stopped");
     });
 }
 
@@ -1413,7 +1498,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         [self->_stateLock unlock];
         
         if (isStale) {
-            SGLOGD(SGDaemon, "Timer (gen=%u) for event %ld expired but generation changed, discarding.", generation, (long)event);
+            SGLOGD_CODE(SGDaemon, SGND_FSM_TIMER_STALE,
+                        "generation=%u event=%ld action=discard", generation, (long)event);
             return;
         }
         [self handleEvent:event payload:nil];

@@ -2,6 +2,7 @@
 #define SKYGLOW_SG_LOG_H
 
 #include <stddef.h>
+#include "SGLogDiagnostics.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,6 +38,15 @@ typedef enum {
  */
 void SGLog_Write(SGLogLevel level, const char *tag, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
+
+/**
+ * Structured diagnostic entry point.  The formatted body is prefixed with
+ * `code=<stable-code>` so support logs are searchable without changing the
+ * existing line prefix consumed by Settings.
+ */
+void SGLog_WriteDiagnostic(SGLogLevel level, const char *tag, const char *code,
+                           const char *fmt, ...)
+    __attribute__((format(printf, 4, 5)));
 
 /**
  * Minimum level that will be emitted.  Calls below this threshold are
@@ -85,13 +95,20 @@ void SGLog_SetProcessName(const char *name);
 #define SGLOGE(tag, fmt, ...) SGLog_Write(SGLogLevelError, #tag, fmt, ##__VA_ARGS__)
 #define SGLOGW(tag, fmt, ...) SGLog_Write(SGLogLevelWarn,  #tag, fmt, ##__VA_ARGS__)
 #define SGLOGI(tag, fmt, ...) SGLog_Write(SGLogLevelInfo,  #tag, fmt, ##__VA_ARGS__)
+#define SGLOGE_CODE(tag, code, fmt, ...) SGLog_WriteDiagnostic(SGLogLevelError, #tag, code, fmt, ##__VA_ARGS__)
+#define SGLOGW_CODE(tag, code, fmt, ...) SGLog_WriteDiagnostic(SGLogLevelWarn,  #tag, code, fmt, ##__VA_ARGS__)
+#define SGLOGI_CODE(tag, code, fmt, ...) SGLog_WriteDiagnostic(SGLogLevelInfo,  #tag, code, fmt, ##__VA_ARGS__)
 
 #if defined(DEBUG) && !defined(NDEBUG)
   #define SGLOGD(tag, fmt, ...) SGLog_Write(SGLogLevelDebug, #tag, fmt, ##__VA_ARGS__)
   #define SGLOGT(tag, fmt, ...) SGLog_Write(SGLogLevelTrace, #tag, fmt, ##__VA_ARGS__)
+  #define SGLOGD_CODE(tag, code, fmt, ...) SGLog_WriteDiagnostic(SGLogLevelDebug, #tag, code, fmt, ##__VA_ARGS__)
+  #define SGLOGT_CODE(tag, code, fmt, ...) SGLog_WriteDiagnostic(SGLogLevelTrace, #tag, code, fmt, ##__VA_ARGS__)
 #else
   #define SGLOGD(tag, fmt, ...) ((void)0)
   #define SGLOGT(tag, fmt, ...) ((void)0)
+  #define SGLOGD_CODE(tag, code, fmt, ...) ((void)0)
+  #define SGLOGT_CODE(tag, code, fmt, ...) ((void)0)
 #endif
 
 #ifdef __cplusplus

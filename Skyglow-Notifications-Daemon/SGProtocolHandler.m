@@ -80,6 +80,31 @@ static uint32_t SG_DecodeBE32(const uint8_t p[4]) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
+const char *SGP_ErrorName(int code) {
+    switch (code) {
+        case SGP_OK:           return "SGP_OK";
+        case SGP_ERR_CLOSED:   return "SGP_ERR_CLOSED";
+        case SGP_ERR_PROTO:    return "SGP_ERR_PROTO";
+        case SGP_ERR_IO:       return "SGP_ERR_IO";
+        case SGP_ERR_AUTH:     return "SGP_ERR_AUTH";
+        case SGP_ERR_TIMEOUT:  return "SGP_ERR_TIMEOUT";
+        case SGP_ERR_REPLACED: return "SGP_ERR_REPLACED";
+        default:               return "SGP_ERR_UNKNOWN";
+    }
+}
+
+const char *SGP_ConnectErrorName(int code) {
+    switch (code) {
+        case 0:  return "SGP_CONNECT_OK";
+        case -1: return "SGP_CONNECT_SOCKET_FAILED";
+        case -2: return "SGP_CONNECT_IMMEDIATE_FAILED";
+        case -3: return "SGP_CONNECT_SELECT_TIMEOUT";
+        case -4: return "SGP_CONNECT_SOCKET_ERROR";
+        case -7: return "SGP_CONNECT_TLS_FAILED";
+        default: return "SGP_CONNECT_UNKNOWN";
+    }
+}
+
 static int SG_WaitForSocket(int sock, int forWrite, int timeoutSec) {
     if (sock < 0 || sock >= FD_SETSIZE) return -1;
     fd_set fds; FD_ZERO(&fds); FD_SET(sock, &fds);
@@ -349,12 +374,14 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     BIO *b = BIO_new_mem_buf((void *)utf8Cert, (int)strlen(utf8Cert));
     X509 *x = PEM_read_bio_X509(b, NULL, 0, NULL);
     if (!x) {
-        SGLOGE(SGP, "ConnectToServer: OpenSSL failed to read PEM X509 certificate!");
+        SGLOGE_CODE(SGP, SGND_PROTOCOL_CONNECT_CERT_FAILED,
+                    "result=failed reason=pem_read_x509");
         unsigned long openSslErr;
         while ((openSslErr = ERR_get_error()) != 0) {
             char errBuf[256];
             ERR_error_string_n(openSslErr, errBuf, sizeof(errBuf));
-            SGLOGE(SGP, "ConnectToServer: OpenSSL error: %s", errBuf);
+            SGLOGE_CODE(SGP, SGND_PROTOCOL_OPENSSL_ERROR,
+                        "reason=%s", errBuf);
         }
     } else {
         X509_STORE_add_cert(SSL_CTX_get_cert_store(_sslctx), x);
@@ -556,13 +583,15 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
     _lastFrameReceivedAt = SG_GetMonotonicSeconds();
 
     if (hdr[0] != SGP_MAGIC || hdr[1] != SGP_VERSION) {
-        SGLOGW(SGP, "Invalid magic/version: 0x%02X 0x%02X (expected 0x%02X 0x%02X)",
-               hdr[0], hdr[1], SGP_MAGIC, SGP_VERSION);
+        SGLOGW_CODE(SGP, SGND_PROTOCOL_FRAME_MAGIC_INVALID,
+                    "magic=0x%02X version=0x%02X expected_magic=0x%02X expected_version=0x%02X result=reject",
+                    hdr[0], hdr[1], SGP_MAGIC, SGP_VERSION);
         return SGP_ERR_PROTO;
     }
 
     if (hdr[3] != 0x00) {
-        SGLOGW(SGP, "Non-zero reserved header byte: 0x%02X", hdr[3]);
+        SGLOGW_CODE(SGP, SGND_PROTOCOL_FRAME_RESERVED_INVALID,
+                    "reserved=0x%02X result=reject", hdr[3]);
         return SGP_ERR_PROTO;
     }
 
@@ -598,8 +627,9 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
 
         if (idx < 32 && (kRegisteredMask & (1u << idx))) {
             if (len < kServerBounds[idx].min || len > kServerBounds[idx].max) {
-                SGLOGW(SGP, "Payload size %u out of range [%u, %u] for server type 0x%02X — rejecting frame",
-                       len, kServerBounds[idx].min, kServerBounds[idx].max, idx);
+                SGLOGW_CODE(SGP, SGND_PROTOCOL_FRAME_SIZE_INVALID,
+                            "type=0x%02X bytes=%u min=%u max=%u result=reject",
+                            idx, len, kServerBounds[idx].min, kServerBounds[idx].max);
                 return SGP_ERR_PROTO;
             }
         }
@@ -653,7 +683,8 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             uint32_t dl = SG_DecodeBE32(raw + SGP_NOTIFY_OFF_DATA_LEN);
 
             if ((uint64_t)SGP_NOTIFY_MIN_PAYLOAD + dl > (uint64_t)len) {
-                SGLOGW(SGP, "Protocol bounds violation in S_NOTIFY (dl=%u, len=%u)", dl, len);
+                SGLOGW_CODE(SGP, SGND_PROTOCOL_NOTIFY_BOUNDS_INVALID,
+                            "data_len=%u frame_len=%u result=reject", dl, len);
                 result = SGP_ERR_PROTO; goto cleanup;
             }
 
@@ -711,7 +742,8 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
                 }
             }
             if (!reason) reason = @"Unknown";
-            SGLOGE(SGP, "Registration failed: code=%u reason=%s", code, [reason UTF8String]);
+            SGLOGE_CODE(SGP, SGND_PROTOCOL_REGISTRATION_REJECTED,
+                        "server_code=%u reason=%s result=rejected", code, [reason UTF8String]);
             if (_regPendingRSA) { RSA_free(_regPendingRSA); _regPendingRSA = NULL; }
             [_regPendingAddress release]; _regPendingAddress = nil;
             if (_regPendingPrivKey) {
@@ -749,7 +781,9 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             pthread_mutex_lock(&_sendLock);
             _clockSkewSeconds = offset;
             pthread_mutex_unlock(&_sendLock);
-            SGLOGI(SGP, "Time sync: server=%lld local=%lld offset=%llds (skew applied)", serverTime, localTime, offset);
+            SGLOGI_CODE(SGP, SGND_PROTOCOL_TIME_SYNC,
+                        "server=%lld local=%lld offset=%llds action=apply_skew",
+                        serverTime, localTime, offset);
             [_delegate protocolDidReceiveTimeSyncWithOffset:offset];
             break;
         }

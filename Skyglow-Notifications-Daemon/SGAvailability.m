@@ -154,12 +154,12 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
             }
         }
 
-        SGLOGI(SGAvailability,
-               "iOS %.1f — PCPersistentTimer: %s, PCMultiStageGrowthAlgorithm: %s, IOPMAssertion: %s",
-               sysVer,
-               [self isCapabilityAvailable:SGCapabilityPersistentTimer] ? "available" : "unavailable",
-               [self isCapabilityAvailable:SGCapabilityGrowthAlgorithm] ? "available" : "unavailable",
-               [self isCapabilityAvailable:SGCapabilityPowerAssertion]  ? "available" : "unavailable");
+        SGLOGI_CODE(SGAvailability, SGND_AVAILABILITY_CAPABILITIES,
+                    "ios=%.1f persistent_timer=%s growth_algorithm=%s power_assertion=%s",
+                    sysVer,
+                    [self isCapabilityAvailable:SGCapabilityPersistentTimer] ? "available" : "unavailable",
+                    [self isCapabilityAvailable:SGCapabilityGrowthAlgorithm] ? "available" : "unavailable",
+                    [self isCapabilityAvailable:SGCapabilityPowerAssertion]  ? "available" : "unavailable");
     }
     return self;
 }
@@ -233,13 +233,15 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
             initWithKeepAliveInterval:interval
                     loggingIdentifier:@"com.skyglow.sgn"
                         algorithmName:@"SkyglowKA"];
-        SGLOGI(SGAvailability, "Growth algorithm: PCMultiStageGrowthAlgorithm — initial: %.0fs", interval);
+        SGLOGI_CODE(SGAvailability, SGND_AVAILABILITY_GROWTH_ALGORITHM,
+                    "name=PCMultiStageGrowthAlgorithm initial=%.0fs", interval);
     } else {
         algo = [[SGBuiltinGrowthAlgorithm alloc]
             initWithKeepAliveInterval:interval
                     loggingIdentifier:@"com.skyglow.sgn"
                         algorithmName:@"SkyglowKA"];
-        SGLOGI(SGAvailability, "Growth algorithm: SGBuiltinGrowthAlgorithm — initial: %.0fs", interval);
+        SGLOGI_CODE(SGAvailability, SGND_AVAILABILITY_GROWTH_ALGORITHM,
+                    "name=SGBuiltinGrowthAlgorithm initial=%.0fs", interval);
     }
 
     [algo setMinimumKeepAliveInterval:minInterval];

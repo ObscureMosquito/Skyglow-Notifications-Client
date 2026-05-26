@@ -99,7 +99,8 @@
     if (!rawPath || [rawPath length] == 0) return nil;
     
     if ([rawPath length] > 1024) {
-        SGLOGE(SGConfiguration, "ABORT: Provided path string exceeds PATH_MAX. Is this a raw PEM?");
+        SGLOGE_CODE(SGConfiguration, SGND_CONFIG_KEY_PATH_TOO_LONG,
+                    "result=failed length=%lu max=1024", (unsigned long)[rawPath length]);
         return nil;
     }
 
@@ -107,20 +108,24 @@
 
     BOOL isDirectory = NO;
     if (![[NSFileManager defaultManager] fileExistsAtPath:safePath isDirectory:&isDirectory] || isDirectory) {
-        SGLOGW(SGConfiguration, "Key file or its directory are missing");
+        SGLOGW_CODE(SGConfiguration, SGND_CONFIG_KEY_MISSING,
+                    "path=%s result=missing", [safePath UTF8String]);
         return nil;
     }
 
     NSError *attrError = nil;
     NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:safePath error:&attrError];
     if (attrError || !attrs) {
-        SGLOGW(SGConfiguration, "Cannot stat key file attributes");
+        SGLOGW_CODE(SGConfiguration, SGND_CONFIG_KEY_STAT_FAILED,
+                    "path=%s result=failed", [safePath UTF8String]);
         return nil;
     }
 
     unsigned long long fileSize = [attrs fileSize];
     if (fileSize > 65536) {
-        SGLOGE(SGConfiguration, "ABORT: Key file exceeds 64KB safety limit!");
+        SGLOGE_CODE(SGConfiguration, SGND_CONFIG_KEY_TOO_LARGE,
+                    "path=%s bytes=%llu max=65536 result=failed",
+                    [safePath UTF8String], fileSize);
         return nil;
     }
 
@@ -128,7 +133,8 @@
     NSString *keyContent = [NSString stringWithContentsOfFile:safePath encoding:NSUTF8StringEncoding error:&readError];
 
     if (readError || !keyContent) {
-        SGLOGW(SGConfiguration, "Failed to read key file");
+        SGLOGW_CODE(SGConfiguration, SGND_CONFIG_KEY_READ_FAILED,
+                    "path=%s result=failed", [safePath UTF8String]);
         return nil;
     }
     
