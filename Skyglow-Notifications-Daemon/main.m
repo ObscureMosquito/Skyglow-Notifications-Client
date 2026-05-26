@@ -11,6 +11,7 @@
 #import "SGLog.h"
 #include <signal.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
 #include <sys/file.h>
@@ -22,6 +23,11 @@ static int64_t _sgDaemonStartTime = 0;
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
+        if (setgid(0) != 0 || setuid(0) != 0) {
+            fprintf(stderr, "[Skyglow] FATAL: could not acquire root privileges.\n");
+            exit(EXIT_FAILURE);
+        }
+
         signal(SIGPIPE, SIG_IGN);
 
         SGNInstallCompatibilityShim();

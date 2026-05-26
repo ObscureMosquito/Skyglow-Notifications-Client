@@ -27,11 +27,12 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/SGCompatibilityShim.m
 SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result -I$(THEOS_PROJECT_DIR)/openssl/include
 SkyglowNotificationsDaemon_LDFLAGS = \
+  -Wl,-sectcreate,__RESTRICT,__restrict,/dev/null \
   $(THEOS_PROJECT_DIR)/libraries/openssl/lib/libssl.a \
   $(THEOS_PROJECT_DIR)/libraries/openssl/lib/libcrypto.a
 SkyglowNotificationsDaemon_CODESIGN_FLAGS = -Sentitlements.plist
 SkyglowNotificationsDaemon_INSTALL_PATH = /usr/local/bin
-SkyglowNotificationsDaemon_FRAMEWORKS = UIKit SystemConfiguration CFNetwork Security IOKit PersistentConnection
+SkyglowNotificationsDaemon_FRAMEWORKS = UIKit SystemConfiguration CFNetwork Security IOKit
 SkyglowNotificationsDaemon_LIBRARIES += sqlite3
 
 

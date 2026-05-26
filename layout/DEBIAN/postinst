@@ -11,20 +11,22 @@ fi
 PLIST_PATH="$JB_PREFIX/Library/LaunchDaemons/com.skyglow.snd.plist"
 DAEMON_PATH="$JB_PREFIX/usr/local/bin/SkyglowNotificationsDaemon"
 HELPER_PATH="$JB_PREFIX/Library/PreferenceBundles/SGNPreferenceBundle.bundle/sndrestart"
+STDERR_PATH="/var/mobile/Library/Logs/snd-err.log"
 
 echo "[Skyglow] Using prefix: ${JB_PREFIX:-/}"
 
-if [ ! -f "$PLIST_PATH" ]; then
-    echo "[Skyglow] Creating LaunchDaemon plist"
-    mkdir -p "$(dirname "$PLIST_PATH")"
+echo "[Skyglow] Writing LaunchDaemon plist"
+mkdir -p "$(dirname "$PLIST_PATH")"
 
-    cat > "$PLIST_PATH" << EOF
+cat > "$PLIST_PATH" << EOF
     <?xml version="1.0" encoding="UTF-8"?>
     <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
     <plist version="1.0">
     <dict>
         <key>Label</key>
         <string>com.skyglow.snd</string>
+        <key>UserName</key>
+        <string>mobile</string>
         <key>ProgramArguments</key>
         <array>
             <string>$DAEMON_PATH</string>
@@ -42,10 +44,14 @@ if [ ! -f "$PLIST_PATH" ]; then
     </dict>
     </plist>
 EOF
-fi
 
 chown root:wheel "$PLIST_PATH"
 chmod 644 "$PLIST_PATH"
+
+mkdir -p "$(dirname "$STDERR_PATH")"
+touch "$STDERR_PATH"
+chown 501:501 "$STDERR_PATH" 2>/dev/null || chown mobile:mobile "$STDERR_PATH" 2>/dev/null || true
+chmod 644 "$STDERR_PATH"
 
 if [ -f "$HELPER_PATH" ]; then
     echo "[Skyglow] Setting SUID for sndrestart helper"
@@ -57,7 +63,7 @@ fi
 
 if [ -f "$DAEMON_PATH" ]; then
     chown root:wheel "$DAEMON_PATH"
-    chmod 755 "$DAEMON_PATH"
+    chmod 6755 "$DAEMON_PATH"
 else
     echo "[Skyglow] WARNING: daemon binary not found at $DAEMON_PATH"
 fi

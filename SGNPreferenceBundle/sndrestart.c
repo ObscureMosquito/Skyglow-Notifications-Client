@@ -12,21 +12,23 @@
 #define DEFAULT_PLIST_PATH "/Library/LaunchDaemons/com.skyglow.snd.plist"
 #define DEFAULT_LAUNCHCTL_PATH "/bin/launchctl"
 
-extern char **environ;
-
 char plist_path[1024];
 char launchctl_path[1024];
 char jb_prefix[1024] = "";
+int mirror_to_stderr = 0;
 
 void log_msg(int priority, const char *format, ...) {
     va_list args;
     va_start(args, format);
     vsyslog(priority, format, args);
     va_end(args);
-    va_start(args, format);
-    vfprintf(stderr, format, args);
-    fprintf(stderr, "\n");
-    va_end(args);
+
+    if (mirror_to_stderr) {
+        va_start(args, format);
+        vfprintf(stderr, format, args);
+        fprintf(stderr, "\n");
+        va_end(args);
+    }
 }
 
 void setup_paths() {
@@ -45,10 +47,15 @@ void setup_paths() {
 int run_launchctl(const char *action) {
     pid_t pid;
     const char *argv[] = {launchctl_path, action, plist_path, NULL};
+    char *const clean_env[] = {
+        "PATH=/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin:/var/jb/bin",
+        "DYLD_INSERT_LIBRARIES=",
+        NULL
+    };
 
     log_msg(LOG_NOTICE, "[sndrestart] Executing: %s %s %s", launchctl_path, action, plist_path);
 
-    int spawn_ret = posix_spawn(&pid, launchctl_path, NULL, NULL, (char* const*)argv, environ);
+    int spawn_ret = posix_spawn(&pid, launchctl_path, NULL, NULL, (char* const*)argv, clean_env);
     
     if (spawn_ret == 0) {
         int status;
@@ -70,7 +77,13 @@ int run_launchctl(const char *action) {
 }
 
 int main(int argc, char **argv) {
-    openlog("sndrestart", LOG_PID | LOG_CONS, LOG_USER);
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
+            mirror_to_stderr = 1;
+        }
+    }
+
+    openlog("sndrestart", LOG_PID, LOG_USER);
     setup_paths();
     
     log_msg(LOG_NOTICE, "--- Starting Skyglow Daemon Restart Tool ---");
