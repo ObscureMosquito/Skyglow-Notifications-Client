@@ -89,6 +89,15 @@
  */
 #define SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC  5.0
 
+/* Timeout for the prefs→daemon DELETE_APP roundtrip.  The daemon's own
+ * handler dispatches a RESET_APP_REGISTRATION to the SB tweak first
+ * (channel default 5s) and only replies success when SB confirms — so
+ * the prefs-side bound must accommodate that 5s plus the daemon's own
+ * processing plus a buffer for SB being briefly busy.  12s is "comfortably
+ * over the worst case I've measured" rather than a value forced by
+ * anything mechanical; ratchet down if cellular RTT becomes negligible. */
+#define SG_CONTROL_DELETE_APP_TIMEOUT_SEC       12.0
+
 /**
  * Mach send timeout for outbound envelopes (responses and events) — the
  * state queue must never block longer than this on a slow peer.

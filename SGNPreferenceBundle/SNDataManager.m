@@ -1,4 +1,5 @@
 #import "SNDataManager.h"
+#import "../Skyglow-Notifications-Daemon/SGSharedConstants.h"
 #import <UIKit/UIKit.h>
 #import <sqlite3.h>
 #include <openssl/pem.h>
@@ -20,9 +21,9 @@ static inline NSString * SGPath(NSString *path) {
     return path;
 }
 
-static inline NSString * SGMainPrefsPath() { return SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp.plist"); }
+static inline NSString * SGMainPrefsPath() { return SGPath(SG_PREFS_PLIST_PATH); }
 static inline NSString * SGProfilePathForIndex(NSInteger idx) {
-    return SGPath([NSString stringWithFormat:@"/var/mobile/Library/Preferences/com.skyglow.sndp-profile%ld.plist", (long)idx]);
+    return SGPath([NSString stringWithFormat:SG_PROFILE_PLIST_FORMAT, (long)idx]);
 }
 static inline NSString * SGProfilePath() {
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()];
@@ -30,8 +31,8 @@ static inline NSString * SGProfilePath() {
     NSInteger idx = (num && [num integerValue] >= 1 && [num integerValue] <= 5) ? [num integerValue] : 1;
     return SGProfilePathForIndex(idx);
 }
-static inline NSString * SGDBPath()        { return SGPath(@"/var/mobile/Library/SkyglowNotifications/sqlite.db"); }
-static inline const char * SGPocketPath()  { return [SGPath(@"/var/run/skyglow_status.sock") UTF8String]; }
+static inline NSString * SGDBPath()        { return SGPath(SG_DB_PATH); }
+static inline const char * SGPocketPath()  { return [SGPath(SG_STATUS_SOCK_PATH) UTF8String]; }
 
 static void SNCopyCString(char *dst, size_t dstSize, const char *src) {
     if (!dst || dstSize == 0) return;

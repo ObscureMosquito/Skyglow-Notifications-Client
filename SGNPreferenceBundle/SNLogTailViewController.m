@@ -1,16 +1,17 @@
 #import "SNLogTailViewController.h"
+#import "../Skyglow-Notifications-Daemon/SGSharedConstants.h"
 #include <sys/stat.h>
 
 /**
- * The log file path mirrors the daemon's choice in main.m and is resolved
- * through the same rootless-aware probe used elsewhere in the bundle.
- * A missing file simply renders as the empty-state message.
+ * The log file path mirrors the daemon's choice in main.m via SG_LOG_PATH
+ * and is resolved through the same rootless-aware probe used elsewhere in
+ * the bundle.  A missing file simply renders as the empty-state message.
  */
 static NSString *SNLogTailPath(void) {
     static NSString *cached = nil;
     if (!cached) {
         BOOL rootless = [[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"];
-        cached = rootless ? @"/var/jb/var/log/skyglow.log" : @"/var/log/skyglow.log";
+        cached = rootless ? [@"/var/jb" stringByAppendingString:SG_LOG_PATH] : SG_LOG_PATH;
     }
     return cached;
 }

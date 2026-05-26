@@ -24,7 +24,7 @@ int main(int argc, char *argv[]) {
         signal(SIGPIPE, SIG_IGN);
 
         SGLog_SetProcessName("SkyglowNotificationsDaemon");
-        if (SGLog_OpenFile([SGPath(@"/var/log/skyglow.log") UTF8String],
+        if (SGLog_OpenFile([SGPath(SG_LOG_PATH) UTF8String],
                            SG_LOG_ROTATE_BYTES) != 0) {
             NSLog(@"[Skyglow] WARNING: could not open log file — running with syslog only.");
         }
@@ -32,7 +32,7 @@ int main(int argc, char *argv[]) {
         SGConfiguration *config = [SGConfiguration sharedConfiguration];
         SGLog_SetMinLevel((SGLogLevel)[config logLevel]);
 
-        int pid_fd = open([SGPath(@"/var/run/skyglow_daemon.pid") UTF8String], O_RDWR | O_CREAT, 0666);
+        int pid_fd = open([SGPath(SG_PID_PATH) UTF8String], O_RDWR | O_CREAT, 0666);
         if (pid_fd < 0) {
             SGLOGE(Skyglow, "FATAL: Could not create or open PID file.");
             exit(EXIT_FAILURE);
@@ -53,7 +53,7 @@ int main(int argc, char *argv[]) {
         SGLOGI(Skyglow, "Daemon starting (pid=%d)", (int)getpid());
 
         _sgDaemonStartTime = (int64_t)time(NULL);
-        SGStatusServer_Start([SGPath(@"/var/run/skyglow_status.sock") UTF8String], _sgDaemonStartTime);
+        SGStatusServer_Start([SGPath(SG_STATUS_SOCK_PATH) UTF8String], _sgDaemonStartTime);
 
         signal(SIGTERM, SIG_IGN);
         dispatch_source_t sigtermSource = dispatch_source_create(
@@ -263,7 +263,7 @@ int main(int argc, char *argv[]) {
 
         [daemon release];
         
-        unlink([SGPath(@"/var/run/skyglow_daemon.pid") UTF8String]);
+        unlink([SGPath(SG_PID_PATH) UTF8String]);
         flock(pid_fd, LOCK_UN);
         close(pid_fd);
 

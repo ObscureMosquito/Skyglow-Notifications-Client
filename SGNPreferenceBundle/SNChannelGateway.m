@@ -96,7 +96,7 @@ static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
 
     [DaemonClient() sendRequest:SGCMSG_DELETE_APP
                         payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
-                        timeout:12.0
+                        timeout:SG_CONTROL_DELETE_APP_TIMEOUT_SEC
                      completion:^(SGControlError err, const SGControlChannelMessage *response) {
         BOOL ok = (err == SGCERR_OK);
         NSString *message = nil;

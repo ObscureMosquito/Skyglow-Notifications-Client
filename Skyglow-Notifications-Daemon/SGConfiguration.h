@@ -2,6 +2,7 @@
 #define SKYGLOW_SG_CONFIGURATION_H
 
 #import <Foundation/Foundation.h>
+#import "SGSharedConstants.h"
 
 /**
  * Resolves the root-relative path for rootless jailbreaks.

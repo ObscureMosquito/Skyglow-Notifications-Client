@@ -36,7 +36,7 @@
 
 - (void)reloadFromDisk {
     dispatch_barrier_sync(_isolationQueue, ^{
-        NSString *mainPath = SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp.plist");
+        NSString *mainPath = SGPath(SG_PREFS_PLIST_PATH);
         NSDictionary *mainPrefs = [NSDictionary dictionaryWithContentsOfFile:mainPath];
         if (mainPrefs) {
             self->_isEnabled = [mainPrefs[@"enabled"] boolValue];
@@ -60,7 +60,7 @@
         self->_logLevel = lvl;
 
         NSString *profilePath = SGPath([NSString stringWithFormat:
-            @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile%ld.plist", (long)idx]);
+            SG_PROFILE_PLIST_FORMAT, (long)idx]);
         NSDictionary *profilePrefs = [NSDictionary dictionaryWithContentsOfFile:profilePath];
         if (profilePrefs) {
             self->_hasProfile = YES;

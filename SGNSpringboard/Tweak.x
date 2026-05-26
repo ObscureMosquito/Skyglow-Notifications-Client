@@ -6,6 +6,7 @@
 #include <bootstrap.h>
 #import "../Skyglow-Notifications-Daemon/SGControlChannel.h"
 #import "../Skyglow-Notifications-Daemon/SGControlChannelProtocol.h"
+#import "../Skyglow-Notifications-Daemon/SGSharedConstants.h"
 
 #pragma mark - Private Class Interfaces
 
@@ -36,7 +37,7 @@
 @interface UNRemoteNotificationServer : NSObject
 @end
 
-static NSString *const kPrefsPlistPath = @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist";
+static NSString *const kPrefsPlistPath = SG_PREFS_PLIST_PATH;
 
 static SGControlChannel *gSGCDaemonClient = nil;
 static SGControlChannel *gSGCSBServer     = nil;
@@ -258,16 +259,14 @@ static void DeliverNotification(NSString *topic, NSDictionary *userInfo) {
     if (!topic.length) return;
     NSDictionary *apnsPayload = WrapInAPNSFormat(userInfo ?: @{});
 
-    double cfVersion = kCFCoreFoundationVersionNumber;
-
-    if (cfVersion < 700.0) {
+    if (SGN_IS_PRE_IOS_7) {
         id server = [NSClassFromString(@"SBRemoteNotificationServer") performSelector:@selector(sharedInstance)];
         if (server) {
             SEL sel = @selector(connection:didReceiveMessageForTopic:userInfo:);
             void (*send)(id, SEL, id, id, id) = (void (*)(id, SEL, id, id, id))objc_msgSend;
             send(server, sel, nil, topic, apnsPayload);
         }
-    } else if (cfVersion < 1200.0) {
+    } else if (SGN_IS_PRE_IOS_9) {
         APSIncomingMessage *msg = [[NSClassFromString(@"APSIncomingMessage") alloc] initWithTopic:topic userInfo:apnsPayload];
         [[NSClassFromString(@"SBRemoteNotificationServer") performSelector:@selector(sharedInstance)]
             performSelector:@selector(connection:didReceiveIncomingMessage:) withObject:nil withObject:msg];
@@ -345,7 +344,7 @@ static void StartSpringBoardControlChannel(void) {
                                                       length:strnlen(bp->bundleID, sizeof(bp->bundleID))
                                                     encoding:NSUTF8StringEncoding];
         if (bundleId.length) {
-            if (kCFCoreFoundationVersionNumber < 1200.0) {
+            if (SGN_IS_PRE_IOS_9) {
                 NSString *bundleIdRet = [bundleId retain];
                 dispatch_async(dispatch_get_main_queue(), ^{
                     id app = SBApp_LookupByIdentifier(bundleIdRet);
@@ -500,7 +499,7 @@ static void StartDaemonControlChannelClient(void) {
 #pragma mark - Native iOS Push Registration State Query
 
 static NSArray *SGN_AllNativelyRegisteredBundles(void) {
-    if (kCFCoreFoundationVersionNumber < 1200.0) {
+    if (SGN_IS_PRE_IOS_9) {
         SBRemoteNotificationServer *server = [%c(SBRemoteNotificationServer) sharedInstance];
         NSDictionary *dict = GetIvar(server, "_bundleIdentifiersToClients");
         if ([dict isKindOfClass:[NSDictionary class]]) return [dict allKeys];
@@ -540,7 +539,7 @@ static void SGN_DeregisterAppNatively(NSString *bundleId) {
     NSString *previousActive = sActiveDeregisterBundle;
     sActiveDeregisterBundle  = [bundleId copy];
 
-    if (kCFCoreFoundationVersionNumber < 1200.0) {
+    if (SGN_IS_PRE_IOS_9) {
         id app = SBApp_LookupByIdentifier(bundleId);
         SBRemoteNotificationServer *server = [%c(SBRemoteNotificationServer) sharedInstance];
         if (app && [server respondsToSelector:@selector(unregisterApplication:)]) {
@@ -876,13 +875,13 @@ static void SGN_InstallTokenGuard(void) {
     StartSpringBoardControlChannel();
     StartDaemonControlChannelClient();
 
-    if (kCFCoreFoundationVersionNumber < 1140.0) {
+    if (SGN_IS_PRE_IOS_8) {
         %init(HookUninstall_Classic);
     } else {
         %init(HookUninstall_Modern);
     }
 
-    if (kCFCoreFoundationVersionNumber < 1200.0) {
+    if (SGN_IS_PRE_IOS_9) {
         %init(HookRegistration_Classic);
     } else {
         %init(HookRegistration_iOS9);

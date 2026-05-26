@@ -326,7 +326,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 }
 
 - (void)reconcileTokensWithPlist {
-    NSString *plistPath = SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp.plist");
+    NSString *plistPath = SGPath(SG_PREFS_PLIST_PATH);
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
     NSDictionary *appStatus = [prefs objectForKey:@"appStatus"] ?: @{};
     SGDatabaseManager *db = [SGDatabaseManager sharedManager];
@@ -895,7 +895,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
     NSInteger profileIdx = [[SGConfiguration sharedConfiguration] activeProfileIndex];
     NSString *profilePath = SGPath([NSString stringWithFormat:
-        @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile%ld.plist", (long)profileIdx]);
+        SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
     NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePath] ?: [NSMutableDictionary dictionary];
 
     profile[@"device_address"] = deviceAddress;
@@ -1019,7 +1019,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
 - (void)_clearPendingDeletionsInPlistForBundles:(NSArray *)bundles {
     if ([bundles count] == 0) return;
-    NSString *plistPath = SGPath(@"/var/mobile/Library/Preferences/com.skyglow.sndp.plist");
+    NSString *plistPath = SGPath(SG_PREFS_PLIST_PATH);
     NSMutableDictionary *prefs = [[NSDictionary dictionaryWithContentsOfFile:plistPath] mutableCopy];
     if (!prefs) return;
 
@@ -1043,7 +1043,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     @autoreleasepool {
         NSInteger profileIdx = [[SGConfiguration sharedConfiguration] activeProfileIndex];
         NSString *profilePath = SGPath([NSString stringWithFormat:
-            @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile%ld.plist", (long)profileIdx]);
+            SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
         NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePath] ?: [NSMutableDictionary dictionary];
 
         NSString *privKeyRelPath = profile[@"privateKey"];
@@ -1100,7 +1100,14 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         result = (err == SGCERR_OK) ? KERN_SUCCESS : KERN_FAILURE;
         dispatch_semaphore_signal(sema);
     }];
-    dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+    /* Bounded wait — channel default is 5s, give it +1s grace for
+     * dispatch + completion handler scheduling.  If we time out the
+     * semaphore here (channel didn't fire its completion in time, which
+     * shouldn't happen but defensive), `result` stays KERN_FAILURE and
+     * the caller's local-pending-deliveries retry path will pick the
+     * notification up on the next drain. */
+    int64_t waitNs = (int64_t)((SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC + 1.0) * NSEC_PER_SEC);
+    dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, waitNs));
     dispatch_release(sema);
 
     return result;
