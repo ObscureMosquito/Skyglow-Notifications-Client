@@ -13,7 +13,6 @@ Simple Cydia Tweak that will open a low power TCP socket and constantly listen f
 2. Enter settings
 3. Enter into the notification server address the server you would like to use. A list of public servers are available below:
 
-- preloading.dev
   > [!TIP]
   > If you see a "Port" field, you are using an outdated version of Skyglow Notifications. Please update your version of skyglow notifications from Cydia
 
