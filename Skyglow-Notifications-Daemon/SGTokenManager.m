@@ -58,8 +58,7 @@
 
     memset(K, 0, sizeof(K));
 
-    SGLOGI_CODE(SGTokenManager, SGND_TOKEN_GENERATED,
-                "bundle=%s result=generated", [bundleIdentifier UTF8String]);
+    SGLOGI(SGTokenManager, "code=%s bundle=%s result=generated", SGND_TOKEN_GENERATED, [bundleIdentifier UTF8String]);
     return [deviceToken autorelease];
 }
 

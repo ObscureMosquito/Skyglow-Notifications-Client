@@ -16,19 +16,16 @@
     NSDictionary *cached = [[SGDatabaseManager sharedManager] cachedDNSForDomain:dnsName maxAge:DNS_CACHE_MAX_AGE_SECONDS];
     if (cached) return cached;
 
-    SGLOGI_CODE(SGServerLocator, SGND_DNS_LOOKUP_STARTED,
-                "name=%s", [dnsName UTF8String]);
+    SGLOGI(SGServerLocator, "code=%s name=%s", SGND_DNS_LOOKUP_STARTED, [dnsName UTF8String]);
     NSDictionary *txt = [self performLiveDNSLookup:dnsName];
 
     if (txt && txt[@"tcp_addr"] && txt[@"tcp_port"]) {
-        SGLOGI_CODE(SGServerLocator, SGND_DNS_LOOKUP_SUCCEEDED,
-                    "name=%s ip=%s port=%s result=ok",
+        SGLOGI(SGServerLocator, "code=%s name=%s ip=%s port=%s result=ok", SGND_DNS_LOOKUP_SUCCEEDED,
                     [dnsName UTF8String], [txt[@"tcp_addr"] UTF8String],
                     [txt[@"tcp_port"] UTF8String]);
         [[SGDatabaseManager sharedManager] storeDNSCacheForDomain:dnsName ip:txt[@"tcp_addr"] port:txt[@"tcp_port"]];
     } else {
-        SGLOGW_CODE(SGServerLocator, SGND_DNS_LOOKUP_FAILED,
-                    "name=%s result=failed", [dnsName UTF8String]);
+        SGLOGW(SGServerLocator, "code=%s name=%s result=failed", SGND_DNS_LOOKUP_FAILED, [dnsName UTF8String]);
     }
     
     return txt;
@@ -47,8 +44,7 @@ static void DNSSD_API query_callback(DNSServiceRef sdRef, DNSServiceFlags flags,
     NSMutableDictionary *results = (__bridge NSMutableDictionary *)context;
     
     if (errorCode != kDNSServiceErr_NoError) {
-        SGLOGW_CODE(SGServerLocator, SGND_DNS_CALLBACK_FAILED,
-                    "dns_error=%d result=failed", errorCode);
+        SGLOGW(SGServerLocator, "code=%s dns_error=%d result=failed", SGND_DNS_CALLBACK_FAILED, errorCode);
     } else if (rdlen > 0) {
         const uint8_t *ptr = (const uint8_t *)rdata;
         const uint8_t *end = ptr + rdlen;
@@ -67,8 +63,7 @@ static void DNSSD_API query_callback(DNSServiceRef sdRef, DNSServiceFlags flags,
                         NSString *key = [comp substringToIndex:range.location];
                         NSString *val = [comp substringFromIndex:range.location + 1];
                         [results setObject:val forKey:key];
-                        SGLOGD_CODE(SGServerLocator, SGND_DNS_TXT_PARSED,
-                                    "key=%s value=%s", [key UTF8String], [val UTF8String]);
+                        SGLOGD(SGServerLocator, "code=%s key=%s value=%s", SGND_DNS_TXT_PARSED, [key UTF8String], [val UTF8String]);
                     }
                 }
             }

@@ -1,141 +1,23 @@
 #include "SGStatusServer.h"
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <errno.h>
-#include <unistd.h>
-#include <fcntl.h>
 #include <pthread.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/stat.h>
+#include <time.h>
 
-#define SS_MAX_WATCHERS 16
-#define SS_MODE_QUERY 0x51 // 'Q'
-#define SS_MODE_WATCH 0x57 // 'W'
+/* In-process status cache.  The "server" name is historical — there is no
+ * longer a unix socket; status reaches external consumers via the control
+ * channel (SGCMSG_QUERY_STATUS for snapshot reads, SGCEVT_STATE_CHANGED
+ * events for live updates).  This module is just a thread-safe scratchpad
+ * the daemon writes its current state into. */
 
 static SGStatusPayload  _current;
 static pthread_mutex_t  _lock = PTHREAD_MUTEX_INITIALIZER;
-static int              _serverFd = -1;
-static int              _watchers[SS_MAX_WATCHERS];
-static pthread_t        _acceptThread;
-static char             _socketPath[1024];
-/**
- * Written under _lock in SGStatusServer_Shutdown; read in the accept loop
- * without the lock. volatile prevents the compiler from caching the value
- * in a register across the accept() syscall boundary.
- */
-static volatile int     _running = 0;
 
-static void* SGStatusServer_AcceptLoop(void* arg) {
-    while (_running) {
-        struct sockaddr_un clientAddr;
-        socklen_t clientLen = sizeof(clientAddr);
-        int clientFd = accept(_serverFd, (struct sockaddr*)&clientAddr, &clientLen);
-        
-        if (clientFd < 0) {
-            if (errno == EMFILE || errno == ENFILE) {
-                /**
-                 * Process hit the file descriptor limit. Sleep briefly and retry —
-                 * don't break out of the loop. Without the continue, the original
-                 * code would sleep 1 second and then exit permanently, leaving the
-                 * status socket dead for the rest of the daemon's lifetime.
-                 */
-                sleep(1);
-                continue;
-            } else if (errno == EINTR) {
-                continue;
-            } else {
-                /* Unrecoverable error (EBADF, ENOTSOCK, EINVAL, etc.) — exit loop. */
-                break;
-            }
-        }
-
-        struct timeval timeout;
-        timeout.tv_sec = 1;
-        timeout.tv_usec = 0;
-        setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-        setsockopt(clientFd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-
-        uint8_t mode = 0;
-        if (read(clientFd, &mode, 1) != 1) {
-            close(clientFd);
-            continue;
-        }
-
-        if (mode == SS_MODE_QUERY) {
-            int flags = fcntl(clientFd, F_GETFL, 0);
-            fcntl(clientFd, F_SETFL, flags | O_NONBLOCK);
-            pthread_mutex_lock(&_lock);
-            SGStatusPayload snap = _current;
-            pthread_mutex_unlock(&_lock);
-            write(clientFd, &snap, sizeof(snap));
-            close(clientFd);
-        } else if (mode == SS_MODE_WATCH) {
-            int flags = fcntl(clientFd, F_GETFL, 0);
-            fcntl(clientFd, F_SETFL, flags | O_NONBLOCK);
-            pthread_mutex_lock(&_lock);
-            SGStatusPayload snap = _current;
-            int added = 0;
-            int addedIdx = -1;
-            for (int i = 0; i < SS_MAX_WATCHERS; i++) {
-                if (_watchers[i] < 0) {
-                    _watchers[i] = clientFd;
-                    added = 1;
-                    addedIdx = i;
-                    break;
-                }
-            }
-            pthread_mutex_unlock(&_lock);
-
-            if (added) {
-                if (write(clientFd, &snap, sizeof(snap)) != sizeof(snap)) {
-                    close(clientFd);
-                    pthread_mutex_lock(&_lock);
-                    _watchers[addedIdx] = -1;
-                    pthread_mutex_unlock(&_lock);
-                }
-            } else {
-                close(clientFd);
-            }
-        } else {
-            close(clientFd);
-        }
-    }
-    return NULL;
-}
-
-void SGStatusServer_Start(const char *socketPath, int64_t startTime) {
+void SGStatusServer_Start(int64_t startTime) {
     pthread_mutex_lock(&_lock);
-    if (_running) { pthread_mutex_unlock(&_lock); return; }
-
     memset(&_current, 0, sizeof(_current));
-    _current.state = SGStateStarting;
-    _current.daemonStartTime = startTime;
+    _current.state                   = SGStateStarting;
+    _current.daemonStartTime         = startTime;
     _current.lastStateTransitionTime = startTime;
-    
-    for (int i = 0; i < SS_MAX_WATCHERS; i++) _watchers[i] = -1;
-    strncpy(_socketPath, socketPath, sizeof(_socketPath)-1);
-
-    _serverFd = socket(AF_UNIX, SOCK_STREAM, 0);
-    unlink(_socketPath);
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, _socketPath, sizeof(addr.sun_path)-1);
-
-    if (bind(_serverFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        close(_serverFd); _serverFd = -1;
-        pthread_mutex_unlock(&_lock);
-        return;
-    }
-
-    listen(_serverFd, 5);
-    chmod(_socketPath, 0666);
-    
-    _running = 1;
-    pthread_create(&_acceptThread, NULL, SGStatusServer_AcceptLoop, NULL);
     pthread_mutex_unlock(&_lock);
 }
 
@@ -143,57 +25,23 @@ void SGStatusServer_Post(SGState state, uint32_t failures, uint32_t backoff,
                          const char *ip, const char *errorDetail,
                          uint32_t activeProfile) {
     pthread_mutex_lock(&_lock);
-    _current.state = state;
-    _current.consecutiveFailures = failures;
-    _current.currentBackoffSec = backoff;
+    _current.state                   = state;
+    _current.consecutiveFailures     = failures;
+    _current.currentBackoffSec       = backoff;
     _current.lastStateTransitionTime = (int64_t)time(NULL);
-    if (ip) {
-        strlcpy(_current.serverIP, ip, sizeof(_current.serverIP));
-    } else {
-        _current.serverIP[0] = '\0';
-    }
-    if (errorDetail) {
-        strlcpy(_current.errorDetail, errorDetail, sizeof(_current.errorDetail));
-    } else {
-        _current.errorDetail[0] = '\0';
-    }
-    _current.activeProfileIndex = activeProfile;
-    
-    SGStatusPayload snapshot = _current;
-    int snapshotWatchers[SS_MAX_WATCHERS];
-    memcpy(snapshotWatchers, _watchers, sizeof(_watchers));
+    if (ip) strlcpy(_current.serverIP, ip, sizeof(_current.serverIP));
+    else    _current.serverIP[0] = '\0';
+    if (errorDetail) strlcpy(_current.errorDetail, errorDetail, sizeof(_current.errorDetail));
+    else             _current.errorDetail[0] = '\0';
+    _current.activeProfileIndex      = activeProfile;
     pthread_mutex_unlock(&_lock);
-
-    for (int i = 0; i < SS_MAX_WATCHERS; i++) {
-        if (snapshotWatchers[i] >= 0) {
-            if (write(snapshotWatchers[i], &snapshot, sizeof(snapshot)) != sizeof(snapshot)) {
-                close(snapshotWatchers[i]);
-                pthread_mutex_lock(&_lock); 
-                _watchers[i] = -1; 
-                pthread_mutex_unlock(&_lock);
-            }
-        }
-    }
 }
 
 void SGStatusServer_Current(SGStatusPayload *outPayload) {
+    if (!outPayload) return;
     pthread_mutex_lock(&_lock);
-    if (outPayload) *outPayload = _current;
+    *outPayload = _current;
     pthread_mutex_unlock(&_lock);
-}
-
-void SGStatusServer_Shutdown(void) {
-    pthread_mutex_lock(&_lock);
-    _running = 0;
-    if (_serverFd >= 0) {
-        shutdown(_serverFd, SHUT_RDWR);
-        close(_serverFd);
-        _serverFd = -1;
-    }
-    pthread_mutex_unlock(&_lock);
-    
-    pthread_join(_acceptThread, NULL);
-    unlink(_socketPath);
 }
 
 const char *SGState_GetName(SGState state) {

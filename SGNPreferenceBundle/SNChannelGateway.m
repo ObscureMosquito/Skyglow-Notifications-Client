@@ -114,6 +114,57 @@ static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
     }];
 }
 
++ (void)subscribeToStatusUpdatesWithHandler:(void (^)(SGStatusPayload payload))handler {
+    if (!handler) return;
+    void (^handlerCopy)(SGStatusPayload) = [handler copy];
+
+    SGControlChannel *client = DaemonClient();
+
+    void (^doSubscribe)(void) = ^{
+        [client subscribeToEvent:SGCEVT_STATE_CHANGED
+                         handler:^(SGControlEventType eventType, NSData *data) {
+            if ([data length] >= sizeof(SGStatusPayload)) {
+                SGStatusPayload payload;
+                memcpy(&payload, [data bytes], sizeof(payload));
+                handlerCopy(payload);
+            }
+        } completion:nil];
+    };
+
+    /* Subscribe now (whether connected or not — channel will queue). */
+    doSubscribe();
+
+    /* Re-subscribe on every reconnect.  SGControlChannel clears event
+     * handlers when the connection drops; without this, a daemon restart
+     * leaves the subscription stranded. */
+    [client setConnectionHandler:^(BOOL connected) {
+        if (connected) doSubscribe();
+    }];
+}
+
++ (void)queryStatusWithCompletion:(void (^)(SGStatusPayload payload))completion {
+    if (!completion) return;
+    void (^completionCopy)(SGStatusPayload) = [completion copy];
+
+    [DaemonClient() sendRequest:SGCMSG_QUERY_STATUS
+                        payload:nil
+                        timeout:0
+                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
+        SGStatusPayload payload;
+        memset(&payload, 0, sizeof(payload));
+        if (err == SGCERR_OK && response &&
+            response->payloadLength >= sizeof(SGStatusPayload)) {
+            memcpy(&payload, response->payload, sizeof(payload));
+        } else {
+            payload.state = SGStateDisabled;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            completionCopy(payload);
+            [completionCopy release];
+        });
+    }];
+}
+
 + (void)queryNativelyPushRegisteredBundlesWithCompletion:(SNChannelBundleListCompletion)completion {
     if (!completion) return;
 

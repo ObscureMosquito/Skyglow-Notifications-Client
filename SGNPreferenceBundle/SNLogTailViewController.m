@@ -1,4 +1,5 @@
 #import "SNLogTailViewController.h"
+#import "SNDataManager.h"
 #import "../Skyglow-Notifications-Daemon/SGSharedConstants.h"
 #include <sys/stat.h>
 
@@ -29,7 +30,9 @@ static const NSTimeInterval kSNLogTailRefreshSeconds = 1.0;
 static const CGFloat kSNLogHeaderTopPad      = 10.0f;
 static const CGFloat kSNLogHeaderBottomPad   = 10.0f;
 static const CGFloat kSNLogSegmentHeight     = 32.0f;
+static const CGFloat kSNLogSearchHeight      = 44.0f;
 static const CGFloat kSNLogSegmentSideInset  = 16.0f;
+static const CGFloat kSNLogControlGap        = 7.0f;
 static const CGFloat kSNLogFooterTopPad      = 8.0f;
 static const CGFloat kSNLogFooterHeight      = 28.0f;
 static const CGFloat kSNLogFooterSideInset   = 16.0f;
@@ -44,9 +47,25 @@ typedef NS_ENUM(NSInteger, SNLogFilterLevel) {
 
 static NSString * const kSNLogTextCellID = @"SNLogTextCell";
 
-@interface SNLogTailViewController () <UITextViewDelegate, UIScrollViewDelegate>
+typedef NS_ENUM(NSInteger, SNLogContentMode) {
+    SNLogContentModeTail    = 0,
+    SNLogContentModeSummary = 1,
+};
+
+typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
+    SNLogScopeAll      = 0,
+    SNLogScopeCore     = 1,
+    SNLogScopeNetwork  = 2,
+    SNLogScopeDelivery = 3,
+    SNLogScopeStorage  = 4,
+};
+
+@interface SNLogTailViewController () <UITextViewDelegate, UIScrollViewDelegate, UISearchBarDelegate, UIActionSheetDelegate>
 @property (nonatomic, strong) UITextView          *textView;
+@property (nonatomic, strong) UISegmentedControl  *modeControl;
 @property (nonatomic, strong) UISegmentedControl  *filterControl;
+@property (nonatomic, strong) UISegmentedControl  *scopeControl;
+@property (nonatomic, strong) UISearchBar         *searchBar;
 @property (nonatomic, strong) UIView              *footerView;
 @property (nonatomic, strong) UILabel             *footerLabel;
 @property (nonatomic, strong) NSTimer             *refreshTimer;
@@ -68,6 +87,9 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
 @property (nonatomic, assign) BOOL                 userScrolledAway;
 @property (nonatomic, assign) BOOL                 paused;
 @property (nonatomic, assign) SNLogFilterLevel     filterLevel;
+@property (nonatomic, assign) SNLogContentMode     contentMode;
+@property (nonatomic, assign) SNLogScopeFilter     scopeFilter;
+@property (nonatomic, copy)   NSString            *searchText;
 @end
 
 @implementation SNLogTailViewController
@@ -86,6 +108,8 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
     if (self) {
         self.title = @"Daemon Log";
         _filterLevel = SNLogFilterAll;
+        _contentMode = SNLogContentModeTail;
+        _scopeFilter = SNLogScopeAll;
         _cachedFilterLevel = -1;   /* force first render */
         _cachedSize = (off_t)-1;
     }
@@ -164,13 +188,16 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
 #pragma mark - View construction
 
 - (void)buildTableHeader {
-    /**
-     * Segmented control sits naked in the table header — no cell wrapper.
-     * UISegmentedControlStyleBar is deprecated in iOS 7 but still renders
-     * the flatter "toolbar" appearance on iOS 6; on iOS 7+ the enum is
-     * ignored and the OS draws the modern flat segmented control.  Either
-     * way the result is visually lighter than the default chunky bevel.
-     */
+    UISegmentedControl *mode = [[UISegmentedControl alloc]
+        initWithItems:@[@"Tail", @"Summary"]];
+    mode.selectedSegmentIndex = 0;
+    mode.segmentedControlStyle = UISegmentedControlStyleBar;
+    [mode addTarget:self
+             action:@selector(modeDidChange:)
+   forControlEvents:UIControlEventValueChanged];
+    self.modeControl = mode;
+    [mode release];
+
     UISegmentedControl *seg = [[UISegmentedControl alloc]
         initWithItems:@[@"All", @"Info+", @"Warn+", @"Error"]];
     seg.selectedSegmentIndex = 0;
@@ -181,20 +208,58 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
     self.filterControl = seg;
     [seg release];
 
+    UISegmentedControl *scope = [[UISegmentedControl alloc]
+        initWithItems:@[@"All", @"Core", @"Net", @"Push", @"Store"]];
+    scope.selectedSegmentIndex = 0;
+    scope.segmentedControlStyle = UISegmentedControlStyleBar;
+    [scope addTarget:self
+              action:@selector(scopeDidChange:)
+    forControlEvents:UIControlEventValueChanged];
+    self.scopeControl = scope;
+    [scope release];
+
+    UISearchBar *search = [[UISearchBar alloc] init];
+    search.delegate = self;
+    search.placeholder = @"Filter code, bundle, or text";
+    search.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    search.autocorrectionType = UITextAutocorrectionTypeNo;
+    search.showsCancelButton = NO;
+    self.searchBar = search;
+    [search release];
+
     CGFloat width = self.view.bounds.size.width > 10.0f
                   ? self.view.bounds.size.width
                   : 320.0f;
-    CGFloat totalH = kSNLogHeaderTopPad + kSNLogSegmentHeight + kSNLogHeaderBottomPad;
+    CGFloat totalH = kSNLogHeaderTopPad
+                   + kSNLogSegmentHeight * 3.0f
+                   + kSNLogSearchHeight
+                   + kSNLogControlGap * 3.0f
+                   + kSNLogHeaderBottomPad;
     UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, width, totalH)];
     header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     header.backgroundColor = [UIColor clearColor];
 
-    self.filterControl.frame = CGRectMake(kSNLogSegmentSideInset,
-                           kSNLogHeaderTopPad,
-                           width - kSNLogSegmentSideInset * 2.0f,
-                           kSNLogSegmentHeight);
+    CGFloat y = kSNLogHeaderTopPad;
+    CGFloat controlW = width - kSNLogSegmentSideInset * 2.0f;
+
+    self.modeControl.frame = CGRectMake(kSNLogSegmentSideInset, y, controlW, kSNLogSegmentHeight);
+    self.modeControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [header addSubview:self.modeControl];
+
+    y += kSNLogSegmentHeight + kSNLogControlGap;
+    self.filterControl.frame = CGRectMake(kSNLogSegmentSideInset, y, controlW, kSNLogSegmentHeight);
     self.filterControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [header addSubview:self.filterControl];
+
+    y += kSNLogSegmentHeight + kSNLogControlGap;
+    self.scopeControl.frame = CGRectMake(kSNLogSegmentSideInset, y, controlW, kSNLogSegmentHeight);
+    self.scopeControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [header addSubview:self.scopeControl];
+
+    y += kSNLogSegmentHeight + kSNLogControlGap;
+    self.searchBar.frame = CGRectMake(0, y, width, kSNLogSearchHeight);
+    self.searchBar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [header addSubview:self.searchBar];
 
     self.tableView.tableHeaderView = header;
     [header release];
@@ -291,13 +356,11 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
     [pause release];
 
     /* rightBarButtonItems: (plural, takes an array) is iOS 5+.  On iOS 4
-     * the navigation item only supports a single right item.  Pause is the
-     * more critical control for live log viewing — share is a convenience
-     * the user can still reach by copying log content elsewhere. */
+     * the action sheet also exposes Pause/Resume, so one item is enough. */
     if ([self.navigationItem respondsToSelector:@selector(setRightBarButtonItems:)]) {
         self.navigationItem.rightBarButtonItems = @[self.pasteboardItem, self.pauseItem];
     } else {
-        self.navigationItem.rightBarButtonItem = self.pauseItem;
+        self.navigationItem.rightBarButtonItem = self.pasteboardItem;
     }
 }
 
@@ -337,7 +400,12 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
      * from tableView.bounds.height by UIKit.
      */
     CGFloat total = tableView.bounds.size.height;
-    CGFloat reserved = (kSNLogHeaderTopPad + kSNLogSegmentHeight + kSNLogHeaderBottomPad)
+    CGFloat header = kSNLogHeaderTopPad
+                   + kSNLogSegmentHeight * 3.0f
+                   + kSNLogSearchHeight
+                   + kSNLogControlGap * 3.0f
+                   + kSNLogHeaderBottomPad;
+    CGFloat reserved = header
                      + (kSNLogFooterTopPad + kSNLogFooterHeight)
                      + 24.0f;  /* group margins above/below the section */
     CGFloat h = total - reserved;
@@ -371,12 +439,35 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
 
 - (void)filterDidChange:(UISegmentedControl *)sender {
     self.filterLevel = (SNLogFilterLevel)sender.selectedSegmentIndex;
+    [self invalidateRenderedLogAndRefresh];
+}
+
+- (void)modeDidChange:(UISegmentedControl *)sender {
+    self.contentMode = (SNLogContentMode)sender.selectedSegmentIndex;
+    [self invalidateRenderedLogAndRefresh];
+}
+
+- (void)scopeDidChange:(UISegmentedControl *)sender {
+    self.scopeFilter = (SNLogScopeFilter)sender.selectedSegmentIndex;
+    [self invalidateRenderedLogAndRefresh];
+}
+
+- (void)invalidateRenderedLogAndRefresh {
     self.userScrolledAway = NO;   /* new filter → resume auto-follow */
     /* Filter change invalidates the cached render even if the file hasn't
      * moved — force the next refreshLogs through the slow path. */
     self.cachedFilterLevel = -1;
     [self refreshLogs];
     [self updateFooterStatus];
+}
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    self.searchText = searchText;
+    [self invalidateRenderedLogAndRefresh];
+}
+
+- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    [searchBar resignFirstResponder];
 }
 
 - (void)togglePause:(id)sender {
@@ -400,48 +491,140 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
 }
 
 - (void)presentShareSheet:(id)sender {
-    /**
-     * Hand the raw (untrimmed) tail to the system share sheet — Copy,
-     * Mail, Messages, AirDrop, Save to Files, whatever the user has
-     * installed.  Bug reports want absolute timestamps and process
-     * metadata, not the trimmed on-screen form.
-     *
-     * UIActivityViewController is iOS 6+. Older targets fall through to a
-     * plain pasteboard write with an alert so the action is never silent.
-     */
-    NSString *raw = self.rawTailContent;
-    NSString *content = (raw.length > 0) ? raw : (self.textView.text ?: @"");
+    NSString *pauseTitle = self.paused ? @"Resume Live Updates" : @"Pause Live Updates";
+    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Daemon Log"
+                                                       delegate:self
+                                              cancelButtonTitle:@"Cancel"
+                                         destructiveButtonTitle:nil
+                                              otherButtonTitles:@"Copy Support Bundle",
+                                                                @"Copy Diagnostic Summary",
+                                                                @"Copy Visible Text",
+                                                                @"Copy Raw Tail",
+                                                                pauseTitle,
+                                                                nil];
+    if (self.pasteboardItem && [sheet respondsToSelector:@selector(showFromBarButtonItem:animated:)]) {
+        [sheet showFromBarButtonItem:self.pasteboardItem animated:YES];
+    } else {
+        [sheet showInView:self.view];
+    }
+    [sheet release];
+}
 
-    if (content.length == 0) {
-        [self showSilentActionAlert:@"Log file is empty — nothing to share."];
+- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
+    if (buttonIndex == actionSheet.cancelButtonIndex) return;
+
+    if (buttonIndex == 0) {
+        [self copyTextToPasteboard:[self supportBundleText] message:@"Support bundle copied to clipboard."];
+    } else if (buttonIndex == 1) {
+        [self copyTextToPasteboard:[self diagnosticSummaryTextForCurrentTail] message:@"Diagnostic summary copied to clipboard."];
+    } else if (buttonIndex == 2) {
+        [self copyTextToPasteboard:self.textView.text message:@"Visible log copied to clipboard."];
+    } else if (buttonIndex == 3) {
+        [self copyTextToPasteboard:self.rawTailContent message:@"Raw log tail copied to clipboard."];
+    } else if (buttonIndex == 4) {
+        [self togglePause:nil];
+    }
+}
+
+- (void)copyTextToPasteboard:(NSString *)text message:(NSString *)message {
+    if (text.length == 0) {
+        [self showSilentActionAlert:@"Nothing to copy."];
         return;
     }
+    [UIPasteboard generalPasteboard].string = text;
+    [self showSilentActionAlert:message];
+}
 
-    Class activityCls = NSClassFromString(@"UIActivityViewController");
-    if (activityCls) {
-        id vc = [[[activityCls alloc] initWithActivityItems:@[content]
-                                     applicationActivities:nil] autorelease];
-
-        /* iPad: pin the popover to the share bar button.  iPhone presents
-         * modally and ignores this entirely.  popoverPresentationController
-         * is iOS 8+; on iOS 6/7 the selector is absent and the conditional
-         * short-circuits.  KVC (valueForKey) is used instead of
-         * performSelector to keep ARC happy under -Werror — no chance of
-         * the "may cause a leak because its selector is unknown" warning. */
-        if ([vc respondsToSelector:@selector(popoverPresentationController)]) {
-            id popover = [vc valueForKey:@"popoverPresentationController"];
-            if (popover) {
-                [popover setValue:self.pasteboardItem forKey:@"barButtonItem"];
-            }
-        }
-
-        [self presentViewController:vc animated:YES completion:nil];
-    } else {
-        /* Pre-iOS 6 fallback — pasteboard + explicit confirmation so the
-         * user knows something happened. */
-        [UIPasteboard generalPasteboard].string = content;
-        [self showSilentActionAlert:@"Log copied to clipboard."];
+- (NSArray *)currentRawLines {
+    NSString *raw = self.rawTailContent ?: @"";
+    NSArray *lines = [raw componentsSeparatedByString:@"\n"];
+    if (lines.count > 0 && [[lines lastObject] length] == 0) {
+        lines = [lines subarrayWithRange:NSMakeRange(0, lines.count - 1)];
     }
+    return lines;
+}
+
+- (NSString *)diagnosticSummaryTextForCurrentTail {
+    NSUInteger ignored = 0;
+    return [self diagnosticSummaryForLines:[self currentRawLines]
+                                  countOut:&ignored
+                              applyFilters:NO];
+}
+
+- (NSString *)supportBundleText {
+    SNDataManager *dm = [SNDataManager shared];
+    SGStatusPayload payload = dm.latestPayload;
+    NSDictionary *prefs = [dm mainPrefs];
+    NSString *logPath = SNLogTailPath();
+    NSDictionary *logAttrs = [[NSFileManager defaultManager] attributesOfItemAtPath:logPath error:nil];
+
+    NSDateFormatter *fmt = [[[NSDateFormatter alloc] init] autorelease];
+    [fmt setDateFormat:@"yyyy-MM-dd HH:mm:ss ZZZZ"];
+
+    NSMutableString *out = [NSMutableString string];
+    [out appendString:@"Skyglow Notifications Support Bundle\n"];
+    [out appendFormat:@"generated=%@\n", [fmt stringFromDate:[NSDate date]]];
+    [out appendFormat:@"device=%@ %@ model=%@\n",
+                      [[UIDevice currentDevice] systemName],
+                      [[UIDevice currentDevice] systemVersion],
+                      [[UIDevice currentDevice] model]];
+
+    NSBundle *bundle = [NSBundle bundleForClass:[self class]];
+    NSString *version = [bundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?:
+                        [bundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?:
+                        @"unknown";
+    [out appendFormat:@"bundle_version=%@\n\n", version];
+
+    [out appendString:@"Status\n"];
+    [out appendFormat:@"state=%@\n", [dm friendlyStringForState:payload.state]];
+    [out appendFormat:@"active_profile=%u\n", payload.activeProfileIndex];
+    [out appendFormat:@"failures=%u\n", payload.consecutiveFailures];
+    [out appendFormat:@"backoff_sec=%u\n", payload.currentBackoffSec];
+    if (payload.errorDetail[0] != '\0') {
+        payload.errorDetail[sizeof(payload.errorDetail) - 1] = '\0';
+        [out appendFormat:@"error=%@\n", [NSString stringWithUTF8String:payload.errorDetail]];
+    }
+
+    [out appendString:@"\nConfiguration\n"];
+    [out appendFormat:@"enabled=%@\n", [dm isEnabled] ? @"yes" : @"no"];
+    [out appendFormat:@"server_address=%@\n", [dm serverAddress] ?: @"none"];
+    [out appendFormat:@"device_address_present=%@\n", [dm deviceAddress].length ? @"yes" : @"no"];
+    [out appendFormat:@"server_key_present=%@\n", [dm serverPubKeyPEM].length ? @"yes" : @"no"];
+    [out appendFormat:@"registered_apps_pref_count=%lu\n",
+                      (unsigned long)[[prefs objectForKey:@"appStatus"] count]];
+
+    [out appendString:@"\nDatabase\n"];
+    [out appendFormat:@"registered_tokens=%ld\n", (long)[dm registeredTokenCount]];
+    [out appendFormat:@"db_size_bytes=%llu\n", [dm dbFileSize]];
+
+    NSDictionary *dns = [dm cachedDNSForServerAddress:[dm serverAddress]];
+    if (dns) {
+        [out appendFormat:@"cached_dns_ip=%@\n", [dns objectForKey:@"ip"] ?: @"none"];
+        [out appendFormat:@"cached_dns_port=%@\n", [dns objectForKey:@"port"] ?: @"none"];
+    } else {
+        [out appendString:@"cached_dns=none\n"];
+    }
+
+    [out appendString:@"\nFiles\n"];
+    [out appendFormat:@"log_path=%@\n", logPath];
+    [out appendFormat:@"log_size_bytes=%@\n", [logAttrs objectForKey:NSFileSize] ?: @"0"];
+    [out appendFormat:@"prefs_path=%@\n", [dm mainPrefsPath]];
+    [out appendFormat:@"profile_path=%@\n", [dm profilePath]];
+    [out appendFormat:@"db_path=%@\n", [dm dbPath]];
+
+    [out appendString:@"\nStructured Diagnostics\n"];
+    [out appendString:[self diagnosticSummaryTextForCurrentTail]];
+
+    NSString *raw = self.rawTailContent ?: @"";
+    [out appendString:@"\n\nRaw Log Tail\n"];
+    if (raw.length) {
+        [out appendString:raw];
+        if (![raw hasSuffix:@"\n"]) [out appendString:@"\n"];
+    } else {
+        [out appendString:@"Log file is empty or unreadable.\n"];
+    }
+
+    return out;
 }
 
 - (void)showSilentActionAlert:(NSString *)message {
@@ -465,6 +648,80 @@ static NSString * const kSNLogTextCellID = @"SNLogTextCell";
         case SNLogFilterInfo:  return (level == 'E' || level == 'W' || level == 'I');
         default:               return YES;
     }
+}
+
+static NSString *SNLogDiagnosticCodeForLine(NSString *line) {
+    NSRange marker = [line rangeOfString:@"code=SGN_"];
+    if (marker.location == NSNotFound) return nil;
+
+    NSUInteger start = marker.location + marker.length - 4;
+    NSUInteger end = start;
+    while (end < line.length) {
+        unichar ch = [line characterAtIndex:end];
+        if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') break;
+        end++;
+    }
+    if (end <= start) return nil;
+    return [line substringWithRange:NSMakeRange(start, end - start)];
+}
+
+static NSString *SNLogSubsystemForCode(NSString *code) {
+    if ([code hasPrefix:@"SGN_DAEMON_"] ||
+        [code hasPrefix:@"SGN_CONFIG_"] ||
+        [code hasPrefix:@"SGN_AVAILABILITY_"] ||
+        [code hasPrefix:@"SGN_FSM_"] ||
+        [code hasPrefix:@"SGN_BACKOFF_"] ||
+        [code hasPrefix:@"SGN_KEEPALIVE_"] ||
+        [code hasPrefix:@"SGN_TOKEN_"]) {
+        return @"Core";
+    }
+    if ([code hasPrefix:@"SGN_PROTOCOL_"] ||
+        [code hasPrefix:@"SGN_CONTROL_"] ||
+        [code hasPrefix:@"SGN_DNS_"] ||
+        [code hasPrefix:@"SGN_REGISTRATION_"]) {
+        return @"Network";
+    }
+    if ([code hasPrefix:@"SGN_DELIVERY_"]) {
+        return @"Delivery";
+    }
+    if ([code hasPrefix:@"SGN_DATABASE_"] ||
+        [code hasPrefix:@"SGN_CRYPTO_"]) {
+        return @"Storage";
+    }
+    return code.length ? @"Other" : @"Unstructured";
+}
+
+- (BOOL)subsystem:(NSString *)subsystem passesScopeFilter:(SNLogScopeFilter)filter {
+    switch (filter) {
+        case SNLogScopeCore:     return [subsystem isEqualToString:@"Core"];
+        case SNLogScopeNetwork:  return [subsystem isEqualToString:@"Network"];
+        case SNLogScopeDelivery: return [subsystem isEqualToString:@"Delivery"];
+        case SNLogScopeStorage:  return [subsystem isEqualToString:@"Storage"];
+        default:                 return YES;
+    }
+}
+
+- (BOOL)line:(NSString *)line
+      parsed:(BOOL)parsed
+       level:(unichar)level
+        code:(NSString *)code
+   subsystem:(NSString *)subsystem
+passesFiltersAllowingUnstructured:(BOOL)allowUnstructured {
+    if (parsed && ![self levelPassesFilter:level]) return NO;
+    if (!parsed && self.filterLevel != SNLogFilterAll) return NO;
+    if (!code.length && !allowUnstructured) return NO;
+    if (![self subsystem:subsystem passesScopeFilter:self.scopeFilter]) return NO;
+
+    NSString *needle = self.searchText;
+    if (needle.length > 0) {
+        NSRange r1 = [line rangeOfString:needle options:NSCaseInsensitiveSearch];
+        NSRange r2 = [code rangeOfString:needle options:NSCaseInsensitiveSearch];
+        NSRange r3 = [subsystem rangeOfString:needle options:NSCaseInsensitiveSearch];
+        if (r1.location == NSNotFound && r2.location == NSNotFound && r3.location == NSNotFound) {
+            return NO;
+        }
+    }
+    return YES;
 }
 
 #pragma mark - Log reading
@@ -546,21 +803,127 @@ static BOOL SNLogParseLine(NSString *line, NSString **outTrimmed, unichar *outLe
         NSString *trimmed = nil;
         unichar level = 0;
         BOOL parsed = SNLogParseLine(line, &trimmed, &level);
-
-        if (parsed && ![self levelPassesFilter:level]) continue;
-        if (!parsed && self.filterLevel != SNLogFilterAll) continue;
-
         NSString *display = parsed ? trimmed : line;
+        NSString *code = SNLogDiagnosticCodeForLine(display);
+        NSString *subsystem = SNLogSubsystemForCode(code);
+
+        if (![self line:display
+                 parsed:parsed
+                  level:level
+                   code:code
+              subsystem:subsystem
+passesFiltersAllowingUnstructured:YES]) {
+            continue;
+        }
+
         [out appendString:display];
         [out appendString:@"\n"];
         shown++;
     }
 
     if (out.length == 0) {
-        NSString *empty = (self.filterLevel == SNLogFilterAll)
+        BOOL hasActiveFilter = (self.filterLevel != SNLogFilterAll ||
+                                self.scopeFilter != SNLogScopeAll ||
+                                self.searchText.length > 0);
+        NSString *empty = !hasActiveFilter
             ? @"\nLog file is empty or has not been created yet."
             : @"\nNo matching lines in the current tail window.";
         [out appendString:empty];
+    }
+
+    if (countOut) *countOut = shown;
+    return out;
+}
+
+- (NSString *)diagnosticSummaryForLines:(NSArray *)lines
+                               countOut:(NSUInteger *)countOut
+                           applyFilters:(BOOL)applyFilters {
+    NSMutableDictionary *codeCounts = [NSMutableDictionary dictionary];
+    NSMutableDictionary *codeLevels = [NSMutableDictionary dictionary];
+    NSMutableDictionary *codeSubsystems = [NSMutableDictionary dictionary];
+    NSMutableDictionary *subsystemCounts = [NSMutableDictionary dictionary];
+    NSUInteger shown = 0;
+    NSUInteger errors = 0, warnings = 0, infos = 0, debug = 0, trace = 0;
+
+    for (NSString *line in lines) {
+        if (line.length == 0) continue;
+
+        NSString *trimmed = nil;
+        unichar level = 0;
+        BOOL parsed = SNLogParseLine(line, &trimmed, &level);
+        NSString *display = parsed ? trimmed : line;
+        NSString *code = SNLogDiagnosticCodeForLine(display);
+        if (!code.length) continue;
+
+        NSString *subsystem = SNLogSubsystemForCode(code);
+        if (applyFilters &&
+            ![self line:display
+                 parsed:parsed
+                  level:level
+                   code:code
+              subsystem:subsystem
+passesFiltersAllowingUnstructured:NO]) {
+            continue;
+        }
+
+        NSNumber *count = [codeCounts objectForKey:code];
+        [codeCounts setObject:[NSNumber numberWithUnsignedInteger:[count unsignedIntegerValue] + 1]
+                       forKey:code];
+        [codeLevels setObject:[NSString stringWithFormat:@"%C", level] forKey:code];
+        [codeSubsystems setObject:subsystem forKey:code];
+
+        NSNumber *subCount = [subsystemCounts objectForKey:subsystem];
+        [subsystemCounts setObject:[NSNumber numberWithUnsignedInteger:[subCount unsignedIntegerValue] + 1]
+                            forKey:subsystem];
+
+        switch (level) {
+            case 'E': errors++; break;
+            case 'W': warnings++; break;
+            case 'I': infos++; break;
+            case 'D': debug++; break;
+            case 'T': trace++; break;
+            default: break;
+        }
+        shown++;
+    }
+
+    NSMutableString *out = [NSMutableString string];
+    if (shown == 0) {
+        [out appendString:@"\nNo structured diagnostics match the current filters."];
+        if (countOut) *countOut = 0;
+        return out;
+    }
+
+    [out appendString:@"Diagnostic Summary\n\n"];
+    [out appendFormat:@"Total: %lu\n", (unsigned long)shown];
+    [out appendFormat:@"Severity: E=%lu W=%lu I=%lu D=%lu T=%lu\n\n",
+                      (unsigned long)errors,
+                      (unsigned long)warnings,
+                      (unsigned long)infos,
+                      (unsigned long)debug,
+                      (unsigned long)trace];
+
+    [out appendString:@"Subsystems\n"];
+    NSArray *subsystems = [[subsystemCounts allKeys] sortedArrayUsingSelector:@selector(compare:)];
+    for (NSString *subsystem in subsystems) {
+        [out appendFormat:@"%@: %@\n", subsystem, [subsystemCounts objectForKey:subsystem]];
+    }
+
+    [out appendString:@"\nCodes\n"];
+    NSArray *codes = [[codeCounts allKeys] sortedArrayUsingComparator:^NSComparisonResult(id a, id b) {
+        NSUInteger ca = [[codeCounts objectForKey:a] unsignedIntegerValue];
+        NSUInteger cb = [[codeCounts objectForKey:b] unsignedIntegerValue];
+        if (ca > cb) return NSOrderedAscending;
+        if (ca < cb) return NSOrderedDescending;
+        return [a compare:b];
+    }];
+
+    for (NSString *code in codes) {
+        [out appendFormat:@"%@ %@ %@ %@\n",
+                          [codeCounts objectForKey:code],
+                          [codeLevels objectForKey:code],
+                          [codeSubsystems objectForKey:code],
+                          code];
     }
 
     if (countOut) *countOut = shown;
@@ -586,7 +949,9 @@ static BOOL SNLogParseLine(NSString *line, NSString **outTrimmed, unichar *outLe
             self.lastVisibleLineCount = 0;
             self.textView.font = [UIFont systemFontOfSize:13.0f];
             self.textView.textColor = [UIColor colorWithWhite:0.50f alpha:1.0f];
-            self.textView.text = [self stringForLines:[NSArray array] countOut:NULL];
+            self.textView.text = (self.contentMode == SNLogContentModeSummary)
+                ? [self diagnosticSummaryForLines:[NSArray array] countOut:NULL applyFilters:YES]
+                : [self stringForLines:[NSArray array] countOut:NULL];
             [self clampTextViewToVerticalScrolling];
             [self updateFooterStatus];
         }
@@ -623,7 +988,9 @@ static BOOL SNLogParseLine(NSString *line, NSString **outTrimmed, unichar *outLe
     }
 
     NSUInteger shown = 0;
-    NSString *rendered = [self stringForLines:lines countOut:&shown];
+    NSString *rendered = (self.contentMode == SNLogContentModeSummary)
+        ? [self diagnosticSummaryForLines:lines countOut:&shown applyFilters:YES]
+        : [self stringForLines:lines countOut:&shown];
 
     BOOL countChanged = (shown != self.lastVisibleLineCount);
     self.lastVisibleLineCount = shown;
@@ -650,12 +1017,15 @@ static BOOL SNLogParseLine(NSString *line, NSString **outTrimmed, unichar *outLe
             ? @"Scrolled back — tap log to resume follow"
             : @"Live");
 
+    NSString *unit = (self.contentMode == SNLogContentModeSummary) ? @"diagnostic" : @"line";
+    NSString *pluralUnit = (self.contentMode == SNLogContentModeSummary) ? @"diagnostics" : @"lines";
+
     NSString *text;
     if (self.lastVisibleLineCount == 1) {
-        text = [NSString stringWithFormat:@"1 line · %@", state];
+        text = [NSString stringWithFormat:@"1 %@ · %@", unit, state];
     } else {
-        text = [NSString stringWithFormat:@"%lu lines · %@",
-                (unsigned long)self.lastVisibleLineCount, state];
+        text = [NSString stringWithFormat:@"%lu %@ · %@",
+                (unsigned long)self.lastVisibleLineCount, pluralUnit, state];
     }
 
     /* In-place label mutation — no table reload, no flicker, no scroll
@@ -712,13 +1082,17 @@ static BOOL SNLogParseLine(NSString *line, NSString **outTrimmed, unichar *outLe
     [self stopTimer];
 
     [_textView release];
+    [_modeControl release];
     [_filterControl release];
+    [_scopeControl release];
+    [_searchBar release];
     [_footerView release];
     [_footerLabel release];
     [_refreshTimer release];
     [_pauseItem release];
     [_pasteboardItem release];
     [_rawTailContent release];
+    [_searchText release];
     [super dealloc];
 }
 

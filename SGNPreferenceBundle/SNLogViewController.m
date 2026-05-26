@@ -73,7 +73,6 @@
                                              selector:@selector(refreshDaemonStatus)
                                                  name:@"SNDaemonStatusUpdated"
                                                object:nil];
-    [[SNDataManager shared] startWatchingDaemonStatus];
     [self refreshDaemonStatus];
 }
 
@@ -97,13 +96,11 @@
 
     [[NSNotificationCenter defaultCenter] removeObserver:self name:@"SNDaemonStatusUpdated" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(refreshDaemonStatus) name:@"SNDaemonStatusUpdated" object:nil];
-    [[SNDataManager shared] startWatchingDaemonStatus];
     [self refreshDaemonStatus];
 }
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [[SNDataManager shared] stopWatchingDaemonStatus];
 
     [_statusLabel release];
     [_gradientLayer release];
@@ -121,7 +118,6 @@
     }
     if (leaving) {
         [[NSNotificationCenter defaultCenter] removeObserver:self name:@"SNDaemonStatusUpdated" object:nil];
-        [[SNDataManager shared] stopWatchingDaemonStatus];
     }
 }
 

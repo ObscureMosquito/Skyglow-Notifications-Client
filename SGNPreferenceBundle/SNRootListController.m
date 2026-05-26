@@ -117,13 +117,7 @@
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
     NSString *key = [specifier propertyForKey:@"key"];
     if (!key) return;
-    
     [[SNDataManager shared] setMainPrefValue:value forKey:key];
-    
-    CFStringRef appID = CFSTR("com.skyglow.sndp");
-    CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, appID);
-    CFPreferencesAppSynchronize(appID);
-    
     [SNChannelGateway postReloadConfig];
 }
 

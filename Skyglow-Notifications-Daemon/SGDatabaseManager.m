@@ -38,8 +38,7 @@
         chown([dbDir UTF8String], 501, 501);
 
         if (sqlite3_open([dbPath UTF8String], &_database) != SQLITE_OK) {
-            SGLOGE_CODE(SGDatabaseManager, SGND_DATABASE_OPEN_FAILED,
-                        "path=%s result=failed", [dbPath UTF8String]);
+            SGLOGE(SGDatabaseManager, "code=%s path=%s result=failed", SGND_DATABASE_OPEN_FAILED, [dbPath UTF8String]);
             [self release];
             return nil;
         }
@@ -54,8 +53,7 @@
         const char *notifTable = "CREATE TABLE IF NOT EXISTS notifications "
                                  "(routing_key BLOB PRIMARY KEY, e2ee_key BLOB, bundle_id TEXT, token BLOB)";
         if (sqlite3_exec(_database, notifTable, NULL, NULL, &errorMsg) != SQLITE_OK) {
-            SGLOGE_CODE(SGDatabaseManager, SGND_DATABASE_SCHEMA_FAILED,
-                        "result=failed reason=%s", errorMsg ? errorMsg : "(null)");
+            SGLOGE(SGDatabaseManager, "code=%s result=failed reason=%s", SGND_DATABASE_SCHEMA_FAILED, errorMsg ? errorMsg : "(null)");
             sqlite3_free(errorMsg);
         }
         const char *dnsTable = "CREATE TABLE IF NOT EXISTS dns_cache "
@@ -119,8 +117,7 @@
             char *err = NULL;
             rc = sqlite3_exec(_database, migration, NULL, NULL, &err);
             if (rc != SQLITE_OK) {
-                SGLOGE_CODE(SGDatabaseManager, SGND_DATABASE_MIGRATION_FAILED,
-                            "from=%d to=%d result=failed reason=%s",
+                SGLOGE(SGDatabaseManager, "code=%s from=%d to=%d result=failed reason=%s", SGND_DATABASE_MIGRATION_FAILED,
                             currentVersion, targetVersion, err ? err : "(null)");
                 sqlite3_free(err);
                 sqlite3_exec(_database, "ROLLBACK", NULL, NULL, NULL);
@@ -133,8 +130,7 @@
         sqlite3_exec(_database, stamp, NULL, NULL, NULL);
         sqlite3_exec(_database, "COMMIT", NULL, NULL, NULL);
 
-        SGLOGI_CODE(SGDatabaseManager, SGND_DATABASE_MIGRATED,
-                    "from=%d to=%d result=ok", currentVersion, targetVersion);
+        SGLOGI(SGDatabaseManager, "code=%s from=%d to=%d result=ok", SGND_DATABASE_MIGRATED, currentVersion, targetVersion);
         currentVersion = targetVersion;
     }
 }

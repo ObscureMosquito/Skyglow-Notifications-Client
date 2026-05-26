@@ -1,12 +1,11 @@
 #import "SNDataManager.h"
+#import "SNChannelGateway.h"
 #import "../Skyglow-Notifications-Daemon/SGSharedConstants.h"
 #import <UIKit/UIKit.h>
 #import <sqlite3.h>
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 #include <openssl/bio.h>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <unistd.h>
 #include <dns_sd.h>
 
@@ -32,26 +31,8 @@ static inline NSString * SGProfilePath() {
     return SGProfilePathForIndex(idx);
 }
 static inline NSString * SGDBPath()        { return SGPath(SG_DB_PATH); }
-static inline const char * SGPocketPath()  { return [SGPath(SG_STATUS_SOCK_PATH) UTF8String]; }
-
-static void SNCopyCString(char *dst, size_t dstSize, const char *src) {
-    if (!dst || dstSize == 0) return;
-    if (!src) {
-        dst[0] = '\0';
-        return;
-    }
-    size_t i = 0;
-    while (i + 1 < dstSize && src[i] != '\0') {
-        dst[i] = src[i];
-        i++;
-    }
-    dst[i] = '\0';
-}
 
 @interface SNDataManager ()
-@property (nonatomic, assign) int watchSocketFD;
-@property (nonatomic, assign) BOOL isWatching;
-@property (nonatomic, assign) uint32_t watchGeneration;
 @end
 
 @interface SNAutoFetchConnectionDelegate : NSObject
@@ -95,8 +76,35 @@ static void SNCopyCString(char *dst, size_t dstSize, const char *src) {
 + (SNDataManager *)shared {
     static SNDataManager *instance = nil;
     static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ instance = [[SNDataManager alloc] init]; });
+    dispatch_once(&onceToken, ^{
+        instance = [[SNDataManager alloc] init];
+        [instance _bootstrapStatusMonitor];
+    });
     return instance;
+}
+
+- (void)_bootstrapStatusMonitor {
+    /* Cached payload starts zeroed (state == Starting, which renders as
+     * neutral grey in the UI).  Two paths populate it:
+     *
+     *   1. One-shot QUERY_STATUS request — async; reply lands on main
+     *      and fires SNDaemonStatusUpdated.  Covers bundle-load seeding
+     *      and the rare case where state didn't change while suspended.
+     *
+     *   2. STATE_CHANGED subscription — pushes every future transition,
+     *      survives suspend/resume and daemon restarts via Mach port
+     *      lifecycle and the channel's reconnect machinery. */
+    [SNChannelGateway queryStatusWithCompletion:^(SGStatusPayload payload) {
+        self.latestPayload = payload;
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
+    }];
+
+    [SNChannelGateway subscribeToStatusUpdatesWithHandler:^(SGStatusPayload payload) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.latestPayload = payload;
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
+        });
+    }];
 }
 
 - (NSString *)mainPrefsPath { return SGMainPrefsPath(); }
@@ -160,185 +168,6 @@ static void SNCopyCString(char *dst, size_t dstSize, const char *src) {
 - (NSString *)deviceAddress   { return [[self profile] objectForKey:@"device_address"]; }
 - (NSString *)serverPubKeyPEM { return [[self profile] objectForKey:@"server_pub_key"]; }
 - (BOOL)isRegistered { return ([self serverAddress] != nil && [[self serverAddress] length] > 0); }
-
-- (SGStatusPayload)queryDaemonStatus {
-    SGStatusPayload empty;
-    memset(&empty, 0, sizeof(empty));
-
-    if (access(SGPocketPath(), F_OK) != 0) {
-        empty.state = SGStateDisabled;
-        return empty;
-    }
-
-    empty.state = SGStateStarting;
-
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) return empty;
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    SNCopyCString(addr.sun_path, sizeof(addr.sun_path), SGPocketPath());
-
-    struct timeval tv = {0, 300000};
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) { 
-        close(fd); 
-        return empty; 
-    }
-
-    uint8_t mode = SS_MODE_QUERY;
-    if (write(fd, &mode, 1) != 1) { 
-        close(fd); 
-        return empty; 
-    }
-
-    SGStatusPayload payload;
-    memset(&payload, 0, sizeof(payload));
-    ssize_t total = 0, remaining = (ssize_t)sizeof(payload);
-    uint8_t *buf = (uint8_t *)&payload;
-
-    while (remaining > 0) {
-        ssize_t n = read(fd, buf + total, (size_t)remaining);
-        if (n <= 0) break;
-        total += n; 
-        remaining -= n;
-    }
-    close(fd);
-
-    if (total == (ssize_t)sizeof(payload)) {
-        return payload;
-    }
-    
-    return empty;
-}
-
-- (void)startWatchingDaemonStatus {
-    [self stopWatchingDaemonStatus];
-
-    self.latestPayload = [self queryDaemonStatus];
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
-
-    self.isWatching = YES;
-    self.watchSocketFD = -1;
-    self.watchGeneration++;
-
-    [self _performConnectionCycleForGeneration:self.watchGeneration];
-}
-
-- (void)_performConnectionCycleForGeneration:(uint32_t)gen {
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        if (!self.isWatching || self.watchGeneration != gen) return;
-
-        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (fd < 0) {
-            [self _scheduleConnectionAttemptForGeneration:gen delay:1.0];
-            return;
-        }
-        self.watchSocketFD = fd;
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    SNCopyCString(addr.sun_path, sizeof(addr.sun_path), SGPocketPath());
-
-        struct timeval connectTv = {1, 0};
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &connectTv, sizeof(connectTv));
-
-        if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-            close(fd);
-            self.watchSocketFD = -1;
-
-            if (self.watchGeneration == gen) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if (self.watchGeneration != gen) return;
-                    SGStatusPayload empty;
-                    memset(&empty, 0, sizeof(empty));
-                    empty.state = SGStateDisabled;
-                    self.latestPayload = empty;
-                    [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
-                });
-            }
-            [self _scheduleConnectionAttemptForGeneration:gen delay:2.0];
-            return;
-        }
-
-        uint8_t mode = 0x57;
-        if (write(fd, &mode, 1) != 1) {
-            close(fd);
-            self.watchSocketFD = -1;
-            [self _scheduleConnectionAttemptForGeneration:gen delay:1.0];
-            return;
-        }
-
-        struct timeval readTv = {5, 0};
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &readTv, sizeof(readTv));
-
-        while (self.isWatching && self.watchGeneration == gen) {
-            SGStatusPayload payload;
-            memset(&payload, 0, sizeof(payload));
-            ssize_t total = 0, remaining = sizeof(payload);
-            uint8_t *buf = (uint8_t *)&payload;
-            BOOL readError = NO;
-
-            while (remaining > 0) {
-                ssize_t n = read(fd, buf + total, remaining);
-                if (n > 0) {
-                    total += n; remaining -= n;
-                } else if (n == 0) {
-                    readError = YES; break;
-                } else {
-                    if (errno == EINTR) continue;
-                    readError = YES; break;
-                }
-            }
-
-            if (readError) {
-                if (self.watchGeneration == gen) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        if (self.watchGeneration != gen) return;
-                        self.latestPayload = [self queryDaemonStatus];
-                        [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
-                    });
-                }
-                break;
-            }
-
-            if (total == (ssize_t)sizeof(payload) && self.watchGeneration == gen) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if (self.watchGeneration != gen) return;
-                    self.latestPayload = payload;
-                    [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
-                });
-            }
-        }
-
-        close(fd);
-        self.watchSocketFD = -1;
-
-        [self _scheduleConnectionAttemptForGeneration:gen delay:0.5];
-    });
-}
-
-- (void)_scheduleConnectionAttemptForGeneration:(uint32_t)gen delay:(double)seconds {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)),
-                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        if (self.isWatching && self.watchGeneration == gen) {
-            [self _performConnectionCycleForGeneration:gen];
-        }
-    });
-}
-
-- (void)stopWatchingDaemonStatus {
-    self.isWatching = NO;
-    if (self.watchSocketFD >= 0) {
-        shutdown(self.watchSocketFD, SHUT_RDWR);
-        close(self.watchSocketFD);
-        self.watchSocketFD = -1;
-    }
-}
 
 static sqlite3 *openDBReadOnly(void) {
     sqlite3 *db = NULL;

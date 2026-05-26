@@ -17,14 +17,12 @@ RSA *SG_CryptoGetClientPrivateKey(void) {
 
     RSA *key = PEM_read_bio_RSAPrivateKey(bio, NULL, NULL, NULL);
     if (!key) {
-        SGLOGE_CODE(SGCryptoEngine, SGND_CRYPTO_PRIVATE_KEY_READ_FAILED,
-                    "result=failed reason=pem_read_private_key");
+        SGLOGE(SGCryptoEngine, "code=%s result=failed reason=pem_read_private_key", SGND_CRYPTO_PRIVATE_KEY_READ_FAILED);
         unsigned long openSslErr;
         while ((openSslErr = ERR_get_error()) != 0) {
             char errBuf[256];
             ERR_error_string_n(openSslErr, errBuf, sizeof(errBuf));
-            SGLOGE_CODE(SGCryptoEngine, SGND_CRYPTO_OPENSSL_ERROR,
-                        "reason=%s", errBuf);
+            SGLOGE(SGCryptoEngine, "code=%s reason=%s", SGND_CRYPTO_OPENSSL_ERROR, errBuf);
         }
     }
     

@@ -159,11 +159,18 @@ typedef enum : uint8_t {
      * "Apple Push" apps shown in the manual-forget section of the app list. */
     SGCMSG_LIST_PUSH_REGISTERED_APPS = 0x1F, /* (empty payload) */
 
+    /* Prefs -> daemon: request the current SGStatusPayload snapshot.  Reply
+     * is SGCMSG_STATUS_RESPONSE.  Independent of SGCEVT_STATE_CHANGED — that
+     * event covers future changes; this message covers "what's the state
+     * right now" (used to seed the UI on bundle load). */
+    SGCMSG_QUERY_STATUS        = 0x20,  /* (empty payload) */
+
     /* Responses */
     SGCMSG_GENERIC_ACK         = 0x30,  /* (empty payload)           */
     SGCMSG_TOKEN_RESPONSE      = 0x31,  /* SGCTokenResponsePayload   */
     SGCMSG_ERROR_RESPONSE      = 0x32,  /* SGCErrorResponsePayload   */
     SGCMSG_BUNDLE_ID_LIST      = 0x33,  /* SGCBundleIdListPayload    */
+    SGCMSG_STATUS_RESPONSE     = 0x34,  /* SGStatusPayload (verbatim) */
 
     /* Events */
     SGCMSG_EVENT_DELIVERY      = 0x40,  /* SGCEventDeliveryPayload   */
@@ -177,7 +184,7 @@ typedef enum : uint8_t {
  * SUBSCRIBE requests and receives independent subscription IDs back.
  */
 typedef enum : uint16_t {
-    SGCEVT_STATE_CHANGED      = 1,  /* SGCStateChangedEventData */
+    SGCEVT_STATE_CHANGED      = 1,  /* SGStatusPayload (full snapshot) */
     SGCEVT_SB_RECEIVER_READY  = 2,  /* (empty data)             */
     SGCEVT_CONFIG_RELOADED    = 4,  /* (empty data)             */
 } SGControlEventType;
@@ -368,16 +375,9 @@ typedef struct {
     char message[SG_CONTROL_MAX_ERROR_DETAIL_SIZE];
 } SGCErrorResponsePayload;
 
-/** Event Data Structs */
-
-/**
- * SGCEVT_STATE_CHANGED data.  newState is the SGState the daemon just
- * entered; reason is a short free-form string for logs (may be empty).
- */
-typedef struct {
-    uint8_t newState;
-    char    reason[SG_CONTROL_MAX_REASON_SIZE];
-} SGCStateChangedEventData;
+/* SGCEVT_STATE_CHANGED carries the full SGStatusPayload (from SGStatusServer.h)
+ * as its event data — subscribers get the same snapshot the unix status sock
+ * would have served, with no separate query round-trip. */
 
 #pragma pack()
 

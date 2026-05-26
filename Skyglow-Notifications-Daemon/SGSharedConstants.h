@@ -36,7 +36,6 @@
 /* Daemon lifecycle. */
 #define SG_LOG_PATH                 @"/var/log/skyglow.log"
 #define SG_PID_PATH                 @"/var/run/skyglow_daemon.pid"
-#define SG_STATUS_SOCK_PATH         @"/var/run/skyglow_status.sock"
 
 #pragma mark - iOS Version Branches
 

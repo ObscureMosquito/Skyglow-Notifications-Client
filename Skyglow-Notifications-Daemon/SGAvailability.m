@@ -154,8 +154,7 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
             }
         }
 
-        SGLOGI_CODE(SGAvailability, SGND_AVAILABILITY_CAPABILITIES,
-                    "ios=%.1f persistent_timer=%s growth_algorithm=%s power_assertion=%s",
+        SGLOGI(SGAvailability, "code=%s ios=%.1f persistent_timer=%s growth_algorithm=%s power_assertion=%s", SGND_AVAILABILITY_CAPABILITIES,
                     sysVer,
                     [self isCapabilityAvailable:SGCapabilityPersistentTimer] ? "available" : "unavailable",
                     [self isCapabilityAvailable:SGCapabilityGrowthAlgorithm] ? "available" : "unavailable",
@@ -233,15 +232,13 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
             initWithKeepAliveInterval:interval
                     loggingIdentifier:@"com.skyglow.sgn"
                         algorithmName:@"SkyglowKA"];
-        SGLOGI_CODE(SGAvailability, SGND_AVAILABILITY_GROWTH_ALGORITHM,
-                    "name=PCMultiStageGrowthAlgorithm initial=%.0fs", interval);
+        SGLOGI(SGAvailability, "code=%s name=PCMultiStageGrowthAlgorithm initial=%.0fs", SGND_AVAILABILITY_GROWTH_ALGORITHM, interval);
     } else {
         algo = [[SGBuiltinGrowthAlgorithm alloc]
             initWithKeepAliveInterval:interval
                     loggingIdentifier:@"com.skyglow.sgn"
                         algorithmName:@"SkyglowKA"];
-        SGLOGI_CODE(SGAvailability, SGND_AVAILABILITY_GROWTH_ALGORITHM,
-                    "name=SGBuiltinGrowthAlgorithm initial=%.0fs", interval);
+        SGLOGI(SGAvailability, "code=%s name=SGBuiltinGrowthAlgorithm initial=%.0fs", SGND_AVAILABILITY_GROWTH_ALGORITHM, interval);
     }
 
     [algo setMinimumKeepAliveInterval:minInterval];

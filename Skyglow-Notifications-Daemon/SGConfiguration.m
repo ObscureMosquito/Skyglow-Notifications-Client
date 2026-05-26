@@ -99,8 +99,7 @@
     if (!rawPath || [rawPath length] == 0) return nil;
     
     if ([rawPath length] > 1024) {
-        SGLOGE_CODE(SGConfiguration, SGND_CONFIG_KEY_PATH_TOO_LONG,
-                    "result=failed length=%lu max=1024", (unsigned long)[rawPath length]);
+        SGLOGE(SGConfiguration, "code=%s result=failed length=%lu max=1024", SGND_CONFIG_KEY_PATH_TOO_LONG, (unsigned long)[rawPath length]);
         return nil;
     }
 
@@ -108,23 +107,20 @@
 
     BOOL isDirectory = NO;
     if (![[NSFileManager defaultManager] fileExistsAtPath:safePath isDirectory:&isDirectory] || isDirectory) {
-        SGLOGW_CODE(SGConfiguration, SGND_CONFIG_KEY_MISSING,
-                    "path=%s result=missing", [safePath UTF8String]);
+        SGLOGW(SGConfiguration, "code=%s path=%s result=missing", SGND_CONFIG_KEY_MISSING, [safePath UTF8String]);
         return nil;
     }
 
     NSError *attrError = nil;
     NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:safePath error:&attrError];
     if (attrError || !attrs) {
-        SGLOGW_CODE(SGConfiguration, SGND_CONFIG_KEY_STAT_FAILED,
-                    "path=%s result=failed", [safePath UTF8String]);
+        SGLOGW(SGConfiguration, "code=%s path=%s result=failed", SGND_CONFIG_KEY_STAT_FAILED, [safePath UTF8String]);
         return nil;
     }
 
     unsigned long long fileSize = [attrs fileSize];
     if (fileSize > 65536) {
-        SGLOGE_CODE(SGConfiguration, SGND_CONFIG_KEY_TOO_LARGE,
-                    "path=%s bytes=%llu max=65536 result=failed",
+        SGLOGE(SGConfiguration, "code=%s path=%s bytes=%llu max=65536 result=failed", SGND_CONFIG_KEY_TOO_LARGE,
                     [safePath UTF8String], fileSize);
         return nil;
     }
@@ -133,8 +129,7 @@
     NSString *keyContent = [NSString stringWithContentsOfFile:safePath encoding:NSUTF8StringEncoding error:&readError];
 
     if (readError || !keyContent) {
-        SGLOGW_CODE(SGConfiguration, SGND_CONFIG_KEY_READ_FAILED,
-                    "path=%s result=failed", [safePath UTF8String]);
+        SGLOGW(SGConfiguration, "code=%s path=%s result=failed", SGND_CONFIG_KEY_READ_FAILED, [safePath UTF8String]);
         return nil;
     }
     

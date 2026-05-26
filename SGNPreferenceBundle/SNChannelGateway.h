@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import "../Skyglow-Notifications-Daemon/SGStatusServer.h"
 
 /**
  * SNChannelGateway — the prefs bundle's facade over SGControlChannel.
@@ -60,5 +61,25 @@ typedef void (^SNChannelBundleListCompletion)(BOOL ok, NSArray *bundleIds, NSStr
  * bundle IDs or a user-facing error if the SB tweak is unreachable.
  */
 + (void)queryNativelyPushRegisteredBundlesWithCompletion:(SNChannelBundleListCompletion)completion;
+
+/**
+ * Subscribes to daemon status updates published over the existing control
+ * channel.  Handler fires on each SGCEVT_STATE_CHANGED event the daemon
+ * publishes (i.e. every state transition).  Automatically re-subscribes when
+ * the channel reconnects (e.g. after daemon restart), so the caller doesn't
+ * need to think about lifecycle.  Handler runs on an arbitrary queue — hop
+ * to main for UI work.
+ *
+ * Only one subscriber is intended; subsequent calls replace the previous
+ * handler.
+ */
++ (void)subscribeToStatusUpdatesWithHandler:(void (^)(SGStatusPayload payload))handler;
+
+/**
+ * One-shot request for the daemon's current status snapshot.  Handler runs
+ * on the main queue.  On failure (timeout / unreachable), payload is a
+ * zeroed struct with state == SGStateDisabled.
+ */
++ (void)queryStatusWithCompletion:(void (^)(SGStatusPayload payload))completion;
 
 @end

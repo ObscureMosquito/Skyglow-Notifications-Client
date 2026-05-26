@@ -49,28 +49,21 @@ typedef struct {
 #pragma pack()
 
 /**
- * Starts the status server on a background thread using the given socket path.
+ * Initializes the in-process status cache with the daemon start time.
+ * Subsequent SGStatusServer_Post calls overwrite the cached snapshot;
+ * SGStatusServer_Current reads it.  Status reaches external consumers
+ * via the control channel (SGCMSG_QUERY_STATUS for snapshots,
+ * SGCEVT_STATE_CHANGED for live events) — this module owns no transport.
  */
-void SGStatusServer_Start(const char *socketPath, int64_t startTime);
+void SGStatusServer_Start(int64_t startTime);
 
-/**
- * Updates the global state and broadcasts to all active watchers.
- * @param errorDetail  Human-readable error string (may be NULL or "").
- * @param activeProfile  1-based index of the active profile (0 = none).
- */
+/** Atomically updates every field of the cached snapshot. */
 void SGStatusServer_Post(SGState state, uint32_t failures, uint32_t backoff,
                          const char *ip, const char *errorDetail,
                          uint32_t activeProfile);
 
-/**
- * Fills outPayload with the current daemon status snapshot.
- */
+/** Atomically copies the cached snapshot into outPayload. */
 void SGStatusServer_Current(SGStatusPayload *outPayload);
-
-/**
- * Gracefully shuts down the status server.
- */
-void SGStatusServer_Shutdown(void);
 
 /**
  * Returns a human-readable string for the given state.

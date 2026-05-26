@@ -3,9 +3,6 @@
 
 #include "../Skyglow-Notifications-Daemon/SGStatusServer.h"
 
-#define SS_SOCKET_PATH "/var/run/skyglow_status.sock"
-#define SS_MODE_QUERY  0x51
-
 @interface SNDataManager : NSObject
 
 + (SNDataManager *)shared;
@@ -50,11 +47,10 @@
                        serverAddress:(NSString *)serverAddress
                         profileIndex:(NSInteger)index;
 
-/** Daemon Status */
-- (SGStatusPayload)queryDaemonStatus;
+/** Daemon Status.  latestPayload is auto-maintained by a subscription to
+ *  SGCEVT_STATE_CHANGED on the daemon control channel, seeded at bundle
+ *  load by SGCMSG_QUERY_STATUS.  Observe SNDaemonStatusUpdated to react. */
 @property (nonatomic, assign) SGStatusPayload latestPayload;
-- (void)startWatchingDaemonStatus;
-- (void)stopWatchingDaemonStatus;
 
 /** SQLite */
 - (NSArray *)allRegisteredTokens;
