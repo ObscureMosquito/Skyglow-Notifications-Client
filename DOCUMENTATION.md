@@ -185,39 +185,55 @@ Before a device can authenticate, it must register with the server to obtain an 
 Client                                              Server
   │                                                    │
   │──────────── [C_REGISTER 0x28] ────────────────────►│
-  │  { address, public_key_DER, timestamp, version }   │
+  │  { public_key_DER, timestamp, version }            │
   │                                                    │
   │◄───────────── [S_CHALLENGE 0x11] ─────────────────│
   │  { 32-byte nonce }                                 │
   │                                                    │
   │──────────── [C_REGISTER_RESP 0x29] ───────────────►│
-  │  { timestamp, RSA-PSS signature }                  │
+  │  { timestamp, RSA-PSS signature (nonce ‖ ts) }     │
   │                                                    │
   │◄─────── [S_REGISTER_OK 0x18] or [S_REGISTER_FAIL] │
+  │  { server_version, assigned_address }              │
   │                                                    │
 ```
 
+**The server assigns the device address.** The client
+never picks its own identifier, it provides only a freshly generated
+RSA keypair and waits for the server to issue an address in
+S_REGISTER_OK. This guarantees uniqueness at the namespace level
+(server controls the space) and allows the server to encode routing
+information into the address itself (e.g. `<hex>@<server-id>`).
+
 ### 5.2. C_REGISTER (0x28) Payload
 
-| Offset   | Size       | Field      | Description                                          |
-| -------- | ---------- | ---------- | ---------------------------------------------------- |
-| 0        | 2          | addr_len   | Length of the device address string (BE u16)         |
-| 2        | addr_len   | address    | UUID-formatted device address (UTF-8)                |
-| 2+AL     | 2          | pubkey_len | Length of DER-encoded public key (BE u16)            |
-| 4+AL     | pubkey_len | public_key | RSA-2048 public key in DER format (`i2d_RSA_PUBKEY`) |
-| 4+AL+PL  | 8          | timestamp  | Current Unix time, corrected for clock skew (BE i64) |
-| 12+AL+PL | 4          | version    | Protocol version `0x02` (BE u32)                     |
+| Offset  | Size       | Field      | Description                                          |
+| ------- | ---------- | ---------- | ---------------------------------------------------- |
+| 0       | 2          | pubkey_len | Length of DER-encoded public key (BE u16)            |
+| 2       | pubkey_len | public_key | RSA-2048 public key in DER format (`i2d_RSA_PUBKEY`) |
+| 2+PL    | 8          | timestamp  | Current Unix time, corrected for clock skew (BE i64) |
+| 10+PL   | 4          | version    | Protocol version `0x02` (BE u32)                     |
 
-The client generates:
-
-- A **UUID v4** as the device address
-- An **RSA-2048** keypair — the public key is sent to the server, the private key is stored locally
+The client generates an **RSA-2048** keypair: the public key is sent to
+the server, the private key is stored locally and never transmitted.
+The device address field is **absent** — the server assigns it.
 
 ### 5.3. S_REGISTER_OK (0x18) Payload
 
-| Offset | Size | Field          | Description                        |
-| ------ | ---- | -------------- | ---------------------------------- |
-| 0      | 4    | server_version | Server's protocol version (BE u32) |
+| Offset | Size     | Field          | Description                                       |
+| ------ | -------- | -------------- | ------------------------------------------------- |
+| 0      | 4        | server_version | Server's protocol version (BE u32)                |
+| 4      | 2        | addr_len       | Length of the assigned address (BE u16, max 255)  |
+| 6      | addr_len | address        | Server-assigned device address (UTF-8)            |
+
+The address format is server-defined; the client treats it as an opaque
+UTF-8 token. The current SGN reference server issues addresses of the
+form `<32 hex chars>@<server-id>`, but clients MUST NOT rely on or
+parse this format — only round-trip the bytes verbatim for future
+authentication.
+
+Max address length is **255 bytes**. Frames exceeding this are
+rejected as protocol errors.
 
 ### 5.4. S_REGISTER_FAIL (0x19) Payload
 
@@ -272,7 +288,7 @@ Sent by the server immediately after the TLS handshake completes.
 | Offset | Size     | Field     | Description                                          |
 | ------ | -------- | --------- | ---------------------------------------------------- |
 | 0      | 2        | addr_len  | Length of address string (BE u16)                    |
-| 2      | addr_len | address   | The client's registered UUID address (UTF-8)         |
+| 2      | addr_len | address   | The client's registered device address (UTF-8)       |
 | 2+AL   | 8        | timestamp | Current Unix time, corrected for clock skew (BE i64) |
 | 10+AL  | 4        | version   | Protocol version `0x02` (BE u32)                     |
 
@@ -296,13 +312,23 @@ Both response types use the same payload format:
 
 ### 6.6. RSA-PSS Signature Scheme
 
-The client produces the signature as follows:
+The client produces the signature over a buffer that depends on the flow:
 
-1. Compute `digest = SHA-256(nonce || address_utf8 || timestamp_be64)`
+| Flow                          | Signed material                                  |
+| ----------------------------- | ------------------------------------------------ |
+| Login (`C_LOGIN_RESP 0x21`)   | `nonce ‖ address_utf8 ‖ timestamp_be64`          |
+| Registration (`C_REGISTER_RESP 0x29`) | `nonce ‖ timestamp_be64` (no address yet) |
+
+Then:
+
+1. Compute `digest = SHA-256(signed_material)`
 2. Apply RSA-PSS padding with `SHA-256` as both the hash and MGF1 hash, salt length = hash length (32)
 3. Sign with `RSA_private_encrypt(padded_message, RSA_NO_PADDING)`
 
-The server verifies this signature using the client's stored public key.
+For login, the server verifies using the public key stored under the
+claimed address. For registration, the server has just received the
+public key in the preceding C_REGISTER frame and verifies with that —
+the address is not yet bound, so the signed material omits it.
 
 ### 6.7. S_AUTH_OK (0x12) Payload
 
@@ -532,15 +558,21 @@ The client uses an **adaptive keep-alive algorithm** with three stages:
 
 **Disconnect reason codes:**
 
-| Code   | Name       | Description                          |
-| ------ | ---------- | ------------------------------------ |
-| `0x00` | NORMAL     | Graceful disconnect                  |
-| `0x01` | AUTH_FAIL  | Authentication failure               |
-| `0x02` | PROTOCOL   | Protocol violation                   |
-| `0x03` | SERVER_ERR | Internal server error                |
-| `0x04` | REPLACED   | Another connection replaced this one |
+| Code   | Name             | Class | Description                                                                                       |
+| ------ | ---------------- | ----- | ------------------------------------------------------------------------------------------------- |
+| `0x00` | NORMAL           | soft  | Graceful disconnect                                                                               |
+| `0x01` | AUTH_FAIL        | hard  | Authentication failure (bad signature, missing credentials). Client transitions to ErrorAuth.    |
+| `0x02` | PROTOCOL         | soft  | Protocol violation. Client backs off and reconnects.                                              |
+| `0x03` | SERVER_ERR       | soft  | Internal server error. Client backs off and reconnects.                                           |
+| `0x04` | REPLACED         | soft  | Another connection replaced this one. Client backs off and reconnects.                            |
+| `0x05` | VERSION_MISMATCH | hard  | Server refuses this client because the protocol version is incompatible. **No auto-reconnect** — the user must update Skyglow and manually reload (or the daemon must be restarted). Client transitions to ErrorVersionMismatch. |
 
-If `retry_after` is present and non-zero, the client should wait at least that many seconds before reconnecting.
+**Soft vs. hard errors:**
+
+- A **soft** error is transient. The client schedules a reconnect via the exponential-backoff strategy described in §9.3, optionally honoring `retry_after`.
+- A **hard** error is terminal. The client transitions to a configuration-error state and stops reconnecting. Only a manual configuration change (toggle disable→enable, configuration reload, or a fresh daemon launch) recovers from a hard error. Use hard errors to refuse clients that cannot succeed by retrying alone — bad credentials, incompatible protocol versions, or other states that require user/operator action.
+
+If `retry_after` is present and non-zero on a soft error, the client should wait at least that many seconds before reconnecting.
 
 ### 9.3. Reconnection Strategy
 
@@ -679,7 +711,7 @@ The server must store:
 
 | Field                 | Description                                                                                                                                                                |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| address               | UUID device identifier                                                                                                                                                     |
+| address               | Server-assigned device identifier (opaque UTF-8, max 255 bytes)                                                                                                            |
 | public_key            | RSA-2048 public key (DER format, from C_REGISTER)                                                                                                                          |
 | registrations         | Set of `(routing_key, bundle_id)` tuples — full-replace on every C_FILTER. Serves as both the routing filter and the bundle binding table for third-party push addressing. |
 | last_delivered_seq    | Per-device notification sequence counter                                                                                                                                   |

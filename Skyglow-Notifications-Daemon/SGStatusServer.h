@@ -25,7 +25,8 @@ typedef enum : uint32_t {
     SGStateErrorBadConfig      = 12,
     SGStateError               = 13,
     SGStateShuttingDown        = 14,
-    SGStateRegistering         = 15
+    SGStateRegistering         = 15,
+    SGStateErrorVersionMismatch = 16
 } SGState;
 
 /**

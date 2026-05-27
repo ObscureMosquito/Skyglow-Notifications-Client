@@ -103,6 +103,11 @@ static const SGTransition kLegalTransitions[] = {
 
     { SGStateErrorBadConfig,    SGStateDisabled            },
     { SGStateErrorBadConfig,    SGStateResolvingDNS        },
+    { SGStateAuthenticating,    SGStateErrorVersionMismatch },
+    { SGStateRegistering,       SGStateErrorVersionMismatch },
+    { SGStateConnected,         SGStateErrorVersionMismatch },
+    { SGStateErrorVersionMismatch, SGStateDisabled          },
+    { SGStateErrorVersionMismatch, SGStateResolvingDNS      },
 
     { SGStateError,             SGStateDisabled            },
     { SGStateError,             SGStateResolvingDNS        },
@@ -435,10 +440,22 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     }
 
     if (event == SGEventNetworkDown) {
-        if (currentState != SGStateDisabled && currentState != SGStateErrorBadConfig) {
+        if (currentState != SGStateDisabled &&
+            currentState != SGStateErrorBadConfig &&
+            currentState != SGStateErrorVersionMismatch) {
             strlcpy(_lastErrorDetail, "No network connection available", sizeof(_lastErrorDetail));
             [self executeTransitionToState:SGStateIdleNoNetwork backoff:0 ip:NULL];
         }
+        [_stateLock unlock];
+        return;
+    }
+
+    if (event == SGEventVersionMismatch) {
+        _consecutiveFailures = 0;
+        strlcpy(_lastErrorDetail,
+                "Server rejected client: protocol version mismatch. Update Skyglow.",
+                sizeof(_lastErrorDetail));
+        [self executeTransitionToState:SGStateErrorVersionMismatch backoff:0 ip:NULL];
         [_stateLock unlock];
         return;
     }
@@ -447,6 +464,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         case SGStateStarting:
         case SGStateDisabled:
         case SGStateErrorBadConfig:
+        case SGStateErrorVersionMismatch:
         case SGStateIdleUnregistered:
             if (event == SGEventStartRequested || event == SGEventConfigReloaded) {
                 _consecutiveFailures = 0;
@@ -652,6 +670,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             case SGStateDisabled:
             case SGStateIdleNoNetwork:
             case SGStateErrorBadConfig:
+            case SGStateErrorVersionMismatch:
             case SGStateErrorAuth:
                 SGP_AbortConnection();
                 break;
@@ -701,8 +720,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         [self executeTransitionToState:SGStateRegistering backoff:0 ip:NULL];
         [_stateLock unlock];
         
-        NSString *proposed = SGP_BeginFirstTimeRegistration();
-        if (!proposed) {
+        if (!SGP_BeginFirstTimeRegistration()) {
             [self handleEvent:SGEventDisconnected payload:nil];
         }
         return;
@@ -1424,6 +1442,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 SGLOGI(SGDaemon, "code=%s rc=%d name=%s result=exited", SGND_PROTOCOL_WORKER_EXITED, rc, SGP_ErrorName(rc));
                 if (rc == SGP_ERR_AUTH) {
                     [self handleEvent:SGEventAuthFailed payload:nil];
+                } else if (rc == SGP_ERR_VERSION_MISMATCH) {
+                    [self handleEvent:SGEventVersionMismatch payload:nil];
                 } else {
                     [self handleEvent:SGEventDisconnected payload:nil];
                 }

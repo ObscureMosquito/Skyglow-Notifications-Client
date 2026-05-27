@@ -43,7 +43,6 @@ static uint32_t  _lastRetryHint = 0;
 
 static int64_t _clockSkewSeconds = 0;
 
-static NSString *_regPendingAddress = nil;
 static char     *_regPendingPrivKey = NULL;
 static size_t    _regPendingPrivKeyLen = 0;
 static RSA      *_regPendingRSA = NULL;
@@ -82,14 +81,15 @@ static uint32_t SG_DecodeBE32(const uint8_t p[4]) {
 
 const char *SGP_ErrorName(int code) {
     switch (code) {
-        case SGP_OK:           return "SGP_OK";
-        case SGP_ERR_CLOSED:   return "SGP_ERR_CLOSED";
-        case SGP_ERR_PROTO:    return "SGP_ERR_PROTO";
-        case SGP_ERR_IO:       return "SGP_ERR_IO";
-        case SGP_ERR_AUTH:     return "SGP_ERR_AUTH";
-        case SGP_ERR_TIMEOUT:  return "SGP_ERR_TIMEOUT";
-        case SGP_ERR_REPLACED: return "SGP_ERR_REPLACED";
-        default:               return "SGP_ERR_UNKNOWN";
+        case SGP_OK:                   return "SGP_OK";
+        case SGP_ERR_CLOSED:           return "SGP_ERR_CLOSED";
+        case SGP_ERR_PROTO:            return "SGP_ERR_PROTO";
+        case SGP_ERR_IO:               return "SGP_ERR_IO";
+        case SGP_ERR_AUTH:             return "SGP_ERR_AUTH";
+        case SGP_ERR_TIMEOUT:          return "SGP_ERR_TIMEOUT";
+        case SGP_ERR_REPLACED:         return "SGP_ERR_REPLACED";
+        case SGP_ERR_VERSION_MISMATCH: return "SGP_ERR_VERSION_MISMATCH";
+        default:                       return "SGP_ERR_UNKNOWN";
     }
 }
 
@@ -220,10 +220,17 @@ static uint8_t *SG_SignPSS(RSA *rsa, const uint8_t *d1, size_t l1, const uint8_t
 }
 
 static int SG_SendChallengeResponse(SGPMsgType type, RSA *rsa, NSString *addr, int64_t ts) {
-    const char *u = [addr UTF8String]; size_t ul = strlen(u);
+    /* During registration, addr is nil — server hasn't assigned one yet, so
+     * the signed material covers only nonce + timestamp.  During login,
+     * addr is included so the signature binds the address claim to the
+     * private-key proof (server needs the address to look up the stored
+     * public key). */
+    const char *u = addr ? [addr UTF8String] : NULL;
+    size_t ul = u ? strlen(u) : 0;
     uint8_t tsBE[8]; SG_EncodeBE64(ts, tsBE);
     size_t sl = 0;
-    uint8_t *sig = SG_SignPSS(rsa, _pendingNonce, SGP_NONCE_LEN, (const uint8_t *)u, ul, tsBE, 8, &sl);
+    uint8_t *sig = SG_SignPSS(rsa, _pendingNonce, SGP_NONCE_LEN,
+                              (const uint8_t *)u, ul, tsBE, 8, &sl);
     _hasPendingNonce = NO;
     if (!sig) return -1;
 
@@ -243,15 +250,8 @@ static int SG_SendChallengeResponse(SGPMsgType type, RSA *rsa, NSString *addr, i
 }
 
 
-NSString *SGP_BeginFirstTimeRegistration(void) {
-    if (!SGP_IsConnected()) return nil;
-
-    uint8_t bytes[16];
-    SecRandomCopyBytes(kSecRandomDefault, sizeof(bytes), bytes);
-    bytes[6] = (bytes[6] & 0x0F) | 0x40; bytes[8] = (bytes[8] & 0x3F) | 0x80;
-    NSString *address = [NSString stringWithFormat:@"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]];
+BOOL SGP_BeginFirstTimeRegistration(void) {
+    if (!SGP_IsConnected()) return NO;
 
     BIGNUM *bn = BN_new(); BN_set_word(bn, RSA_F4);
     RSA *rsa = RSA_new(); RSA_generate_key_ex(rsa, 2048, bn, NULL);
@@ -264,7 +264,7 @@ NSString *SGP_BeginFirstTimeRegistration(void) {
     if (!privBuf) {
         BIO_free(privBio);
         RSA_free(rsa);
-        return nil;
+        return NO;
     }
     BIO_read(privBio, privBuf, (int)privLen);
     BIO_free(privBio);
@@ -277,23 +277,21 @@ NSString *SGP_BeginFirstTimeRegistration(void) {
     _regTimestamp = SG_GetCorrectedTime();
     uint8_t tsBE[8]; SG_EncodeBE64(_regTimestamp, tsBE);
 
+    /* Wire format (protocol v3): keyLen(2) + pubkey(N) + timestamp(8) + version(4).
+     * The address field is no longer sent — the server assigns it and
+     * returns it in S_REGISTER_OK. */
     NSMutableData *payload = [NSMutableData data];
-    uint16_t addrLen = (uint16_t)[address length];
-    uint8_t addrLenBE[2] = {(uint8_t)(addrLen >> 8), (uint8_t)(addrLen & 0xFF)};
-    [payload appendBytes:addrLenBE length:2];
-    [payload appendBytes:[address UTF8String] length:addrLen];
     uint8_t keyLenBE[2] = {(uint8_t)(pubDerLen >> 8), (uint8_t)(pubDerLen & 0xFF)};
     [payload appendBytes:keyLenBE length:2];
     [payload appendBytes:pubDer length:pubDerLen];
     [payload appendBytes:tsBE length:8];
     uint32_t ver = htonl(SGP_VERSION); [payload appendBytes:&ver length:4];
 
-    _regPendingAddress = [address retain];
-    _regPendingRSA = rsa; 
+    _regPendingRSA = rsa;
     OPENSSL_free(pubDer);
 
     SGP_LowLevelSend(SGP_C_REGISTER, [payload bytes], (uint32_t)[payload length]);
-    return address;
+    return YES;
 }
 
 void SGP_ZeroAndFreeKeyMaterial(char *pemBuf, size_t len) {
@@ -351,7 +349,6 @@ void SGP_DisconnectFromServer(void) {
     if (_sock >= 0) { close(_sock); _sock = -1; }
     [_userAddress release]; _userAddress = nil;
     if (_regPendingRSA) { RSA_free(_regPendingRSA); _regPendingRSA = NULL; }
-    [_regPendingAddress release]; _regPendingAddress = nil;
     if (_regPendingPrivKey) {
         SGP_ZeroAndFreeKeyMaterial(_regPendingPrivKey, _regPendingPrivKeyLen);
         _regPendingPrivKey    = NULL;
@@ -606,7 +603,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             [SGP_S_DISCONNECT]    = {  1,   5 },
             [SGP_S_PONG]          = {  8,   8 },
             [SGP_S_POLL_DONE]     = {  0,   0 },
-            [SGP_S_REGISTER_OK]   = {  4,   4 },
+            [SGP_S_REGISTER_OK]   = {  7, 261 },
             [SGP_S_REGISTER_FAIL] = {  1, 258 },
             [SGP_S_PING]          = {  8,   8 },
             [SGP_S_TIME_SYNC]     = {  8,   8 },
@@ -660,8 +657,9 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         case SGP_S_CHALLENGE: {
             if (len < SGP_NONCE_LEN) { result = SGP_ERR_PROTO; goto cleanup; }
             memcpy(_pendingNonce, raw, SGP_NONCE_LEN); _hasPendingNonce = YES;
-            if (_regPendingAddress) SG_SendChallengeResponse(SGP_C_REGISTER_RESP, _regPendingRSA, _regPendingAddress, _regTimestamp);
-            else SG_SendChallengeResponse(SGP_C_LOGIN_RESP, _userPrivKey, _userAddress, _loginTimestamp);
+            /* Distinguish registration vs login by which keypair is pending. */
+            if (_regPendingRSA) SG_SendChallengeResponse(SGP_C_REGISTER_RESP, _regPendingRSA, nil, _regTimestamp);
+            else                SG_SendChallengeResponse(SGP_C_LOGIN_RESP, _userPrivKey, _userAddress, _loginTimestamp);
             break;
         }
         case SGP_S_AUTH_OK: {
@@ -703,17 +701,35 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         case SGP_S_DISCONNECT: {
             uint8_t reason = raw[0];
             _lastRetryHint = (len >= 5) ? SG_DecodeBE32(raw + 1) : 0;
-            if (reason == SGP_DISC_AUTH_FAIL) { result = SGP_ERR_AUTH;     goto cleanup; }
-            if (reason == SGP_DISC_REPLACED)  { result = SGP_ERR_REPLACED; goto cleanup; }
+            if (reason == SGP_DISC_AUTH_FAIL)        { result = SGP_ERR_AUTH;             goto cleanup; }
+            if (reason == SGP_DISC_REPLACED)         { result = SGP_ERR_REPLACED;         goto cleanup; }
+            if (reason == SGP_DISC_VERSION_MISMATCH) { result = SGP_ERR_VERSION_MISMATCH; goto cleanup; }
             result = SGP_ERR_CLOSED; goto cleanup;
         }
         case SGP_S_REGISTER_OK: {
+            /* Wire format (protocol v3): serverVer(4) + addrLen(2) + addr(N).
+             * Server-assigned address replaces the client-picked UUID. */
             uint32_t serverVer = SG_DecodeBE32(raw);
-            NSString *capturedAddress  = [_regPendingAddress autorelease];
-            char     *capturedPemKey   = _regPendingPrivKey;
-            size_t    capturedPemLen   = _regPendingPrivKeyLen;
-            RSA      *capturedRSA      = _regPendingRSA;
-            _regPendingAddress    = nil;
+            uint16_t addrLen   = ((uint16_t)raw[4] << 8) | (uint16_t)raw[5];
+            /* Bounds-check against both the frame and the server's 255-char
+             * contract.  Reject malformed frames as protocol errors. */
+            if (addrLen == 0 || addrLen > 255 || (uint64_t)6 + addrLen > (uint64_t)len) {
+                SGLOGE(SGP, "code=%s field=address addrLen=%u frameLen=%llu result=rejected",
+                       SGND_PROTOCOL_FRAME_SIZE_INVALID, addrLen, (unsigned long long)len);
+                if (_regPendingRSA) { RSA_free(_regPendingRSA); _regPendingRSA = NULL; }
+                if (_regPendingPrivKey) {
+                    SGP_ZeroAndFreeKeyMaterial(_regPendingPrivKey, _regPendingPrivKeyLen);
+                    _regPendingPrivKey = NULL; _regPendingPrivKeyLen = 0;
+                }
+                result = SGP_ERR_PROTO;
+                goto cleanup;
+            }
+            NSString *capturedAddress = [[[NSString alloc] initWithBytes:raw + 6
+                                                                  length:addrLen
+                                                                encoding:NSUTF8StringEncoding] autorelease];
+            char   *capturedPemKey = _regPendingPrivKey;
+            size_t  capturedPemLen = _regPendingPrivKeyLen;
+            RSA    *capturedRSA    = _regPendingRSA;
             _regPendingPrivKey    = NULL;
             _regPendingPrivKeyLen = 0;
             _regPendingRSA        = NULL;
@@ -738,7 +754,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             if (!reason) reason = @"Unknown";
             SGLOGE(SGP, "code=%s server_code=%u reason=%s result=rejected", SGND_PROTOCOL_REGISTRATION_REJECTED, code, [reason UTF8String]);
             if (_regPendingRSA) { RSA_free(_regPendingRSA); _regPendingRSA = NULL; }
-            [_regPendingAddress release]; _regPendingAddress = nil;
             if (_regPendingPrivKey) {
                 SGP_ZeroAndFreeKeyMaterial(_regPendingPrivKey, _regPendingPrivKeyLen);
                 _regPendingPrivKey    = NULL;

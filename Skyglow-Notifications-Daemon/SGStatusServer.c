@@ -62,6 +62,7 @@ const char *SGState_GetName(SGState state) {
         case SGStateError:               return "Error";
         case SGStateShuttingDown:        return "ShuttingDown";
         case SGStateRegistering:         return "Registering";
+        case SGStateErrorVersionMismatch: return "ErrorVersionMismatch";
         default:                         return "Unknown";
     }
 }

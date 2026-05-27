@@ -30,8 +30,7 @@ typedef NS_ENUM(NSInteger, SGEvent) {
     SGEventAuthFailed,
     SGEventReplaced,
     SGEventDisconnected,
-    
-    // Timers
+    SGEventVersionMismatch,
     SGEventBackoffTimerFired,
 
     // System Power

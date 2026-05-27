@@ -38,13 +38,14 @@
 #define SGP_NOTIFY_MIN_PAYLOAD      70
 
 /** Return Codes for SGP_ProcessNextIncomingMessage */
-#define SGP_OK           0
-#define SGP_ERR_CLOSED   1
-#define SGP_ERR_PROTO    2
-#define SGP_ERR_IO       3
-#define SGP_ERR_AUTH     4
-#define SGP_ERR_TIMEOUT  5
-#define SGP_ERR_REPLACED 6
+#define SGP_OK                   0
+#define SGP_ERR_CLOSED           1
+#define SGP_ERR_PROTO            2
+#define SGP_ERR_IO               3
+#define SGP_ERR_AUTH             4
+#define SGP_ERR_TIMEOUT          5
+#define SGP_ERR_REPLACED         6
+#define SGP_ERR_VERSION_MISMATCH 7
 
 /** Acknowledgement Status Codes */
 #define SGP_ACK_SUCCESS          0
@@ -78,11 +79,16 @@ typedef enum : uint8_t {
 } SGPMsgType;
 
 typedef enum : uint8_t {
-    SGP_DISC_NORMAL     = 0x00,
-    SGP_DISC_AUTH_FAIL  = 0x01,
-    SGP_DISC_PROTOCOL   = 0x02,
-    SGP_DISC_SERVER_ERR = 0x03,
-    SGP_DISC_REPLACED   = 0x04,
+    SGP_DISC_NORMAL           = 0x00,
+    SGP_DISC_AUTH_FAIL        = 0x01,
+    SGP_DISC_PROTOCOL         = 0x02,
+    SGP_DISC_SERVER_ERR       = 0x03,
+    SGP_DISC_REPLACED         = 0x04,
+    /* Server rejected this client because the protocol version is too
+     * old (or too new) for the server to handle.  Hard error: no automatic
+     * reconnect.  Client requires a software update + manual reload before
+     * trying again. */
+    SGP_DISC_VERSION_MISMATCH = 0x05,
 } SGPDisconnReason;
 
 @protocol SGProtocolDelegate <NSObject>
@@ -179,9 +185,12 @@ void SGP_DisconnectFromServer(void);
 void SGP_SendClientDisconnect(void);
 
 /**
- * Initiates the first-time device registration flow.
+ * Initiates the first-time device registration flow.  The server assigns
+ * the device address and returns it via protocolDidCompleteRegistrationWithAddress:.
+ * Returns YES if the C_REGISTER frame was sent, NO if the prerequisites
+ * (TLS connected, keypair generation) failed.
  */
-NSString *SGP_BeginFirstTimeRegistration(void);
+BOOL SGP_BeginFirstTimeRegistration(void);
 
 /**
  * Begins the login handshake by sending C_LOGIN with the device address and key.

@@ -616,6 +616,7 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
         case SGStateDisabled:          return @"Disabled";
         case SGStateErrorAuth:         return @"Auth Error";
         case SGStateErrorBadConfig:    return @"Bad Config";
+        case SGStateErrorVersionMismatch: return @"Update Required";
         case SGStateError:             return @"Error";
         case SGStateStarting:          return @"Starting…";
         case SGStateShuttingDown:      return @"Shutting Down";
@@ -629,7 +630,7 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
         case SGStateConnected: return [UIColor colorWithRed:0.2 green:0.7 blue:0.2 alpha:1.0];
         case SGStateConnecting: case SGStateAuthenticating: case SGStateResolvingDNS: case SGStateBackingOff: case SGStateRegistering: return [UIColor orangeColor];
         case SGStateIdleNoNetwork: case SGStateIdleCircuitOpen: case SGStateIdleDNSFailed: return [UIColor colorWithRed:0.9 green:0.6 blue:0.1 alpha:1.0];
-        case SGStateErrorAuth: case SGStateErrorBadConfig: case SGStateError: return [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:1.0];
+        case SGStateErrorAuth: case SGStateErrorBadConfig: case SGStateErrorVersionMismatch: case SGStateError: return [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:1.0];
         default: return [UIColor grayColor];
     }
 }
@@ -640,6 +641,8 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
             return @"Try re-importing your server certificate.";
         case SGStateErrorBadConfig:
             return @"Check your server address and certificate in profile settings.";
+        case SGStateErrorVersionMismatch:
+            return @"The server rejected this client because SGN is out of date.";
         case SGStateIdleDNSFailed:
             return @"Check your server address or DNS settings.";
         case SGStateIdleCircuitOpen:
