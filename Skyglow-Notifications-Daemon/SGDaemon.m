@@ -27,8 +27,27 @@ static const uint32_t      kSGAuthTimeoutSec                       = 30;
 static const uint32_t      kSGDNSWatchdogSec                       = 30;
 static const uint32_t      kSGFSMWatchdogSec                       = 90;
 static const NSTimeInterval kSGNotificationProcessingAssertionSec  = 15.0;
+static NSString * const    kSGProfileCertificateDirectory          = @"/var/mobile/Library/SkyglowNotifications";
 
 typedef struct { SGState from; SGState to; } SGTransition;
+
+static NSString *SGProfileCertificatePathForIndex(NSInteger profileIdx) {
+    return [NSString stringWithFormat:@"%@/profile%ld-server.pem",
+            kSGProfileCertificateDirectory, (long)profileIdx];
+}
+
+static BOOL SGCertificatePEMLooksValid(NSString *pem) {
+    if ([pem length] == 0) return NO;
+    if ([pem rangeOfString:@"BEGIN CERTIFICATE"].location == NSNotFound) return NO;
+
+    BIO *bio = BIO_new_mem_buf((void *)[pem UTF8String], (int)[pem lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
+    if (!bio) return NO;
+    X509 *cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    if (!cert) return NO;
+    X509_free(cert);
+    return YES;
+}
 
 static const SGTransition kLegalTransitions[] = {
     { SGStateStarting,          SGStateDisabled            },
@@ -44,14 +63,17 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateResolvingDNS,      SGStateBackingOff          },
     { SGStateResolvingDNS,      SGStateIdleCircuitOpen     },
     { SGStateResolvingDNS,      SGStateErrorBadConfig      },
+    { SGStateResolvingDNS,      SGStateIdleUnregistered    },
     { SGStateResolvingDNS,      SGStateIdleNoNetwork       },
     { SGStateResolvingDNS,      SGStateDisabled            },
 
     { SGStateIdleDNSFailed,     SGStateResolvingDNS        },
+    { SGStateIdleDNSFailed,     SGStateIdleUnregistered    },
     { SGStateIdleDNSFailed,     SGStateDisabled            },
     { SGStateIdleDNSFailed,     SGStateIdleNoNetwork       },
 
     { SGStateIdleNoNetwork,     SGStateConnecting          },
+    { SGStateIdleNoNetwork,     SGStateIdleUnregistered    },
     { SGStateIdleNoNetwork,     SGStateDisabled            },
     { SGStateIdleNoNetwork,     SGStateResolvingDNS        },
 
@@ -63,6 +85,7 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateConnecting,        SGStateRegistering         },
     { SGStateConnecting,        SGStateBackingOff          },
     { SGStateConnecting,        SGStateIdleNoNetwork       },
+    { SGStateConnecting,        SGStateIdleUnregistered    },
     { SGStateConnecting,        SGStateIdleCircuitOpen     },
     { SGStateConnecting,        SGStateErrorBadConfig      },
 
@@ -70,6 +93,7 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateRegistering,       SGStateBackingOff          }, 
     { SGStateRegistering,       SGStateError               }, 
     { SGStateRegistering,       SGStateIdleNoNetwork       },
+    { SGStateRegistering,       SGStateIdleUnregistered    },
     { SGStateRegistering,       SGStateDisabled            },
 
     { SGStateAuthenticating,    SGStateResolvingDNS        },
@@ -85,32 +109,39 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateConnected,         SGStateConnecting          }, 
     { SGStateConnected,         SGStateBackingOff          },
     { SGStateConnected,         SGStateIdleNoNetwork       },
+    { SGStateConnected,         SGStateIdleUnregistered    },
     { SGStateConnected,         SGStateDisabled            },
     { SGStateConnected,         SGStateResolvingDNS        },
 
     { SGStateBackingOff,        SGStateConnecting          },
     { SGStateBackingOff,        SGStateResolvingDNS        },
     { SGStateBackingOff,        SGStateIdleNoNetwork       },
+    { SGStateBackingOff,        SGStateIdleUnregistered    },
     { SGStateBackingOff,        SGStateIdleCircuitOpen     },
     { SGStateBackingOff,        SGStateDisabled            },
 
     { SGStateIdleCircuitOpen,   SGStateConnecting          },
     { SGStateIdleCircuitOpen,   SGStateIdleNoNetwork       },
+    { SGStateIdleCircuitOpen,   SGStateIdleUnregistered    },
     { SGStateIdleCircuitOpen,   SGStateDisabled            },
     { SGStateIdleCircuitOpen,   SGStateResolvingDNS        },
 
     { SGStateErrorAuth,         SGStateDisabled            },
+    { SGStateErrorAuth,         SGStateIdleUnregistered    },
     { SGStateErrorAuth,         SGStateResolvingDNS        },
 
     { SGStateErrorBadConfig,    SGStateDisabled            },
+    { SGStateErrorBadConfig,    SGStateIdleUnregistered    },
     { SGStateErrorBadConfig,    SGStateResolvingDNS        },
     { SGStateAuthenticating,    SGStateErrorVersionMismatch },
     { SGStateRegistering,       SGStateErrorVersionMismatch },
     { SGStateConnected,         SGStateErrorVersionMismatch },
     { SGStateErrorVersionMismatch, SGStateDisabled          },
+    { SGStateErrorVersionMismatch, SGStateIdleUnregistered  },
     { SGStateErrorVersionMismatch, SGStateResolvingDNS      },
 
     { SGStateError,             SGStateDisabled            },
+    { SGStateError,             SGStateIdleUnregistered    },
     { SGStateError,             SGStateResolvingDNS        },
 
     { SGStateDisabled,          SGStateResolvingDNS        },
@@ -469,9 +500,15 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         case SGStateIdleUnregistered:
             if (event == SGEventStartRequested || event == SGEventConfigReloaded) {
                 _consecutiveFailures = 0;
-                if ([[SGConfiguration sharedConfiguration] isValid]) {
+                if (![[SGConfiguration sharedConfiguration] isEnabled]) {
+                    strlcpy(_lastErrorDetail, "Daemon is disabled", sizeof(_lastErrorDetail));
+                    [self executeTransitionToState:SGStateDisabled backoff:0 ip:NULL];
+                } else if ([[SGConfiguration sharedConfiguration] isValid]) {
                     _lastErrorDetail[0] = '\0';
                     [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
+                } else if (![[SGConfiguration sharedConfiguration] hasProfile]) {
+                    strlcpy(_lastErrorDetail, "No profile configured", sizeof(_lastErrorDetail));
+                    [self executeTransitionToState:SGStateIdleUnregistered backoff:0 ip:NULL];
                 } else {
                     strlcpy(_lastErrorDetail, "Missing server address or certificate", sizeof(_lastErrorDetail));
                     [self executeTransitionToState:SGStateErrorBadConfig backoff:0 ip:NULL];
@@ -614,7 +651,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         _lastErrorDetail[0] = '\0';
     }
 
-    uint32_t activeProfile = (uint32_t)[[SGConfiguration sharedConfiguration] activeProfileIndex];
+    SGConfiguration *config = [SGConfiguration sharedConfiguration];
+    uint32_t activeProfile = [config hasProfile] ? (uint32_t)[config activeProfileIndex] : 0;
     SGStatusServer_Post(newState, (uint32_t)_consecutiveFailures, backoff,
                         resolvedIP, _lastErrorDetail, activeProfile);
     SGLOGD(SGDaemon, "code=%s to=%s generation=%u", SGND_FSM_TRANSITION, SGState_GetName(newState), capturedGen);
@@ -1081,20 +1119,112 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     }
 }
 
+- (BOOL)performSaveProfileAtIndex:(NSInteger)profileIdx
+                    serverAddress:(NSString *)serverAddress
+                    certificatePEM:(NSString *)certificatePEM {
+    if (profileIdx < 1 || profileIdx > 5) return NO;
+
+    NSString *address = [serverAddress stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([address length] == 0) return NO;
+
+    BOOL hasNewCertificate = ([certificatePEM length] > 0);
+    if (hasNewCertificate && !SGCertificatePEMLooksValid(certificatePEM)) return NO;
+
+    BOOL isActive = ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx);
+    NSString *profilePath = SGPath([NSString stringWithFormat:
+        SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
+    NSMutableDictionary *profile =
+        [NSMutableDictionary dictionaryWithContentsOfFile:profilePath]
+        ?: [NSMutableDictionary dictionary];
+
+    NSString *oldAddress = [profile objectForKey:@"server_address"];
+    NSString *oldCertPath = [profile objectForKey:@"server_pub_key"];
+    NSString *storedCertPath = SGProfileCertificatePathForIndex(profileIdx);
+    NSString *certDiskPath = SGPath(storedCertPath);
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *certDir = SGPath(kSGProfileCertificateDirectory);
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:certDir isDirectory:&isDir]) {
+        if (![fm createDirectoryAtPath:certDir withIntermediateDirectories:YES attributes:nil error:nil]) {
+            return NO;
+        }
+    } else if (!isDir) {
+        return NO;
+    }
+
+    BOOL certificateChanged = hasNewCertificate;
+    if (hasNewCertificate) {
+        if (![certificatePEM writeToFile:certDiskPath
+                              atomically:YES
+                                encoding:NSUTF8StringEncoding
+                                   error:nil]) {
+            return NO;
+        }
+    } else if ([oldCertPath length] > 0) {
+        if (![oldCertPath isEqualToString:storedCertPath]) {
+            NSString *oldDiskPath = SGPath(oldCertPath);
+            if (![fm fileExistsAtPath:oldDiskPath]) {
+                return NO;
+            }
+            [fm removeItemAtPath:certDiskPath error:nil];
+            if (![fm copyItemAtPath:oldDiskPath toPath:certDiskPath error:nil]) {
+                return NO;
+            }
+        } else if (![fm fileExistsAtPath:certDiskPath]) {
+            return NO;
+        }
+    } else {
+        return NO;
+    }
+
+    BOOL addressChanged = (oldAddress && ![oldAddress isEqualToString:address]);
+
+    [profile setObject:address forKey:@"server_address"];
+    [profile setObject:storedCertPath forKey:@"server_pub_key"];
+
+    if (addressChanged || certificateChanged) {
+        SGKeychain_DeletePrivateKey(profileIdx);
+        [profile removeObjectForKey:@"device_address"];
+        [profile removeObjectForKey:@"privateKey"];
+    }
+
+    if (![profile writeToFile:profilePath atomically:YES]) {
+        return NO;
+    }
+
+    [[SGConfiguration sharedConfiguration] reloadFromDisk];
+
+    if (isActive) {
+        if (addressChanged || certificateChanged) {
+            [[SGDatabaseManager sharedManager] clearAllTokens];
+            [[SGDatabaseManager sharedManager] clearAllDNSCache];
+        }
+        [self handleEvent:SGEventConfigReloaded payload:nil];
+    }
+
+    return YES;
+}
+
 - (BOOL)performDeleteProfileAtIndex:(NSInteger)profileIdx {
     if (profileIdx < 1 || profileIdx > 5) return NO;
 
     BOOL wasActive = ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx);
     NSString *profilePath = SGPath([NSString stringWithFormat:
         SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
+    NSString *certPath = SGPath(SGProfileCertificatePathForIndex(profileIdx));
+    NSFileManager *fm = [NSFileManager defaultManager];
 
     /* Delete the keychain entry first.  If the plist write fails afterward
      * we'd have a no-key + no-plist state, which is fine — the slot is
      * just gone.  The reverse order would risk a no-key + intact-plist
      * state where the daemon thinks the slot is registered but can't auth. */
     SGKeychain_DeletePrivateKey(profileIdx);
+    if ([fm fileExistsAtPath:certPath]) {
+        [fm removeItemAtPath:certPath error:nil];
+    }
 
-    NSFileManager *fm = [NSFileManager defaultManager];
     if ([fm fileExistsAtPath:profilePath]) {
         NSError *err = nil;
         if (![fm removeItemAtPath:profilePath error:&err]) {

@@ -23,10 +23,6 @@
 - (void)setSpecifier:(id)specifier         {}
 @end
 
-static void SNPostReloadConfig(void) {
-    [SNChannelGateway postReloadConfig];
-}
-
 typedef enum {
     WizardSectionServer = 0,
     WizardSectionCert   = 1,
@@ -57,7 +53,12 @@ static const NSInteger kAlertTagUnregister  = 2;
 @property (nonatomic, assign) BOOL         autoFetchInProgress;
 @property (nonatomic, assign) BOOL         unregisterInFlight;
 @property (nonatomic, assign) BOOL         unregisterRequestInFlight;
+@property (nonatomic, assign) BOOL         profileSaveInFlight;
+@property (nonatomic, assign) BOOL         profileSaveRequestInFlight;
+@property (nonatomic, assign) NSInteger    profileSaveWizardRow;
+@property (nonatomic, strong) NSString    *profileSaveStatusText;
 @property (nonatomic, strong) SNDeferredActivity *unregisterActivity;
+@property (nonatomic, strong) SNDeferredActivity *profileSaveActivity;
 @property (nonatomic, unsafe_unretained) UITextField *serverAddressField;
 @property (nonatomic, unsafe_unretained) UITextField *registeredAddressField;
 
@@ -80,6 +81,7 @@ static const NSInteger kAlertTagUnregister  = 2;
     self = [super initWithStyle:UITableViewStyleGrouped];
     if (self) {
         _profileIndex = index;
+        _profileSaveWizardRow = -1;
         self.title = [NSString stringWithFormat:@"Profile %ld", (long)index];
     }
     return self;
@@ -87,6 +89,8 @@ static const NSInteger kAlertTagUnregister  = 2;
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    BOOL busy = self.profileSaveRequestInFlight || self.unregisterRequestInFlight;
+    [self.navigationItem setHidesBackButton:busy animated:NO];
     [self _updateTableHeaderView];
     [self.tableView reloadData];
 }
@@ -283,13 +287,18 @@ static const NSInteger kAlertTagUnregister  = 2;
         }
 
         BOOL hasAddress = (self.pendingServerAddress.length > 0);
-        BOOL canSelect  = hasAddress && !self.autoFetchInProgress;
+        BOOL canSelect  = hasAddress && !self.autoFetchInProgress && !self.profileSaveRequestInFlight;
+        BOOL isSavingThisRow = self.profileSaveInFlight && self.profileSaveWizardRow == indexPath.row;
         UIColor *enabledTint = [UIColor colorWithRed:0.05f green:0.42f blue:0.86f alpha:1.0f];
 
         if (isAuto) {
-            cell.textLabel.text = self.autoFetchInProgress ? @"Fetching\xe2\x80\xa6"
-                                                           : @"Fetch Automatically";
-            if (self.autoFetchInProgress) {
+            if (isSavingThisRow) {
+                cell.textLabel.text = self.profileSaveStatusText ?: @"Saving\xe2\x80\xa6";
+            } else {
+                cell.textLabel.text = self.autoFetchInProgress ? @"Fetching\xe2\x80\xa6"
+                                                               : @"Fetch Automatically";
+            }
+            if (self.autoFetchInProgress || isSavingThisRow) {
                 UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
                     initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
                 [spinner startAnimating];
@@ -301,13 +310,23 @@ static const NSInteger kAlertTagUnregister  = 2;
                                                 : UITableViewCellAccessoryNone;
             }
         } else {
-            cell.textLabel.text = @"Import From Disk";
-            cell.accessoryView  = nil;
-            cell.accessoryType  = canSelect ? UITableViewCellAccessoryDisclosureIndicator
-                                            : UITableViewCellAccessoryNone;
+            cell.textLabel.text = isSavingThisRow ? (self.profileSaveStatusText ?: @"Importing\xe2\x80\xa6")
+                                                  : @"Import From Disk";
+            if (isSavingThisRow) {
+                UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc]
+                    initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
+                [spinner startAnimating];
+                cell.accessoryView = spinner;
+                [spinner release];
+                cell.accessoryType = UITableViewCellAccessoryNone;
+            } else {
+                cell.accessoryView = nil;
+                cell.accessoryType = canSelect ? UITableViewCellAccessoryDisclosureIndicator
+                                               : UITableViewCellAccessoryNone;
+            }
         }
 
-        cell.textLabel.textColor = canSelect ? enabledTint : [UIColor grayColor];
+        cell.textLabel.textColor = (canSelect || isSavingThisRow) ? enabledTint : [UIColor grayColor];
         cell.selectionStyle      = canSelect ? UITableViewCellSelectionStyleBlue
                                              : UITableViewCellSelectionStyleNone;
         return cell;
@@ -406,7 +425,9 @@ static const NSInteger kAlertTagUnregister  = 2;
 
     if (![self isRegistered]) {
         if (indexPath.section != WizardSectionCert) return;
-        if (self.pendingServerAddress.length == 0 || self.autoFetchInProgress) return;
+        if (self.pendingServerAddress.length == 0 ||
+            self.autoFetchInProgress ||
+            self.profileSaveRequestInFlight) return;
 
         [self.serverAddressField resignFirstResponder];
 
@@ -496,8 +517,8 @@ static const NSInteger kAlertTagUnregister  = 2;
 
         id cancelAction = makeAction(actionClass, actionSel, @"Cancel", 1, nil);
 
-        NSString *capturedAddress = self.pendingServerAddress;
-        NSString *capturedPath    = path;
+        NSString *capturedAddress = [[self.pendingServerAddress copy] autorelease];
+        NSString *capturedPath    = [[path copy] autorelease];
         void (^confirmBlock)(id) = ^(id action) {
             [self _confirmImportFromPath:capturedPath serverAddress:capturedAddress];
         };
@@ -526,7 +547,7 @@ static const NSInteger kAlertTagUnregister  = 2;
 
 - (void)_beginAutoFetchCertificate {
     NSString *address = self.pendingServerAddress;
-    if (address.length == 0 || self.autoFetchInProgress) return;
+    if (address.length == 0 || self.autoFetchInProgress || self.profileSaveRequestInFlight) return;
 
     self.autoFetchInProgress = YES;
     [self.navigationItem setHidesBackButton:YES animated:YES];
@@ -605,63 +626,168 @@ static const NSInteger kAlertTagUnregister  = 2;
 }
 
 - (void)_commitInstallFetchedPEM:(NSString *)pem serverAddress:(NSString *)serverAddress {
-    BOOL ok = [[SNDataManager shared] installFetchedCertificatePEM:pem
-                                                     serverAddress:serverAddress
-                                                      profileIndex:self.profileIndex];
-    if (ok) {
+    [self _saveProfileWithServerAddress:serverAddress
+                         certificatePEM:pem
+                             statusText:@"Installing\xe2\x80\xa6"
+                           failureTitle:@"Install Failed"
+                         wizardSourceRow:WizardCertRowAuto
+                              onSuccess:^{
         self.pendingServerAddress = nil;
+        [self _updateTableHeaderView];
         [self.navigationController popToViewController:self animated:YES];
         self.title = [NSString stringWithFormat:@"Profile %ld", (long)self.profileIndex];
-    } else {
-        UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Install Failed"
-                                                     message:@"Could not save the fetched certificate to disk."
-                                                    delegate:nil
-                                           cancelButtonTitle:@"OK"
-                                           otherButtonTitles:nil];
-        [av show];
-        [av release];
-    }
+        [self.tableView reloadData];
+    }];
 }
 
 - (void)_confirmImportFromPath:(NSString *)path serverAddress:(NSString *)serverAddress {
-    BOOL success = [[SNDataManager shared] importProfileFromPEMAtPath:path
-                                                        serverAddress:serverAddress
-                                                         profileIndex:self.profileIndex];
     self.pendingPEMPath = nil;
-
-    if (success) {
-        self.pendingServerAddress = nil;
-        [self.navigationController popToViewController:self animated:YES];
-        self.title = [NSString stringWithFormat:@"Profile %ld", (long)self.profileIndex];
-    } else {
-        UIAlertView *av = [[UIAlertView alloc]
-                           initWithTitle:@"Import Failed"
-                                 message:@"Could not read or copy the selected .pem file. Make sure the file is a valid PEM certificate."
-                                delegate:nil
-                       cancelButtonTitle:@"OK"
-                       otherButtonTitles:nil];
-        [av show];
-        [av release];
+    if (![self _beginProfileSaveActivityWithStatusText:@"Importing\xe2\x80\xa6"
+                                       wizardSourceRow:WizardCertRowManual]) {
+        return;
     }
+
+    if (self.navigationController.topViewController != self) {
+        [self.navigationController popToViewController:self animated:YES];
+    }
+
+    NSString *pathCopy = [[path copy] autorelease];
+    NSString *addressCopy = [[serverAddress copy] autorelease];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+        NSString *pem = [[NSString alloc] initWithContentsOfFile:pathCopy
+                                                        encoding:NSUTF8StringEncoding
+                                                           error:nil];
+        BOOL valid = ([pem length] > 0 && [[SNDataManager shared] parseCertificatePEM:pem] != nil);
+        NSString *pemResult = valid ? [pem retain] : nil;
+        [pem release];
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!valid) {
+                [self _finishProfileSaveActivityWithCompletion:^{
+                    UIAlertView *av = [[UIAlertView alloc]
+                                       initWithTitle:@"Import Failed"
+                                             message:@"Could not read the selected .pem file. Make sure the file is a valid PEM certificate."
+                                            delegate:nil
+                                   cancelButtonTitle:@"OK"
+                                   otherButtonTitles:nil];
+                    [av show];
+                    [av release];
+                }];
+                [pemResult release];
+                return;
+            }
+
+            [self _sendProfileSaveWithServerAddress:addressCopy
+                                     certificatePEM:pemResult
+                                       failureTitle:@"Import Failed"
+                                          onSuccess:^{
+                self.pendingServerAddress = nil;
+                [self _updateTableHeaderView];
+                self.title = [NSString stringWithFormat:@"Profile %ld", (long)self.profileIndex];
+                [self.tableView reloadData];
+            }];
+            [pemResult release];
+        });
+        [pool release];
+    });
 }
 
 - (void)_commitServerAddressChange:(NSString *)newAddress {
-    NSString *path = [[SNDataManager shared] profilePathForIndex:self.profileIndex];
-    NSMutableDictionary *profile =
-        [NSMutableDictionary dictionaryWithContentsOfFile:path]
-        ?: [NSMutableDictionary dictionary];
-    profile[@"server_address"] = newAddress;
-    [profile writeToFile:path atomically:YES];
-    SNPostReloadConfig();
+    [self _saveProfileWithServerAddress:newAddress
+                         certificatePEM:nil
+                             statusText:@"Saving\xe2\x80\xa6"
+                           failureTitle:@"Save Failed"
+                         wizardSourceRow:-1
+                              onSuccess:^{
+        self.title = [NSString stringWithFormat:@"Profile %ld", (long)self.profileIndex];
+        [self.tableView reloadData];
+    }];
+}
+
+- (void)_saveProfileWithServerAddress:(NSString *)serverAddress
+                       certificatePEM:(NSString *)certificatePEM
+                           statusText:(NSString *)statusText
+                         failureTitle:(NSString *)failureTitle
+                       wizardSourceRow:(NSInteger)wizardSourceRow
+                            onSuccess:(void (^)(void))successBlock {
+    if (![self _beginProfileSaveActivityWithStatusText:statusText
+                                       wizardSourceRow:wizardSourceRow]) {
+        return;
+    }
+    [self _sendProfileSaveWithServerAddress:serverAddress
+                             certificatePEM:certificatePEM
+                               failureTitle:failureTitle
+                                  onSuccess:successBlock];
+}
+
+- (BOOL)_beginProfileSaveActivityWithStatusText:(NSString *)statusText
+                                wizardSourceRow:(NSInteger)wizardSourceRow {
+    if (self.profileSaveRequestInFlight) return NO;
+    self.profileSaveRequestInFlight = YES;
+    self.profileSaveWizardRow = wizardSourceRow;
+    self.profileSaveStatusText = statusText ?: @"Saving\xe2\x80\xa6";
+    [self.navigationItem setHidesBackButton:YES animated:YES];
+    self.tableView.allowsSelection = NO;
+
+    self.profileSaveActivity = [[[SNDeferredActivity alloc] initWithShowBlock:^{
+        self.profileSaveInFlight = YES;
+        [self.tableView reloadData];
+    } hideBlock:^{
+        self.profileSaveInFlight = NO;
+        [self.tableView reloadData];
+    }] autorelease];
+    [self.profileSaveActivity begin];
+    return YES;
+}
+
+- (void)_finishProfileSaveActivityWithCompletion:(void (^)(void))completion {
+    SNDeferredActivity *activity = [self.profileSaveActivity retain];
+    [activity finishWithCompletion:^{
+        self.profileSaveRequestInFlight = NO;
+        self.profileSaveActivity = nil;
+        self.profileSaveWizardRow = -1;
+        self.profileSaveStatusText = nil;
+        [self.navigationItem setHidesBackButton:NO animated:YES];
+        self.tableView.allowsSelection = YES;
+        if (completion) completion();
+    }];
+    [activity release];
+}
+
+- (void)_sendProfileSaveWithServerAddress:(NSString *)serverAddress
+                           certificatePEM:(NSString *)certificatePEM
+                             failureTitle:(NSString *)failureTitle
+                                onSuccess:(void (^)(void))successBlock {
+    NSInteger idx = self.profileIndex;
+    [SNChannelGateway saveProfileAtIndex:idx
+                           serverAddress:serverAddress
+                          certificatePEM:certificatePEM
+                              completion:^(BOOL ok, NSString *message) {
+        [self _finishProfileSaveActivityWithCompletion:^{
+            if (!ok) {
+                UIAlertView *av = [[UIAlertView alloc] initWithTitle:failureTitle ?: @"Save Failed"
+                                                             message:message ?: @"The daemon did not respond."
+                                                            delegate:nil
+                                                   cancelButtonTitle:@"OK"
+                                                   otherButtonTitles:nil];
+                [av show];
+                [av release];
+                [self.tableView reloadData];
+                return;
+            }
+
+            if (successBlock) successBlock();
+        }];
+    }];
 }
 
 - (void)_performUnregister {
     if (_unregisterRequestInFlight) return;
     _unregisterRequestInFlight = YES;
 
-    self.navigationItem.hidesBackButton = YES;
+    [self.navigationItem setHidesBackButton:YES animated:YES];
     self.tableView.allowsSelection = NO;
-    self.tableView.userInteractionEnabled = NO;
 
     self.unregisterActivity = [[[SNDeferredActivity alloc] initWithShowBlock:^{
         self.unregisterInFlight = YES;
@@ -679,9 +805,8 @@ static const NSInteger kAlertTagUnregister  = 2;
         [activity finishWithCompletion:^{
             self.unregisterRequestInFlight = NO;
             self.unregisterActivity = nil;
-            self.navigationItem.hidesBackButton = NO;
+            [self.navigationItem setHidesBackButton:NO animated:YES];
             self.tableView.allowsSelection = YES;
-            self.tableView.userInteractionEnabled = YES;
 
             if (!ok) {
                 UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Unregister"
@@ -759,7 +884,9 @@ static const NSInteger kAlertTagUnregister  = 2;
 - (void)dealloc {
     [_pendingServerAddress release];
     [_pendingPEMPath release];
+    [_profileSaveStatusText release];
     [_unregisterActivity release];
+    [_profileSaveActivity release];
 
     [super dealloc];
 }

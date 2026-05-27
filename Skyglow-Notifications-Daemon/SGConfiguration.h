@@ -23,18 +23,18 @@ static inline NSString * SGPath(NSString *path) {
  */
 + (SGConfiguration *)sharedConfiguration;
 
-@property (nonatomic, copy) NSString *serverAddress;
+@property (nonatomic, readonly, copy) NSString *serverAddress;
 @property (nonatomic, copy) NSString *serverIPAddress;
 @property (nonatomic, copy) NSString *serverPort;
 
 /**
- * Returns YES when the configuration has a valid server address and, if a profile
- * exists, a valid server public key.
+ * Returns YES when the active profile exists and has a server address plus
+ * readable server public key.
  */
 @property (nonatomic, readonly) BOOL isValid;
 
-@property (nonatomic, assign) BOOL isEnabled;
-@property (nonatomic, assign) BOOL hasProfile;
+@property (nonatomic, readonly) BOOL isEnabled;
+@property (nonatomic, readonly) BOOL hasProfile;
 
 /**
  * Minimum log level read from the "logLevel" key of the main prefs plist
@@ -44,9 +44,9 @@ static inline NSString * SGPath(NSString *path) {
  * the codebase used to with NSLog.
  */
 @property (nonatomic, readonly) NSInteger logLevel;
-@property (nonatomic, copy) NSString *deviceAddress;
-@property (nonatomic, copy) NSString *privateKeyPEM;
-@property (nonatomic, copy) NSString *serverPubKeyPEM;
+@property (nonatomic, readonly, copy) NSString *deviceAddress;
+@property (nonatomic, readonly, copy) NSString *privateKeyPEM;
+@property (nonatomic, readonly, copy) NSString *serverPubKeyPEM;
 
 /**
  * 1-based index of the active profile (1–5).  Defaults to 1.

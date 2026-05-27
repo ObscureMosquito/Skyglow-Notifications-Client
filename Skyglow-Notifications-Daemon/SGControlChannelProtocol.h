@@ -76,6 +76,8 @@
 #define SG_CONTROL_MAX_USERINFO_SIZE         1024
 #define SG_CONTROL_MAX_ERROR_DETAIL_SIZE     256
 #define SG_CONTROL_MAX_EVENT_DATA_SIZE       1024
+#define SG_CONTROL_MAX_SERVER_ADDRESS_SIZE   256
+#define SG_CONTROL_MAX_PROFILE_PEM_SIZE      3584
 
 /** Timing Bounds */
 
@@ -162,6 +164,12 @@ typedef enum : uint8_t {
      * disables itself and clears any pending state for that profile.
      * Payload is SGCProfileIndexPayload. */
     SGCMSG_DELETE_PROFILE      = 0x21,  /* SGCProfileIndexPayload */
+
+    /* Prefs -> daemon: create or edit a profile slot.  The daemon owns the
+     * profile plist and certificate file write.  Payload is
+     * SGCProfileSavePayload; certificatePEMLength may be zero for an
+     * address-only edit that preserves the existing certificate. */
+    SGCMSG_SAVE_PROFILE        = 0x22,  /* SGCProfileSavePayload */
 
     /* Responses */
     SGCMSG_GENERIC_ACK         = 0x30,  /* (empty payload)           */
@@ -327,6 +335,20 @@ typedef struct {
 typedef struct {
     uint8_t profileIndex;
 } SGCProfileIndexPayload;
+
+/**
+ * SGCMSG_SAVE_PROFILE payload.  profileIndex is 1..5.  serverAddress is a
+ * null-terminated UTF-8 hostname/IP string.  certificatePEMLength may be 0
+ * to keep the profile's existing certificate, otherwise certificatePEM holds
+ * a UTF-8 PEM certificate to install for this specific profile.
+ */
+typedef struct {
+    uint8_t  profileIndex;
+    uint8_t  reserved;
+    uint16_t certificatePEMLength;
+    char     serverAddress[SG_CONTROL_MAX_SERVER_ADDRESS_SIZE];
+    uint8_t  certificatePEM[SG_CONTROL_MAX_PROFILE_PEM_SIZE];
+} SGCProfileSavePayload;
 
 /**
  * SGCMSG_BUNDLE_ID_LIST (response).

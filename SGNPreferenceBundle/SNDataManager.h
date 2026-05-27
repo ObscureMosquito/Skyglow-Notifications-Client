@@ -33,18 +33,11 @@
 - (NSString *)profilePathForIndex:(NSInteger)index;
 - (NSDictionary *)profileForIndex:(NSInteger)index;
 - (BOOL)profileExistsAtIndex:(NSInteger)index;
-- (BOOL)importProfileFromPEMAtPath:(NSString *)path serverAddress:(NSString *)serverAddress profileIndex:(NSInteger)index;
-- (BOOL)importProfileFromPEMAtPath:(NSString *)path serverAddress:(NSString *)serverAddress;
 
 /** Auto-fetch — resolve _sgn.<addr> TXT for http_addr, then GET <http_addr>/snd/server_cert.pem.
  *  Completion fires on the main queue with either a PEM string or a human-readable error. */
 - (void)fetchServerCertificateForAddress:(NSString *)serverAddress
                               completion:(void (^)(NSString *pem, NSString *errorMessage))completion;
-
-/** Persists a PEM obtained via fetchServerCertificateForAddress: and writes the profile plist. */
-- (BOOL)installFetchedCertificatePEM:(NSString *)pem
-                       serverAddress:(NSString *)serverAddress
-                        profileIndex:(NSInteger)index;
 
 /** Daemon Status.  latestPayload is auto-maintained by a subscription to
  *  SGCEVT_STATE_CHANGED on the daemon control channel, seeded at bundle

@@ -143,6 +143,62 @@ static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
     }];
 }
 
++ (void)saveProfileAtIndex:(NSInteger)profileIndex
+             serverAddress:(NSString *)serverAddress
+            certificatePEM:(NSString *)certificatePEM
+                completion:(SNChannelCommandCompletion)completion {
+    NSString *trimmed = [serverAddress stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (profileIndex < 1 || profileIndex > 5) {
+        if (completion) completion(NO, @"Invalid profile index.");
+        return;
+    }
+    if (trimmed.length == 0) {
+        if (completion) completion(NO, @"Enter a server address first.");
+        return;
+    }
+
+    NSData *addressData = [trimmed dataUsingEncoding:NSUTF8StringEncoding];
+    if ([addressData length] == 0 ||
+        [addressData length] >= SG_CONTROL_MAX_SERVER_ADDRESS_SIZE) {
+        if (completion) completion(NO, @"The server address is too long.");
+        return;
+    }
+
+    NSData *pemData = [certificatePEM dataUsingEncoding:NSUTF8StringEncoding];
+    if (pemData.length > SG_CONTROL_MAX_PROFILE_PEM_SIZE) {
+        if (completion) completion(NO, @"The selected certificate is too large.");
+        return;
+    }
+
+    SGCProfileSavePayload payload;
+    memset(&payload, 0, sizeof(payload));
+    payload.profileIndex = (uint8_t)profileIndex;
+    payload.certificatePEMLength = (uint16_t)[pemData length];
+    SNCopyCString(payload.serverAddress, sizeof(payload.serverAddress), [trimmed UTF8String]);
+    if ([pemData length] > 0) {
+        memcpy(payload.certificatePEM, [pemData bytes], [pemData length]);
+    }
+
+    [DaemonClient() sendRequest:SGCMSG_SAVE_PROFILE
+                        payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
+                        timeout:0
+                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
+        BOOL ok = (err == SGCERR_OK);
+        NSString *message = nil;
+        if (!ok) {
+            if (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE) {
+                message = @"Could not communicate with the Skyglow daemon. Try again after restarting it.";
+            } else {
+                message = @"The daemon could not save this profile.";
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(ok, message);
+        });
+    }];
+}
+
 + (void)subscribeToStatusUpdatesWithHandler:(void (^)(SGStatusPayload payload))handler {
     if (!handler) return;
     void (^handlerCopy)(SGStatusPayload) = [handler copy];
@@ -160,7 +216,7 @@ static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
         } completion:nil];
     };
 
-    /* Subscribe now (whether connected or not — channel will queue). */
+    /* Subscribe now (whether connected or not, channel will queue). */
     doSubscribe();
 
     /* Re-subscribe on every reconnect.  SGControlChannel clears event

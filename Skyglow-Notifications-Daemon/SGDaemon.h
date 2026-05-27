@@ -122,6 +122,15 @@ typedef NS_ENUM(NSInteger, SGEvent) {
  */
 - (BOOL)performDeleteProfileAtIndex:(NSInteger)profileIdx;
 
+/**
+ * Atomically creates or edits a profile slot.  The daemon owns the profile
+ * plist and per-profile certificate file.  Passing nil/empty certificatePEM
+ * preserves the existing certificate for address-only edits.
+ */
+- (BOOL)performSaveProfileAtIndex:(NSInteger)profileIdx
+                    serverAddress:(NSString *)serverAddress
+                    certificatePEM:(NSString *)certificatePEM;
+
 @end
 
 #endif

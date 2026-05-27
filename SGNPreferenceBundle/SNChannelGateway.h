@@ -59,6 +59,16 @@ typedef void (^SNChannelBundleListCompletion)(BOOL ok, NSArray *bundleIds, NSStr
 + (void)deleteProfileAtIndex:(NSInteger)profileIndex completion:(SNChannelCommandCompletion)completion;
 
 /**
+ * Creates or edits a profile through the daemon.  Pass a PEM string for
+ * creation/certificate replacement; pass nil for address-only edits that
+ * preserve the existing certificate.  Completion fires on the main queue.
+ */
++ (void)saveProfileAtIndex:(NSInteger)profileIndex
+             serverAddress:(NSString *)serverAddress
+            certificatePEM:(NSString *)certificatePEM
+                completion:(SNChannelCommandCompletion)completion;
+
+/**
  * Asynchronously requests the list of bundles iOS considers push-registered
  * (third-party only).  The SB tweak handler returns the iOS-native push
  * registration table (apsd-style — apps that have been registered for push

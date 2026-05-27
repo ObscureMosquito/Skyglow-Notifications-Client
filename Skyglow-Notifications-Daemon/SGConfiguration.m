@@ -36,62 +36,56 @@
 }
 
 - (void)reloadFromDisk {
+    NSString *mainPath = SGPath(SG_PREFS_PLIST_PATH);
+    NSDictionary *mainPrefs = [NSDictionary dictionaryWithContentsOfFile:mainPath];
+
+    BOOL nextEnabled = mainPrefs ? [mainPrefs[@"enabled"] boolValue] : NO;
+
+    NSNumber *profileNum = mainPrefs ? mainPrefs[@"activeProfile"] : nil;
+    NSInteger nextActiveProfileIndex =
+        (profileNum && [profileNum integerValue] >= 1 && [profileNum integerValue] <= 5)
+            ? [profileNum integerValue] : 1;
+
+    NSNumber *logLevelNum = mainPrefs ? mainPrefs[@"logLevel"] : nil;
+    NSInteger nextLogLevel = logLevelNum ? [logLevelNum integerValue] : 2;
+    if (nextLogLevel < 0 || nextLogLevel > 4) nextLogLevel = 2;
+
+    BOOL nextHasProfile = NO;
+    NSString *nextServerAddress = nil;
+    NSString *nextDeviceAddress = nil;
+    NSString *nextPrivateKeyPEM = nil;
+    NSString *nextServerPubKeyPEM = nil;
+
+    NSString *profilePath = SGPath([NSString stringWithFormat:
+        SG_PROFILE_PLIST_FORMAT, (long)nextActiveProfileIndex]);
+    NSDictionary *profilePrefs = [NSDictionary dictionaryWithContentsOfFile:profilePath];
+    if (profilePrefs) {
+        nextHasProfile = YES;
+        nextServerAddress = [profilePrefs[@"server_address"] copy];
+        nextDeviceAddress = [profilePrefs[@"device_address"] copy];
+        nextPrivateKeyPEM = [SGKeychain_FetchPrivateKeyPEM(nextActiveProfileIndex) copy];
+        nextServerPubKeyPEM = [[self readKeyFromFile:profilePrefs[@"server_pub_key"]] copy];
+    }
+
     dispatch_barrier_sync(_isolationQueue, ^{
-        NSString *mainPath = SGPath(SG_PREFS_PLIST_PATH);
-        NSDictionary *mainPrefs = [NSDictionary dictionaryWithContentsOfFile:mainPath];
-        if (mainPrefs) {
-            self->_isEnabled = [mainPrefs[@"enabled"] boolValue];
-        } else {
-            self->_isEnabled = NO;
-        }
+        self->_isEnabled = nextEnabled;
+        self->_activeProfileIndex = nextActiveProfileIndex;
+        self->_logLevel = nextLogLevel;
+        self->_hasProfile = nextHasProfile;
 
-        NSNumber *profileNum = mainPrefs ? mainPrefs[@"activeProfile"] : nil;
-        NSInteger idx = (profileNum && [profileNum integerValue] >= 1 && [profileNum integerValue] <= 5)
-                        ? [profileNum integerValue] : 1;
-        self->_activeProfileIndex = idx;
+        [self->_serverAddress release];
+        self->_serverAddress = nextServerAddress;
+        [self->_deviceAddress release];
+        self->_deviceAddress = nextDeviceAddress;
+        [self->_privateKeyPEM release];
+        self->_privateKeyPEM = nextPrivateKeyPEM;
+        [self->_serverPubKeyPEM release];
+        self->_serverPubKeyPEM = nextServerPubKeyPEM;
 
-        /**
-         * logLevel: 0..4 (SGLogLevel encoding).  Anything outside the
-         * range — including a missing key on a fresh install — resolves to
-         * Info (2), matching the historical NSLog volume.
-         */
-        NSNumber *logLevelNum = mainPrefs ? mainPrefs[@"logLevel"] : nil;
-        NSInteger lvl = logLevelNum ? [logLevelNum integerValue] : 2;
-        if (lvl < 0 || lvl > 4) lvl = 2;
-        self->_logLevel = lvl;
-
-        NSString *profilePath = SGPath([NSString stringWithFormat:
-            SG_PROFILE_PLIST_FORMAT, (long)idx]);
-        NSDictionary *profilePrefs = [NSDictionary dictionaryWithContentsOfFile:profilePath];
-        if (profilePrefs) {
-            self->_hasProfile = YES;
-            NSString *addr = profilePrefs[@"server_address"];
-            if (self->_serverAddress != addr) {
-                [self->_serverAddress release];
-                self->_serverAddress = [addr copy];
-            }
-            
-            NSString *devAddr = profilePrefs[@"device_address"];
-            if (self->_deviceAddress != devAddr) {
-                [self->_deviceAddress release];
-                self->_deviceAddress = [devAddr copy];
-            }
-            
-            NSString *privKey = SGKeychain_FetchPrivateKeyPEM(idx);
-            if (self->_privateKeyPEM != privKey) {
-                [self->_privateKeyPEM release];
-                self->_privateKeyPEM = [privKey copy];
-            }
-            
-            NSString *pubKeyPath = profilePrefs[@"server_pub_key"];
-            NSString *pubKey = [self readKeyFromFile:pubKeyPath];
-            if (self->_serverPubKeyPEM != pubKey) {
-                [self->_serverPubKeyPEM release];
-                self->_serverPubKeyPEM = [pubKey copy];
-            }
-        } else {
-            self->_hasProfile = NO;
-        }
+        [self->_serverIPAddress release];
+        self->_serverIPAddress = nil;
+        [self->_serverPort release];
+        self->_serverPort = nil;
     });
 }
 
@@ -139,11 +133,15 @@
 - (BOOL)isValid {
     __block BOOL valid = NO;
     dispatch_sync(_isolationQueue, ^{
+        if (!self->_hasProfile) {
+            return;
+        }
+
         if (!self->_serverAddress || [self->_serverAddress length] == 0) {
             return;
         }
         
-        if (self->_hasProfile && (!self->_serverPubKeyPEM || [self->_serverPubKeyPEM length] == 0)) {
+        if (!self->_serverPubKeyPEM || [self->_serverPubKeyPEM length] == 0) {
             return;
         }
         
@@ -161,15 +159,6 @@
     [_serverPubKeyPEM release];
     if (_isolationQueue) dispatch_release(_isolationQueue);
     [super dealloc];
-}
-
-- (void)setServerAddress:(NSString *)address {
-    dispatch_barrier_async(_isolationQueue, ^{
-        if (self->_serverAddress != address) {
-            [self->_serverAddress release];
-            self->_serverAddress = [address copy];
-        }
-    });
 }
 
 - (NSString *)serverAddress {
@@ -214,24 +203,12 @@
     return [result autorelease];
 }
 
-- (void)setIsEnabled:(BOOL)enabled {
-    dispatch_barrier_async(_isolationQueue, ^{
-        self->_isEnabled = enabled;
-    });
-}
-
 - (BOOL)isEnabled {
     __block BOOL result = NO;
     dispatch_sync(_isolationQueue, ^{
         result = self->_isEnabled;
     });
     return result;
-}
-
-- (void)setHasProfile:(BOOL)hasProfile {
-    dispatch_barrier_async(_isolationQueue, ^{
-        self->_hasProfile = hasProfile;
-    });
 }
 
 - (BOOL)hasProfile {
@@ -242,15 +219,6 @@
     return result;
 }
 
-- (void)setDeviceAddress:(NSString *)address {
-    dispatch_barrier_async(_isolationQueue, ^{
-        if (self->_deviceAddress != address) {
-            [self->_deviceAddress release];
-            self->_deviceAddress = [address copy];
-        }
-    });
-}
-
 - (NSString *)deviceAddress {
     __block NSString *result = nil;
     dispatch_sync(_isolationQueue, ^{
@@ -259,30 +227,12 @@
     return [result autorelease];
 }
 
-- (void)setPrivateKeyPEM:(NSString *)pem {
-    dispatch_barrier_async(_isolationQueue, ^{
-        if (self->_privateKeyPEM != pem) {
-            [self->_privateKeyPEM release];
-            self->_privateKeyPEM = [pem copy];
-        }
-    });
-}
-
 - (NSString *)privateKeyPEM {
     __block NSString *result = nil;
     dispatch_sync(_isolationQueue, ^{
         result = [self->_privateKeyPEM retain];
     });
     return [result autorelease];
-}
-
-- (void)setServerPubKeyPEM:(NSString *)pem {
-    dispatch_barrier_async(_isolationQueue, ^{
-        if (self->_serverPubKeyPEM != pem) {
-            [self->_serverPubKeyPEM release];
-            self->_serverPubKeyPEM = [pem copy];
-        }
-    });
 }
 
 - (NSString *)serverPubKeyPEM {

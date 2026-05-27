@@ -156,6 +156,58 @@ int main(int argc, char *argv[]) {
         [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                           SGControlReplyBlock reply,
                                           SGControlReplyErrorBlock replyError) {
+            if (req->payloadLength < sizeof(SGCProfileSavePayload)) {
+                replyError(SGCERR_INVALID_REQUEST, @"save-profile payload too short");
+                return;
+            }
+            SGCProfileSavePayload *p = (SGCProfileSavePayload *)req->payload;
+            NSInteger idx = p->profileIndex;
+            if (idx < 1 || idx > 5 ||
+                p->certificatePEMLength > SG_CONTROL_MAX_PROFILE_PEM_SIZE) {
+                replyError(SGCERR_INVALID_REQUEST, @"save-profile payload invalid");
+                return;
+            }
+
+            NSString *address = [[NSString alloc] initWithBytes:p->serverAddress
+                                                         length:strnlen(p->serverAddress, sizeof(p->serverAddress))
+                                                       encoding:NSUTF8StringEncoding];
+            NSString *pem = nil;
+            if (p->certificatePEMLength > 0) {
+                pem = [[NSString alloc] initWithBytes:p->certificatePEM
+                                               length:p->certificatePEMLength
+                                             encoding:NSUTF8StringEncoding];
+            }
+            if ([address length] == 0 || (p->certificatePEMLength > 0 && [pem length] == 0)) {
+                [address release];
+                [pem release];
+                replyError(SGCERR_INVALID_REQUEST, @"save-profile payload strings invalid");
+                return;
+            }
+
+            SGControlReplyBlock      replyCopy      = [reply copy];
+            SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
+            NSString *addressCopy = [address copy];
+            NSString *pemCopy = [pem copy];
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                @autoreleasepool {
+                    BOOL ok = [daemon performSaveProfileAtIndex:idx
+                                                   serverAddress:addressCopy
+                                                   certificatePEM:pemCopy];
+                    if (ok) replyCopy(SGCMSG_GENERIC_ACK, nil);
+                    else    replyErrorCopy(SGCERR_INTERNAL, @"profile save failed");
+                }
+                [addressCopy release];
+                [pemCopy release];
+                [replyCopy release];
+                [replyErrorCopy release];
+            });
+            [address release];
+            [pem release];
+        } forMessageType:SGCMSG_SAVE_PROFILE];
+
+        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                          SGControlReplyBlock reply,
+                                          SGControlReplyErrorBlock replyError) {
             if (req->payloadLength < sizeof(SGCProfileIndexPayload)) {
                 replyError(SGCERR_INVALID_REQUEST, @"delete-profile payload too short");
                 return;

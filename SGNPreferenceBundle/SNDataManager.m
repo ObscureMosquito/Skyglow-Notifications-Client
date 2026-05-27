@@ -315,56 +315,6 @@ static sqlite3 *openDBReadOnly(void) {
     return info;
 }
 
-- (BOOL)importProfileFromPEMAtPath:(NSString *)path serverAddress:(NSString *)serverAddress {
-    return [self importProfileFromPEMAtPath:path serverAddress:serverAddress profileIndex:[self activeProfileIndex]];
-}
-
-- (BOOL)importProfileFromPEMAtPath:(NSString *)path serverAddress:(NSString *)serverAddress profileIndex:(NSInteger)index {
-    if (!path || path.length == 0) return NO;
-    if (!serverAddress || serverAddress.length == 0) return NO;
-    if (index < 1 || index > 5) return NO;
-
-    NSFileManager *fm = [NSFileManager defaultManager];
-
-    NSString *destDir = SGPath(@"/var/mobile/Library/SkyglowNotifications");
-    if (![fm fileExistsAtPath:destDir]) {
-        NSError *mkErr = nil;
-        if (![fm createDirectoryAtPath:destDir
-           withIntermediateDirectories:YES
-                            attributes:nil
-                                 error:&mkErr]) {
-            return NO;
-        }
-    }
-
-    NSString *destPath = [destDir stringByAppendingPathComponent:@"server.pem"];
-    if ([fm fileExistsAtPath:destPath]) {
-        [fm removeItemAtPath:destPath error:nil];
-    }
-    NSError *copyErr = nil;
-    if (![fm copyItemAtPath:path toPath:destPath error:&copyErr]) {
-        return NO;
-    }
-
-    NSError *readErr = nil;
-    NSString *pemString = [NSString stringWithContentsOfFile:destPath
-                                                    encoding:NSUTF8StringEncoding
-                                                       error:&readErr];
-    if (!pemString || pemString.length == 0 ||
-        [pemString rangeOfString:@"BEGIN"].location == NSNotFound) {
-        [fm removeItemAtPath:destPath error:nil];
-        return NO;
-    }
-
-    NSString *storedPath = @"/var/mobile/Library/SkyglowNotifications/server.pem";
-
-    NSMutableDictionary *profile = [NSMutableDictionary dictionary];
-    [profile setObject:serverAddress forKey:@"server_address"];
-    [profile setObject:storedPath    forKey:@"server_pub_key"];
-
-    return [profile writeToFile:SGProfilePathForIndex(index) atomically:YES];
-}
-
 #pragma mark - Certificate Auto-Fetch
 
 static void SNAutoFetch_DNSCallback(DNSServiceRef sdRef, DNSServiceFlags flags,
@@ -518,30 +468,6 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
             completion(pem, nil);
         });
     });
-}
-
-- (BOOL)installFetchedCertificatePEM:(NSString *)pem
-                       serverAddress:(NSString *)serverAddress
-                        profileIndex:(NSInteger)index {
-    if (!pem || pem.length == 0) return NO;
-    if (!serverAddress || serverAddress.length == 0) return NO;
-    if (index < 1 || index > 5) return NO;
-
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *destDir = SGPath(@"/var/mobile/Library/SkyglowNotifications");
-    if (![fm fileExistsAtPath:destDir]) {
-        if (![fm createDirectoryAtPath:destDir withIntermediateDirectories:YES
-                            attributes:nil error:nil]) return NO;
-    }
-
-    NSString *destPath = [destDir stringByAppendingPathComponent:@"server.pem"];
-    if (![pem writeToFile:destPath atomically:YES
-                  encoding:NSUTF8StringEncoding error:nil]) return NO;
-
-    NSMutableDictionary *profile = [NSMutableDictionary dictionary];
-    profile[@"server_address"] = serverAddress;
-    profile[@"server_pub_key"] = @"/var/mobile/Library/SkyglowNotifications/server.pem";
-    return [profile writeToFile:SGProfilePathForIndex(index) atomically:YES];
 }
 
 #pragma mark - Multi-Profile API
