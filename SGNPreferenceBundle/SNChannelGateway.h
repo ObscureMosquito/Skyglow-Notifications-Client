@@ -50,6 +50,15 @@ typedef void (^SNChannelBundleListCompletion)(BOOL ok, NSArray *bundleIds, NSStr
 + (void)deleteAppForBundleId:(NSString *)bundleId completion:(SNChannelCommandCompletion)completion;
 
 /**
+ * Atomically deletes the profile at the given index (1..5) via the daemon.
+ * The daemon does keychain + plist + DB cleanup in one step.  Completion
+ * fires on the main queue with ok=YES on full success, or ok=NO with a
+ * user-facing message on any failure.  UI MUST NOT remove the profile
+ * row optimistically, only on ok=YES.
+ */
++ (void)deleteProfileAtIndex:(NSInteger)profileIndex completion:(SNChannelCommandCompletion)completion;
+
+/**
  * Asynchronously requests the list of bundles iOS considers push-registered
  * (third-party only).  The SB tweak handler returns the iOS-native push
  * registration table (apsd-style — apps that have been registered for push

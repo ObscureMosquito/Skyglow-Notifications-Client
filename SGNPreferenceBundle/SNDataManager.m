@@ -541,21 +541,6 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
     return [profile writeToFile:SGProfilePathForIndex(index) atomically:YES];
 }
 
-- (void)unregisterDevice {
-    [self unregisterProfileAtIndex:[self activeProfileIndex]];
-}
-
-- (void)unregisterProfileAtIndex:(NSInteger)index {
-    [self deleteProfileAtIndex:index];
-
-    sqlite3 *db = NULL;
-    if (sqlite3_open([SGDBPath() UTF8String], &db) == SQLITE_OK) {
-        sqlite3_exec(db, "DELETE FROM notifications;", NULL, NULL, NULL);
-        sqlite3_exec(db, "DELETE FROM dns_cache;", NULL, NULL, NULL);
-    }
-    if (db) sqlite3_close(db);
-}
-
 #pragma mark - Multi-Profile API
 
 - (NSInteger)activeProfileIndex {
@@ -579,19 +564,6 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
 
 - (BOOL)profileExistsAtIndex:(NSInteger)index {
     return [[NSFileManager defaultManager] fileExistsAtPath:SGProfilePathForIndex(index)];
-}
-
-- (BOOL)deleteProfileAtIndex:(NSInteger)index {
-    if (index < 1 || index > 5) return NO;
-    NSString *profilePath = SGProfilePathForIndex(index);
-    NSDictionary *profile = [NSDictionary dictionaryWithContentsOfFile:profilePath];
-
-    NSString *privKeyPath = [profile objectForKey:@"privateKey"];
-    if (privKeyPath) {
-        [[NSFileManager defaultManager] removeItemAtPath:SGPath(privKeyPath) error:nil];
-    }
-
-    return [[NSFileManager defaultManager] removeItemAtPath:profilePath error:nil];
 }
 
 - (NSString *)hexStringFromData:(NSData *)data {

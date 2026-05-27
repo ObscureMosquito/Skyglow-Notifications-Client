@@ -165,6 +165,13 @@ typedef enum : uint8_t {
      * right now" (used to seed the UI on bundle load). */
     SGCMSG_QUERY_STATUS        = 0x20,  /* (empty payload) */
 
+    /* Prefs -> daemon: delete a profile slot.  Atomic plist + keychain
+     * removal owned by the daemon — prefs only requests, daemon does
+     * everything.  If the active profile is deleted, the daemon also
+     * disables itself and clears any pending state for that profile.
+     * Payload is SGCProfileIndexPayload. */
+    SGCMSG_DELETE_PROFILE      = 0x21,  /* SGCProfileIndexPayload */
+
     /* Responses */
     SGCMSG_GENERIC_ACK         = 0x30,  /* (empty payload)           */
     SGCMSG_TOKEN_RESPONSE      = 0x31,  /* SGCTokenResponsePayload   */
@@ -321,6 +328,14 @@ typedef struct {
 typedef struct {
     char bundleID[SG_CONTROL_MAX_BUNDLE_ID_SIZE];
 } SGCBundleIdPayload;
+
+/**
+ * SGCMSG_DELETE_PROFILE payload.  Profile indices are 1..5; out-of-range
+ * values are rejected by the daemon as SGCERR_INVALID_REQUEST.
+ */
+typedef struct {
+    uint8_t profileIndex;
+} SGCProfileIndexPayload;
 
 /**
  * SGCMSG_BUNDLE_ID_LIST (response).

@@ -63,6 +63,20 @@
  */
 - (NSSet *)registeredBundleIdentifiers;
 
+/**
+ * Drops every row from the notifications table.  Used when the active
+ * profile is deleted — tokens issued by the old server are no longer
+ * valid against any future server registration.
+ */
+- (BOOL)clearAllTokens;
+
+/**
+ * Drops every row from the DNS cache.  Used alongside clearAllTokens
+ * when an active profile is deleted, so the next connect re-resolves
+ * the new server's address from scratch.
+ */
+- (BOOL)clearAllDNSCache;
+
 /** Connectivity & Synchronization */
 
 /**

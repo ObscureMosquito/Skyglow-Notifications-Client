@@ -156,6 +156,33 @@ int main(int argc, char *argv[]) {
         [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                           SGControlReplyBlock reply,
                                           SGControlReplyErrorBlock replyError) {
+            if (req->payloadLength < sizeof(SGCProfileIndexPayload)) {
+                replyError(SGCERR_INVALID_REQUEST, @"delete-profile payload too short");
+                return;
+            }
+            SGCProfileIndexPayload *p = (SGCProfileIndexPayload *)req->payload;
+            NSInteger idx = p->profileIndex;
+            if (idx < 1 || idx > 5) {
+                replyError(SGCERR_INVALID_REQUEST, @"profile index out of range");
+                return;
+            }
+
+            SGControlReplyBlock      replyCopy      = [reply copy];
+            SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                @autoreleasepool {
+                    BOOL ok = [daemon performDeleteProfileAtIndex:idx];
+                    if (ok) replyCopy(SGCMSG_GENERIC_ACK, nil);
+                    else    replyErrorCopy(SGCERR_INTERNAL, @"profile delete failed");
+                }
+                [replyCopy release];
+                [replyErrorCopy release];
+            });
+        } forMessageType:SGCMSG_DELETE_PROFILE];
+
+        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                          SGControlReplyBlock reply,
+                                          SGControlReplyErrorBlock replyError) {
             SGLOGI(Skyglow, "code=%s message=TEST_INJECT result=received", SGND_DAEMON_TEST_INJECT);
             reply(SGCMSG_GENERIC_ACK, nil);
         } forMessageType:SGCMSG_TEST_INJECT];

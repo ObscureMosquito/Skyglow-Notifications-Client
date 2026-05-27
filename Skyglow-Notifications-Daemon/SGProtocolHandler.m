@@ -48,6 +48,17 @@ static size_t    _regPendingPrivKeyLen = 0;
 static RSA      *_regPendingRSA = NULL;
 static int64_t   _regTimestamp = 0;
 
+/* Protocol phase — gates which server messages we accept at any given moment */
+typedef enum {
+    SGPProtoPreHello       = 0,
+    SGPProtoHelloReceived  = 1,
+    SGPProtoChallengeWait  = 2,
+    SGPProtoAuthWait       = 3,
+    SGPProtoAuthenticated  = 4,
+} SGPProtoPhase;
+
+static SGPProtoPhase _phase = SGPProtoPreHello;
+
 
 static double SG_GetMonotonicSeconds(void) {
     static mach_timebase_info_data_t tb;
@@ -77,6 +88,19 @@ static int64_t SG_DecodeBE64(const uint8_t p[8]) {
 
 static uint32_t SG_DecodeBE32(const uint8_t p[4]) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+static BOOL SG_IsAddressCharsetSafe(const uint8_t *bytes, uint16_t len) {
+    if (len == 0 || len > 255) return NO;
+    for (uint16_t i = 0; i < len; i++) {
+        uint8_t c = bytes[i];
+        BOOL ok = (c >= 'A' && c <= 'Z') ||
+                  (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9') ||
+                  c == '.' || c == '_' || c == '@' || c == '-';
+        if (!ok) return NO;
+    }
+    return YES;
 }
 
 const char *SGP_ErrorName(int code) {
@@ -290,6 +314,7 @@ BOOL SGP_BeginFirstTimeRegistration(void) {
     _regPendingRSA = rsa;
     OPENSSL_free(pubDer);
 
+    _phase = SGPProtoChallengeWait;
     SGP_LowLevelSend(SGP_C_REGISTER, [payload bytes], (uint32_t)[payload length]);
     return YES;
 }
@@ -356,6 +381,7 @@ void SGP_DisconnectFromServer(void) {
     }
     _pingPendingSince = 0.0;
     _lastFrameReceivedAt = 0.0;
+    _phase = SGPProtoPreHello;
 }
 
 int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
@@ -445,6 +471,7 @@ void SGP_BeginLoginHandshake(NSString *address, RSA *privKey) {
     [p appendBytes:tsBE length:8];
     uint32_t v = htonl(SGP_VERSION); [p appendBytes:&v length:4];
 
+    _phase = SGPProtoChallengeWait;
     SGP_LowLevelSend(SGP_C_LOGIN, [p bytes], (uint32_t)[p length]);
 }
 
@@ -651,22 +678,49 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
 
     switch (type) {
         case SGP_S_HELLO: {
+            /* HELLO is only valid as the very first server frame after TLS
+             * handshake */
+            if (_phase != SGPProtoPreHello) {
+                SGLOGW(SGP, "code=%s type=S_HELLO phase=%d result=unsolicited",
+                       SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase);
+                result = SGP_ERR_PROTO; goto cleanup;
+            }
+            _phase = SGPProtoHelloReceived;
             [_delegate protocolDidReceiveWelcomeChallenge];
             break;
         }
         case SGP_S_CHALLENGE: {
+            /* Only accept the challenge in response to our C_LOGIN/C_REGISTER */
+            if (_phase != SGPProtoChallengeWait) {
+                SGLOGW(SGP, "code=%s type=S_CHALLENGE phase=%d result=unsolicited",
+                       SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase);
+                result = SGP_ERR_PROTO; goto cleanup;
+            }
             if (len < SGP_NONCE_LEN) { result = SGP_ERR_PROTO; goto cleanup; }
             memcpy(_pendingNonce, raw, SGP_NONCE_LEN); _hasPendingNonce = YES;
+            _phase = SGPProtoAuthWait;
             /* Distinguish registration vs login by which keypair is pending. */
             if (_regPendingRSA) SG_SendChallengeResponse(SGP_C_REGISTER_RESP, _regPendingRSA, nil, _regTimestamp);
             else                SG_SendChallengeResponse(SGP_C_LOGIN_RESP, _userPrivKey, _userAddress, _loginTimestamp);
             break;
         }
         case SGP_S_AUTH_OK: {
+            /* Only valid after we sent C_LOGIN_RESP */
+            if (_phase != SGPProtoAuthWait || _regPendingRSA != NULL) {
+                SGLOGW(SGP, "code=%s type=S_AUTH_OK phase=%d result=unsolicited",
+                       SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase);
+                result = SGP_ERR_PROTO; goto cleanup;
+            }
+            _phase = SGPProtoAuthenticated;
             [_delegate protocolDidAuthenticateSuccessfully];
             break;
         }
         case SGP_S_NOTIFY: {
+            if (_phase != SGPProtoAuthenticated) {
+                SGLOGW(SGP, "code=%s type=S_NOTIFY phase=%d result=unsolicited",
+                       SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase);
+                result = SGP_ERR_PROTO; goto cleanup;
+            }
             if (len < SGP_NOTIFY_MIN_PAYLOAD) { result = SGP_ERR_PROTO; goto cleanup; }
 
             NSData *rk  = [NSData dataWithBytes:raw length:SGP_ROUTING_KEY_LEN];
@@ -707,15 +761,34 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             result = SGP_ERR_CLOSED; goto cleanup;
         }
         case SGP_S_REGISTER_OK: {
-            /* Wire format (protocol v3): serverVer(4) + addrLen(2) + addr(N).
-             * Server-assigned address replaces the client-picked UUID. */
+            /* Must have an active registration AND be in the auth-wait phase */
+            if (!_regPendingRSA || _phase != SGPProtoAuthWait) {
+                SGLOGW(SGP, "code=%s type=S_REGISTER_OK phase=%d hasRegister=%d result=unsolicited",
+                       SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase, _regPendingRSA != NULL);
+                result = SGP_ERR_PROTO;
+                goto cleanup;
+            }
+
             uint32_t serverVer = SG_DecodeBE32(raw);
             uint16_t addrLen   = ((uint16_t)raw[4] << 8) | (uint16_t)raw[5];
+            
             /* Bounds-check against both the frame and the server's 255-char
              * contract.  Reject malformed frames as protocol errors. */
             if (addrLen == 0 || addrLen > 255 || (uint64_t)6 + addrLen > (uint64_t)len) {
                 SGLOGE(SGP, "code=%s field=address addrLen=%u frameLen=%llu result=rejected",
                        SGND_PROTOCOL_FRAME_SIZE_INVALID, addrLen, (unsigned long long)len);
+                if (_regPendingRSA) { RSA_free(_regPendingRSA); _regPendingRSA = NULL; }
+                if (_regPendingPrivKey) {
+                    SGP_ZeroAndFreeKeyMaterial(_regPendingPrivKey, _regPendingPrivKeyLen);
+                    _regPendingPrivKey = NULL; _regPendingPrivKeyLen = 0;
+                }
+                result = SGP_ERR_PROTO;
+                goto cleanup;
+            }
+            /* Charset Whitelist */
+            if (!SG_IsAddressCharsetSafe(raw + 6, addrLen)) {
+                SGLOGE(SGP, "code=%s field=address result=rejected_charset",
+                       SGND_PROTOCOL_FRAME_SIZE_INVALID);
                 if (_regPendingRSA) { RSA_free(_regPendingRSA); _regPendingRSA = NULL; }
                 if (_regPendingPrivKey) {
                     SGP_ZeroAndFreeKeyMaterial(_regPendingPrivKey, _regPendingPrivKeyLen);
@@ -741,6 +814,12 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             break;
         }
         case SGP_S_REGISTER_FAIL: {
+            if (!_regPendingRSA || _phase != SGPProtoAuthWait) {
+                SGLOGW(SGP, "code=%s type=S_REGISTER_FAIL phase=%d hasRegister=%d result=unsolicited",
+                       SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase, _regPendingRSA != NULL);
+                result = SGP_ERR_PROTO;
+                goto cleanup;
+            }
             uint8_t code = raw[0];
             NSString *reason = nil;
             if (len >= 4) {
@@ -779,13 +858,32 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             break;
         }
         case SGP_S_POLL_DONE: {
+            if (_phase != SGPProtoAuthenticated) {
+                SGLOGW(SGP, "code=%s type=S_POLL_DONE phase=%d result=unsolicited",
+                       SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase);
+                result = SGP_ERR_PROTO; goto cleanup;
+            }
             [_delegate protocolDidFinishOfflineQueueDrain];
             break;
         }
         case SGP_S_TIME_SYNC: {
+            /* Only honour clock-skew updates from an authenticated server. */
+            if (_phase != SGPProtoAuthenticated) {
+                SGLOGW(SGP, "code=%s type=S_TIME_SYNC phase=%d result=unsolicited",
+                       SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase);
+                result = SGP_ERR_PROTO; goto cleanup;
+            }
             int64_t serverTime = SG_DecodeBE64(raw);
             int64_t localTime  = (int64_t)time(NULL);
             int64_t offset     = serverTime - localTime;
+            /* Bound skew: ±2 days.  Limits the damage from a compromised
+             * server pushing timestamps wildly out of any reasonable replay
+             * window, this is generous. */
+            if (offset > 172800 || offset < -172800) {
+                SGLOGW(SGP, "code=%s offset=%llds result=rejected_excessive_skew",
+                       SGND_PROTOCOL_TIME_SYNC, offset);
+                result = SGP_ERR_PROTO; goto cleanup;
+            }
             pthread_mutex_lock(&_sendLock);
             _clockSkewSeconds = offset;
             pthread_mutex_unlock(&_sendLock);

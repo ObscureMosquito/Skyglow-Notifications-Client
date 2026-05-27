@@ -19,6 +19,7 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/SGStatusServer.c \
     Skyglow-Notifications-Daemon/SGPayloadParser.m \
     Skyglow-Notifications-Daemon/SGConfiguration.m \
+    Skyglow-Notifications-Daemon/SGKeychainStore.m \
     Skyglow-Notifications-Daemon/SGKeepAliveStrategy.c \
     Skyglow-Notifications-Daemon/SGReachabilityMonitor.m \
     Skyglow-Notifications-Daemon/SGDaemon.m \

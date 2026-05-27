@@ -31,8 +31,30 @@ enum {
 
 @end
 
+@interface SNProfileListController () <UIAlertViewDelegate>
+@property (nonatomic, retain) NSMutableSet  *pendingDeletionIndices;
+@property (nonatomic, retain) NSMutableSet  *deletingIndices;
+@property (nonatomic, retain) NSNumber      *failedDeletionIndex;
+@property (nonatomic, retain) NSIndexPath   *failedDeletionIndexPath;
+@end
+
 @implementation SNProfileListController {
     NSMutableArray *_profileIndices;
+}
+
+- (NSMutableSet *)pendingDeletionIndices {
+    if (!_pendingDeletionIndices) _pendingDeletionIndices = [[NSMutableSet alloc] init];
+    return _pendingDeletionIndices;
+}
+- (NSMutableSet *)deletingIndices {
+    if (!_deletingIndices) _deletingIndices = [[NSMutableSet alloc] init];
+    return _deletingIndices;
+}
+- (BOOL)_isDeleting {
+    return (_deletingIndices.count > 0 || _pendingDeletionIndices.count > 0);
+}
+- (void)_setBackButtonHiddenForDeletingState {
+    self.navigationItem.hidesBackButton = [self _isDeleting];
 }
 
 /* iOS 4-5 PSRootController calls these on every pushed VC during the
@@ -117,9 +139,20 @@ enum {
         cell.textLabel.text       = [NSString stringWithFormat:@"Profile %ld", (long)idx];
         cell.detailTextLabel.text = (addr && [addr length] > 0) ? addr : @"Not Configured";
         cell.detailTextLabel.textColor = [UIColor grayColor];
-        cell.accessoryType = isActive ? UITableViewCellAccessoryCheckmark
-                                      : UITableViewCellAccessoryDisclosureIndicator;
-        cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+
+        if ([_deletingIndices containsObject:@(idx)]) {
+            UIActivityIndicatorView *spin = [[UIActivityIndicatorView alloc]
+                initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
+            [spin startAnimating];
+            cell.accessoryView = spin;
+            [spin release];
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        } else {
+            cell.accessoryView = nil;
+            cell.accessoryType = isActive ? UITableViewCellAccessoryCheckmark
+                                          : UITableViewCellAccessoryDisclosureIndicator;
+            cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+        }
         return cell;
     }
 
@@ -172,40 +205,73 @@ enum {
 #pragma mark - Swipe to delete
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    if ([self _isDeleting]) return NO;
     return (indexPath.section == SectionProfiles);
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if ([self _isDeleting]) return UITableViewCellEditingStyleNone;
+    if (indexPath.section != SectionProfiles) return UITableViewCellEditingStyleNone;
+    return UITableViewCellEditingStyleDelete;
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle != UITableViewCellEditingStyleDelete) return;
+    if (indexPath.row >= (NSInteger)_profileIndices.count) return;
+    if ([self _isDeleting]) return;
 
     NSInteger idx = [[_profileIndices objectAtIndex:indexPath.row] integerValue];
-    SNDataManager *dm = [SNDataManager shared];
+    NSNumber *idxKey = [NSNumber numberWithInteger:idx];
+    NSIndexPath *capturedPath = [[indexPath copy] autorelease];
 
-    [dm deleteProfileAtIndex:idx];
+    [tableView setEditing:NO animated:YES];
+    [self.pendingDeletionIndices addObject:idxKey];
 
-    if ([dm activeProfileIndex] == idx) {
-        NSInteger nextActive = 0;
-        for (NSInteger i = 1; i <= 5; i++) {
-            if (i != idx && [dm profileExistsAtIndex:i]) {
-                nextActive = i;
-                break;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (![self.pendingDeletionIndices containsObject:idxKey]) return;
+        [self.pendingDeletionIndices removeObject:idxKey];
+        [self.deletingIndices addObject:idxKey];
+        [self _setBackButtonHiddenForDeletingState];
+        if (capturedPath.row < (NSInteger)_profileIndices.count &&
+            [[_profileIndices objectAtIndex:capturedPath.row] integerValue] == idx) {
+            [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
+                                  withRowAnimation:UITableViewRowAnimationNone];
+        }
+    });
+
+    [SNChannelGateway deleteProfileAtIndex:idx
+                                completion:^(BOOL ok, NSString *message) {
+        [self.pendingDeletionIndices removeObject:idxKey];
+        [self.deletingIndices removeObject:idxKey];
+        [self _setBackButtonHiddenForDeletingState];
+
+        if (!ok) {
+            self.failedDeletionIndex = idxKey;
+            self.failedDeletionIndexPath = capturedPath;
+            UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Delete Profile"
+                                                         message:message ?: @"The daemon did not respond. Try again."
+                                                        delegate:self
+                                               cancelButtonTitle:@"OK"
+                                               otherButtonTitles:nil];
+            [av show];
+            [av release];
+            /* Force the row back to its non-spinner state. */
+            if (capturedPath.row < (NSInteger)_profileIndices.count) {
+                [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
+                                      withRowAnimation:UITableViewRowAnimationNone];
             }
+            return;
         }
-        if (nextActive > 0) {
-            [dm setActiveProfileIndex:nextActive];
-        } else {
-            [dm setMainPrefValue:@NO forKey:@"enabled"];
-        }
-        SNPostReloadConfig();
-    }
 
-    [_profileIndices removeObjectAtIndex:indexPath.row];
+        [self _reloadProfileIndices];
+        [self.tableView reloadData];
+    }];
+}
 
-    /* Reload the whole table — mixing deleteRows + reloadSections on
-       overlapping sections triggers UITableView internal-consistency
-       assertions.  A plain reloadData is safe and keeps footer text,
-       Add-row visibility, and checkmark state all in sync. */
-    [tableView reloadData];
+- (void)alertView:(UIAlertView *)alertView didDismissWithButtonIndex:(NSInteger)buttonIndex {
+    self.failedDeletionIndex = nil;
+    self.failedDeletionIndexPath = nil;
 }
 
 #pragma mark - Action sheet for non-active profile
@@ -282,6 +348,10 @@ enum {
 
 - (void)dealloc {
     [_profileIndices release];
+    [_pendingDeletionIndices release];
+    [_deletingIndices release];
+    [_failedDeletionIndex release];
+    [_failedDeletionIndexPath release];
     [super dealloc];
 }
 

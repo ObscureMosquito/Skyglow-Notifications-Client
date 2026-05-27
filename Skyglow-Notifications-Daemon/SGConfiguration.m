@@ -1,4 +1,5 @@
 #import "SGConfiguration.h"
+#import "SGKeychainStore.h"
 #import "SGLog.h"
 
 @implementation SGConfiguration {
@@ -76,8 +77,7 @@
                 self->_deviceAddress = [devAddr copy];
             }
             
-            NSString *privKeyPath = profilePrefs[@"privateKey"];
-            NSString *privKey = [self readKeyFromFile:privKeyPath];
+            NSString *privKey = SGKeychain_FetchPrivateKeyPEM(idx);
             if (self->_privateKeyPEM != privKey) {
                 [self->_privateKeyPEM release];
                 self->_privateKeyPEM = [privKey copy];

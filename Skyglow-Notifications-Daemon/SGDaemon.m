@@ -9,6 +9,7 @@
 #import "SGAvailability.h"
 #import "SGControlChannel.h"
 #import "SGReachabilityMonitor.h"
+#import "SGKeychainStore.h"
 #import "SGLog.h"
 #include <openssl/pem.h>
 #include <stdio.h>
@@ -944,42 +945,23 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
     profile[@"device_address"] = deviceAddress;
 
-    NSString *keyPath = [NSString stringWithFormat:
-        @"/var/Library/PreferenceBundles/SGNPreferenceBundle.bundle/client_profile%ld.pem", (long)profileIdx];
-    NSString *absoluteKeyPath = SGPath(keyPath);
-    NSString *keyDir = [absoluteKeyPath stringByDeletingLastPathComponent];
-    [[NSFileManager defaultManager] createDirectoryAtPath:keyDir withIntermediateDirectories:YES attributes:nil error:nil];
-
-    BOOL keyWritten = NO;
-    const char *keyPathC = [absoluteKeyPath fileSystemRepresentation];
-    int fd = open(keyPathC, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd >= 0) {
-        size_t written = 0;
-        while (written < pemLen) {
-            ssize_t n = write(fd, pemKey + written, pemLen - written);
-            if (n <= 0) break;
-            written += (size_t)n;
-        }
-        if (written == pemLen) {
-            fsync(fd);
-            keyWritten = YES;
-        }
-        close(fd);
-    }
-
+    NSString *pemString = [[NSString alloc] initWithBytes:pemKey
+                                                   length:pemLen
+                                                 encoding:NSUTF8StringEncoding];
     SGP_ZeroAndFreeKeyMaterial(pemKey, pemLen);
     pemKey = NULL;
 
-    if (!keyWritten) {
-        SGLOGE(SGDaemon, "code=%s path=%s result=failed", SGND_REGISTRATION_KEY_WRITE_FAILED, [absoluteKeyPath UTF8String]);
-        [[NSFileManager defaultManager] removeItemAtPath:absoluteKeyPath error:nil];
+    BOOL keyStored = SGKeychain_StorePrivateKeyPEM(pemString, profileIdx);
+    [pemString release];
+
+    if (!keyStored) {
+        SGLOGE(SGDaemon, "code=%s profile=%ld result=failed", SGND_REGISTRATION_KEY_WRITE_FAILED, (long)profileIdx);
         [self handleEvent:SGEventDisconnected payload:nil];
         return;
     }
 
-    profile[@"privateKey"] = keyPath;
-
     if (![profile writeToFile:profilePath atomically:YES]) {
+        SGKeychain_DeletePrivateKey(profileIdx);
         [self handleEvent:SGEventDisconnected payload:nil];
         return;
     }
@@ -1090,16 +1072,58 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
         NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePath] ?: [NSMutableDictionary dictionary];
 
-        NSString *privKeyRelPath = profile[@"privateKey"];
-        if (privKeyRelPath) {
-            [[NSFileManager defaultManager] removeItemAtPath:SGPath(privKeyRelPath) error:nil];
-        }
+        SGKeychain_DeletePrivateKey(profileIdx);
 
         [profile removeObjectForKey:@"device_address"];
-        [profile removeObjectForKey:@"privateKey"];
+        [profile removeObjectForKey:@"privateKey"];  /* legacy key — safe no-op if absent */
         [profile writeToFile:profilePath atomically:YES];
         [[SGConfiguration sharedConfiguration] reloadFromDisk];
     }
+}
+
+- (BOOL)performDeleteProfileAtIndex:(NSInteger)profileIdx {
+    if (profileIdx < 1 || profileIdx > 5) return NO;
+
+    BOOL wasActive = ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx);
+    NSString *profilePath = SGPath([NSString stringWithFormat:
+        SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
+
+    /* Delete the keychain entry first.  If the plist write fails afterward
+     * we'd have a no-key + no-plist state, which is fine — the slot is
+     * just gone.  The reverse order would risk a no-key + intact-plist
+     * state where the daemon thinks the slot is registered but can't auth. */
+    SGKeychain_DeletePrivateKey(profileIdx);
+
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:profilePath]) {
+        NSError *err = nil;
+        if (![fm removeItemAtPath:profilePath error:&err]) {
+            SGLOGE(SGDaemon, "profile-delete: plist removal failed idx=%ld errno=%d",
+                   (long)profileIdx, (int)[err code]);
+            return NO;
+        }
+    }
+
+    if (wasActive) {
+        /* Active profile gone: clear the DB tables that were tied to it,
+         * disable the daemon, and disconnect cleanly.  Subsequent connects
+         * will fall through to the unregistered state until the user picks
+         * (or registers) another profile. */
+        [[SGDatabaseManager sharedManager] clearAllTokens];
+        [[SGDatabaseManager sharedManager] clearAllDNSCache];
+    }
+
+    [[SGConfiguration sharedConfiguration] reloadFromDisk];
+
+    if (wasActive) {
+        /* Bump the FSM to act on the now-missing profile.  ConfigReloaded
+         * is the existing reload-driven event; the FSM handler maps it to
+         * Disabled when the user-intent is unchanged but the profile is
+         * gone (no valid config). */
+        [self handleEvent:SGEventConfigReloaded payload:nil];
+    }
+
+    return YES;
 }
 
 #pragma mark - SpringBoard Push Delivery (via SGControlChannel)

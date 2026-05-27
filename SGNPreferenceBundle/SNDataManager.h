@@ -33,7 +33,6 @@
 - (NSString *)profilePathForIndex:(NSInteger)index;
 - (NSDictionary *)profileForIndex:(NSInteger)index;
 - (BOOL)profileExistsAtIndex:(NSInteger)index;
-- (BOOL)deleteProfileAtIndex:(NSInteger)index;
 - (BOOL)importProfileFromPEMAtPath:(NSString *)path serverAddress:(NSString *)serverAddress profileIndex:(NSInteger)index;
 - (BOOL)importProfileFromPEMAtPath:(NSString *)path serverAddress:(NSString *)serverAddress;
 
@@ -66,8 +65,6 @@
 - (NSDictionary *)parseCertificatePEM:(NSString *)pem;
 
 /** Unregistration */
-- (void)unregisterDevice;
-- (void)unregisterProfileAtIndex:(NSInteger)index;
 
 /** Utilities */
 - (NSString *)hexStringFromData:(NSData *)data;

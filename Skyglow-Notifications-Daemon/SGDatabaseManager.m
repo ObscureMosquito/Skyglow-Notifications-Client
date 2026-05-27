@@ -204,6 +204,22 @@
     return ok;
 }
 
+- (BOOL)clearAllTokens {
+    __block BOOL ok = NO;
+    dispatch_sync(_databaseQueue, ^{
+        ok = (sqlite3_exec(_database, "DELETE FROM notifications;", NULL, NULL, NULL) == SQLITE_OK);
+    });
+    return ok;
+}
+
+- (BOOL)clearAllDNSCache {
+    __block BOOL ok = NO;
+    dispatch_sync(_databaseQueue, ^{
+        ok = (sqlite3_exec(_database, "DELETE FROM dns_cache;", NULL, NULL, NULL) == SQLITE_OK);
+    });
+    return ok;
+}
+
 - (NSArray *)allBundleRegistrations {
     __block NSMutableArray *results = [NSMutableArray array];
     dispatch_sync(_databaseQueue, ^{

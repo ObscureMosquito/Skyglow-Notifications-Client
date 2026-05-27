@@ -114,6 +114,14 @@ typedef NS_ENUM(NSInteger, SGEvent) {
  */
 - (void)_runDeletionCascadeForBundle:(NSString *)bundleID;
 
+/**
+ * Atomically deletes a profile slot: keychain entry + plist file + any
+ * database rows tied to that profile.  If the deleted slot was active,
+ * the daemon also disables itself and disconnects.  Returns YES on full
+ * success, NO if any step failed (caller's IPC reply uses this).
+ */
+- (BOOL)performDeleteProfileAtIndex:(NSInteger)profileIdx;
+
 @end
 
 #endif

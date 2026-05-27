@@ -235,6 +235,12 @@ authentication.
 Max address length is **255 bytes**. Frames exceeding this are
 rejected as protocol errors.
 
+**Address charset.** Clients MUST reject any address containing bytes
+outside `[A-Za-z0-9._@-]`. This blocks path traversal, embedded NULs,
+control characters, and format-string specifiers in a value that will
+end up in the profile plist, UI displays, and log lines. A server
+issuing addresses outside this charset is treated as malformed.
+
 ### 5.4. S_REGISTER_FAIL (0x19) Payload
 
 | Offset | Size       | Field      | Description                             |
@@ -336,7 +342,25 @@ Empty payload (0 bytes). Confirms the client has authenticated.
 
 ### 6.8. Clock Skew Correction
 
-The server may send `S_TIME_SYNC (0x1B)` at any time, containing an 8-byte big-endian Unix timestamp. The client computes `offset = server_time - local_time` and applies this correction to all subsequent timestamps sent in C_LOGIN and C_REGISTER messages. This handles iOS devices with drifted clocks. The server's challenge window is **300 seconds** (`SGP_CHALLENGE_WINDOW_SEC`).
+The server may send `S_TIME_SYNC (0x1B)` **only after authentication completes**. It contains an 8-byte big-endian Unix timestamp; the client computes `offset = server_time - local_time` and applies this correction to all subsequent timestamps sent in C_LOGIN and C_REGISTER messages. This handles iOS devices with drifted clocks. The server's challenge window is **300 seconds** (`SGP_CHALLENGE_WINDOW_SEC`).
+
+The client rejects offsets exceeding **±172800 seconds (2 days)** as a protocol error. Larger drifts are well outside any plausible real-world clock skew and indicate either a buggy server or an attempt to push timestamps far out of valid replay windows.
+
+### 6.9. Protocol Phase Gating
+
+To defend against unsolicited server-to-client frames that could be used as signing oracles, identity hijacks, or to dispatch pre-auth notifications, the client enforces a strict phase machine and rejects messages outside their allowed phases.
+
+| Phase             | Set by                                  | Allowed server frames                       |
+| ----------------- | --------------------------------------- | ------------------------------------------- |
+| PreHello          | TLS handshake complete; (re)connect     | `S_HELLO`                                   |
+| HelloReceived     | Receiving `S_HELLO`                     | *(client will send C_LOGIN or C_REGISTER)*  |
+| ChallengeWait     | Sending `C_LOGIN` or `C_REGISTER`       | `S_CHALLENGE`                               |
+| AuthWait          | Receiving `S_CHALLENGE` and sending response | `S_AUTH_OK`, `S_REGISTER_OK`, `S_REGISTER_FAIL` |
+| Authenticated     | Receiving `S_AUTH_OK`                   | `S_NOTIFY`, `S_PING`, `S_PONG`, `S_POLL_DONE`, `S_TIME_SYNC` |
+
+`S_DISCONNECT` is accepted in **any** phase. `S_PING` and `S_PONG` are accepted only in `Authenticated`. Any frame outside its allowed phase triggers `SGP_ERR_PROTO` and a clean teardown of the connection (soft error → backoff + reconnect).
+
+Servers MUST NOT rely on sending frames out of phase for any side-effect. Sending `S_REGISTER_OK` to an already-authenticated client to "reissue" an identity, or `S_CHALLENGE` mid-session to refresh credentials, is not supported and will be rejected.
 
 ---
 

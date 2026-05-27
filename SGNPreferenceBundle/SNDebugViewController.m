@@ -22,11 +22,13 @@ typedef enum {
     SectionCount
 } DebugSection;
 
-@interface SNDebugViewController () {
+@interface SNDebugViewController () <UIAlertViewDelegate> {
     NSString       *_appCount;
     NSString       *_dbSize;
     NSMutableArray *_savedApps;   // @[ @{@"bundleID", @"token", @"routingKey"} ]
     UITextField    *_manualBundleIDParams;
+    NSMutableSet   *_pendingDeletionBundleIDs;
+    NSMutableSet   *_deletingBundleIDs;
 }
 @end
 
@@ -41,8 +43,14 @@ typedef enum {
     if (self) {
         self.title = @"Debug Tools";
         _savedApps = [[NSMutableArray alloc] init];
+        _pendingDeletionBundleIDs = [[NSMutableSet alloc] init];
+        _deletingBundleIDs = [[NSMutableSet alloc] init];
     }
     return self;
+}
+
+- (BOOL)_isDeleting {
+    return (_deletingBundleIDs.count > 0 || _pendingDeletionBundleIDs.count > 0);
 }
 
 - (void)viewDidLoad {
@@ -183,14 +191,27 @@ typedef enum {
             cell.accessoryType  = UITableViewCellAccessoryNone;
         } else {
             NSDictionary *app = _savedApps[indexPath.row];
-            cell.textLabel.text = app[@"bundleID"];
+            NSString *bundleId = app[@"bundleID"];
+            cell.textLabel.text = bundleId;
             NSString *hex = [[SNDataManager shared] hexStringFromData:app[@"token"]];
             NSUInteger truncLen = MIN((NSUInteger)16, [hex length]);
             cell.detailTextLabel.text = [NSString stringWithFormat:@"Token: %@...",
                                          [hex substringToIndex:truncLen]];
             cell.detailTextLabel.textColor = [UIColor grayColor];
-            cell.selectionStyle = UITableViewCellSelectionStyleBlue;
-            cell.accessoryType  = UITableViewCellAccessoryDisclosureIndicator;
+
+            if ([_deletingBundleIDs containsObject:bundleId]) {
+                UIActivityIndicatorView *spin = [[UIActivityIndicatorView alloc]
+                    initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
+                [spin startAnimating];
+                cell.accessoryView = spin;
+                [spin release];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+                cell.accessoryType  = UITableViewCellAccessoryNone;
+            } else {
+                cell.accessoryView = nil;
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+                cell.accessoryType  = UITableViewCellAccessoryDisclosureIndicator;
+            }
         }
         return cell;
     }
@@ -308,7 +329,14 @@ typedef enum {
 }
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    if ([self _isDeleting]) return NO;
     return (indexPath.section == SectionSavedTokens && _savedApps.count > 0);
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if ([self _isDeleting]) return UITableViewCellEditingStyleNone;
+    if (indexPath.section != SectionSavedTokens || _savedApps.count == 0) return UITableViewCellEditingStyleNone;
+    return UITableViewCellEditingStyleDelete;
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
@@ -316,25 +344,58 @@ typedef enum {
     if (editingStyle != UITableViewCellEditingStyleDelete) return;
     if (indexPath.section != SectionSavedTokens) return;
     if (indexPath.row >= (NSInteger)_savedApps.count) return;
-    
+    if ([self _isDeleting]) return;
+
     NSDictionary *app = _savedApps[indexPath.row];
-    NSString *bundleId = app[@"bundleID"];
-    
-    [[SNDataManager shared] removeAppFromDatabase:bundleId];
-    [_savedApps removeObjectAtIndex:indexPath.row];
-    
-    if (_savedApps.count == 0) {
-        [tableView reloadSections:[NSIndexSet indexSetWithIndex:SectionSavedTokens]
-                 withRowAnimation:UITableViewRowAnimationAutomatic];
-    } else {
-        [tableView deleteRowsAtIndexPaths:@[indexPath]
-                         withRowAnimation:UITableViewRowAnimationAutomatic];
-    }
-    
-    [_appCount release];
-    _appCount = [[NSString stringWithFormat:@"%lu", (unsigned long)_savedApps.count] retain];
-    [tableView reloadSections:[NSIndexSet indexSetWithIndex:SectionStats]
-             withRowAnimation:UITableViewRowAnimationNone];
+    NSString *bundleId = [[app[@"bundleID"] copy] autorelease];
+    NSIndexPath *capturedPath = [[indexPath copy] autorelease];
+
+    [tableView setEditing:NO animated:YES];
+
+    /* Route through the daemon's DELETE_APP cascade (drops DB row + flushes
+     * server filter + asks SpringBoard to clear iOS-native registration).
+     * Previously this code wrote SQLite directly, racing the daemon's own
+     * writes and bypassing the SB cleanup. */
+    [_pendingDeletionBundleIDs addObject:bundleId];
+    self.navigationItem.hidesBackButton = YES;
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (![_pendingDeletionBundleIDs containsObject:bundleId]) return;
+        [_pendingDeletionBundleIDs removeObject:bundleId];
+        [_deletingBundleIDs addObject:bundleId];
+        if (capturedPath.row < (NSInteger)_savedApps.count &&
+            [_savedApps[capturedPath.row][@"bundleID"] isEqualToString:bundleId]) {
+            [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
+                                  withRowAnimation:UITableViewRowAnimationNone];
+        }
+    });
+
+    [SNChannelGateway deleteAppForBundleId:bundleId
+                                completion:^(BOOL ok, NSString *message) {
+        [_pendingDeletionBundleIDs removeObject:bundleId];
+        [_deletingBundleIDs removeObject:bundleId];
+        self.navigationItem.hidesBackButton = [self _isDeleting];
+
+        if (!ok) {
+            if (capturedPath.row < (NSInteger)_savedApps.count) {
+                [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
+                                      withRowAnimation:UITableViewRowAnimationNone];
+            }
+            UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Delete Token"
+                                                         message:message ?: @"The daemon did not respond."
+                                                        delegate:nil
+                                               cancelButtonTitle:@"OK"
+                                               otherButtonTitles:nil];
+            [av show];
+            [av release];
+            return;
+        }
+
+        /* Success: refresh table + the saved-tokens count cell in Stats. */
+        [self loadStats];
+        [self.tableView reloadData];
+    }];
 }
 
 - (void)showAlert:(NSString *)title message:(NSString *)msg {
@@ -373,6 +434,8 @@ typedef enum {
     [_appCount release];
     [_dbSize release];
     [_savedApps release];
+    [_pendingDeletionBundleIDs release];
+    [_deletingBundleIDs release];
     [super dealloc];
 }
 

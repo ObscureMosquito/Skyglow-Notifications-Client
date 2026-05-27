@@ -54,6 +54,7 @@ static const NSInteger kAlertTagUnregister  = 2;
 @property (nonatomic, strong) NSString    *pendingServerAddress;
 @property (nonatomic, strong) NSString    *pendingPEMPath;
 @property (nonatomic, assign) BOOL         autoFetchInProgress;
+@property (nonatomic, assign) BOOL         unregisterInFlight;
 @property (nonatomic, unsafe_unretained) UITextField *serverAddressField;
 @property (nonatomic, unsafe_unretained) UITextField *registeredAddressField;
 
@@ -376,10 +377,20 @@ static const NSInteger kAlertTagUnregister  = 2;
             break;
         }
         case SectionActions: {
-            cell.textLabel.text      = @"Unregister Device";
-            cell.textLabel.textColor = [UIColor redColor];
+            cell.textLabel.text      = self.unregisterInFlight ? @"Unregistering\xe2\x80\xa6" : @"Unregister Device";
+            cell.textLabel.textColor = self.unregisterInFlight ? [UIColor grayColor] : [UIColor redColor];
             cell.detailTextLabel.text = @"";
-            cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            if (self.unregisterInFlight) {
+                UIActivityIndicatorView *spin = [[UIActivityIndicatorView alloc]
+                    initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
+                [spin startAnimating];
+                cell.accessoryView = spin;
+                [spin release];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            } else {
+                cell.accessoryView = nil;
+                cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+            }
             break;
         }
     }
@@ -642,31 +653,36 @@ static const NSInteger kAlertTagUnregister  = 2;
 }
 
 - (void)_performUnregister {
-    SNDataManager *dm = [SNDataManager shared];
+    if (_unregisterInFlight) return;
+    _unregisterInFlight = YES;
 
-    [dm unregisterProfileAtIndex:self.profileIndex];
+    self.navigationItem.hidesBackButton = YES;
+    self.tableView.allowsSelection = NO;
+    self.tableView.userInteractionEnabled = NO;
+    [self.tableView reloadData];
 
-    if ([dm activeProfileIndex] == self.profileIndex) {
-        NSInteger nextActive = 0;
-        for (NSInteger i = 1; i <= 5; i++) {
-            if (i != self.profileIndex && [dm profileExistsAtIndex:i]) {
-                nextActive = i;
-                break;
-            }
+    NSInteger idx = self.profileIndex;
+    [SNChannelGateway deleteProfileAtIndex:idx
+                                completion:^(BOOL ok, NSString *message) {
+        _unregisterInFlight = NO;
+        self.navigationItem.hidesBackButton = NO;
+        self.tableView.allowsSelection = YES;
+        self.tableView.userInteractionEnabled = YES;
+
+        if (!ok) {
+            [self.tableView reloadData];
+            UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Unregister"
+                                                         message:message ?: @"The daemon did not respond."
+                                                        delegate:nil
+                                               cancelButtonTitle:@"OK"
+                                               otherButtonTitles:nil];
+            [av show];
+            [av release];
+            return;
         }
-        if (nextActive > 0) {
-            [dm setActiveProfileIndex:nextActive];
-        } else {
-            [dm setMainPrefValue:@NO forKey:@"enabled"];
-            CFPreferencesSetAppValue(CFSTR("enabled"),
-                                     (__bridge CFPropertyListRef)@NO,
-                                     CFSTR("com.skyglow.sndp"));
-            CFPreferencesAppSynchronize(CFSTR("com.skyglow.sndp"));
-        }
-    }
 
-    SNPostReloadConfig();
-    [self.navigationController popViewControllerAnimated:YES];
+        [self.navigationController popViewControllerAnimated:YES];
+    }];
 }
 
 - (void)_showUnregisterConfirmation {
@@ -687,7 +703,7 @@ static const NSInteger kAlertTagUnregister  = 2;
         id cancelAction = makeAction(actionClass, actionSel, @"Cancel", 1, nil);
 
         void (^unregBlock)(id) = ^(id action) { [self _performUnregister]; };
-        id unregAction = makeAction(actionClass, actionSel, @"Unregister", 2 /* Destructive */, unregBlock);
+        id unregAction = makeAction(actionClass, actionSel, @"Unregister", 2, unregBlock);
 
         SEL addSel = NSSelectorFromString(@"addAction:");
         void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
