@@ -300,8 +300,23 @@ static void StartSpringBoardControlChannel(void) {
         NSString *topic = [[NSString alloc] initWithBytes:pd->bundleID
                                                    length:strnlen(pd->bundleID, sizeof(pd->bundleID))
                                                  encoding:NSUTF8StringEncoding];
+        if (!SG_IsIdentifierStringSafe(topic)) {
+            [topic release];
+            replyError(SGCERR_INVALID_REQUEST, @"push delivery bundle id invalid");
+            return;
+        }
         NSDictionary *userInfo = nil;
         if (pd->userInfoLength > 0 && pd->userInfoLength <= SG_CONTROL_MAX_USERINFO_SIZE) {
+            /* Inner length must fit within the outer payload — defense in
+             * depth (the channel parser now also validates payloadLength
+             * against msgh_size, so a peer can't claim more than was
+             * actually sent). */
+            size_t innerNeeded = (size_t)pd->userInfoLength + offsetof(SGCPushDeliveryPayload, userInfoData);
+            if (innerNeeded > req->payloadLength) {
+                [topic release];
+                replyError(SGCERR_INVALID_REQUEST, @"push delivery userInfo length exceeds payload");
+                return;
+            }
             NSData *data = [NSData dataWithBytes:pd->userInfoData length:pd->userInfoLength];
             userInfo = [NSPropertyListSerialization propertyListWithData:data
                                                                  options:NSPropertyListImmutable
@@ -344,6 +359,11 @@ static void StartSpringBoardControlChannel(void) {
         NSString *bundleId = [[NSString alloc] initWithBytes:bp->bundleID
                                                       length:strnlen(bp->bundleID, sizeof(bp->bundleID))
                                                     encoding:NSUTF8StringEncoding];
+        if (!SG_IsIdentifierStringSafe(bundleId)) {
+            [bundleId release];
+            replyError(SGCERR_INVALID_REQUEST, @"register input bundle id invalid");
+            return;
+        }
         if (bundleId.length) {
             if (SGN_IS_PRE_IOS_9) {
                 NSString *bundleIdRet = [bundleId retain];
@@ -403,13 +423,16 @@ static void StartSpringBoardControlChannel(void) {
         NSString *bundleId = [[NSString alloc] initWithBytes:bp->bundleID
                                                       length:strnlen(bp->bundleID, sizeof(bp->bundleID))
                                                     encoding:NSUTF8StringEncoding];
-        if (bundleId.length) {
-            NSString *bidForReset = [bundleId copy];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                SGN_DeregisterAppNatively(bidForReset);
-                [bidForReset release];
-            });
+        if (!SG_IsIdentifierStringSafe(bundleId)) {
+            [bundleId release];
+            replyError(SGCERR_INVALID_REQUEST, @"reset registration bundle id invalid");
+            return;
         }
+        NSString *bidForReset = [bundleId copy];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SGN_DeregisterAppNatively(bidForReset);
+            [bidForReset release];
+        });
         [bundleId release];
         reply(SGCMSG_GENERIC_ACK, nil);
     } forMessageType:SGCMSG_RESET_APP_REGISTRATION];

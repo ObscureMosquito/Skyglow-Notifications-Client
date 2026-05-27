@@ -4,6 +4,31 @@
 #import <Foundation/Foundation.h>
 #import <mach/mach.h>
 
+/* Charset validator for identifier-shaped wire strings (bundle IDs, server
+ * addresses) received over IPC.  Allows the conservative reverse-DNS /
+ * DNS-label charset: alphanumerics, dot, hyphen, underscore.  Rejects
+ * empty strings, anything over 255 bytes, path separators, control chars,
+ * format specifiers, whitespace, and embedded NULs — all of which are
+ * invalid in any legitimate bundle ID or DNS-style server address and
+ * would otherwise have to be defended against by every downstream
+ * consumer.  Defense at the IPC boundary, applied uniformly. */
+static inline BOOL SG_IsIdentifierStringSafe(NSString *str) {
+    if (!str) return NO;
+    NSUInteger len = [str lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+    if (len == 0 || len > 255) return NO;
+    const char *bytes = [str UTF8String];
+    if (!bytes) return NO;
+    for (NSUInteger i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)bytes[i];
+        BOOL ok = (c >= 'A' && c <= 'Z') ||
+                  (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9') ||
+                  c == '.' || c == '_' || c == '-';
+        if (!ok) return NO;
+    }
+    return YES;
+}
+
 /**
  * SGControlChannel wire protocol.
  *

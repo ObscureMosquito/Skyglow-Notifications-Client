@@ -524,6 +524,36 @@ static void *SGCRecvThreadEntry(void *arg) {
         return;
     }
 
+    /* Frame consistency: payloadLength must fit both the hard wire cap AND
+     * the actual received Mach message size.  The kernel sets msgh_size on
+     * receive to the number of bytes actually delivered, so a peer can't
+     * forge it the way they can forge payloadLength.  Without this check, a
+     * peer can claim payloadLength=4096 while sending a few hundred bytes;
+     * downstream handlers then process up to 4096 bytes of memset-zero
+     * memory as legitimate payload.  Currently safe-by-luck because every
+     * downstream validator rejects zero-filled inputs, but defense at the
+     * parser boundary is what stopped yesterday's protocol bugs and we
+     * want the same property here. */
+    {
+        mach_msg_size_t machSize = msg->mach_header.msgh_size;
+        size_t envelopeSize = offsetof(SGControlChannelMessage, payload);
+        if (machSize < envelopeSize) {
+            SGLOGW(SGControlChannel,
+                   "code=%s reason=truncated_envelope mach_size=%u envelope_size=%lu action=discard",
+                   SGND_CONTROL_ENVELOPE_MALFORMED, (unsigned)machSize, (unsigned long)envelopeSize);
+            return;
+        }
+        size_t maxAllowedPayload = (size_t)machSize - envelopeSize;
+        if (msg->payloadLength > SG_CONTROL_MAX_PAYLOAD ||
+            msg->payloadLength > maxAllowedPayload) {
+            SGLOGW(SGControlChannel,
+                   "code=%s reason=payload_length_inconsistent claimed=%u available=%lu action=discard",
+                   SGND_CONTROL_ENVELOPE_MALFORMED,
+                   msg->payloadLength, (unsigned long)maxAllowedPayload);
+            return;
+        }
+    }
+
     if (_isServer) {
         [self _serverDispatchRequestLocked:msg];
     } else {

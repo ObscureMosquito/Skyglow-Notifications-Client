@@ -91,6 +91,11 @@ int main(int argc, char *argv[]) {
             NSString *bundleID = [[NSString alloc] initWithBytes:tReq->bundleID
                                                           length:strnlen(tReq->bundleID, sizeof(tReq->bundleID))
                                                         encoding:NSUTF8StringEncoding];
+            if (!SG_IsIdentifierStringSafe(bundleID)) {
+                [bundleID release];
+                replyError(SGCERR_INVALID_REQUEST, @"token request bundle id invalid");
+                return;
+            }
 
             NSData *token = nil;
             NSError *err = nil;
@@ -277,19 +282,22 @@ int main(int argc, char *argv[]) {
             NSString *bundleID = [[NSString alloc] initWithBytes:bp->bundleID
                                                           length:strnlen(bp->bundleID, sizeof(bp->bundleID))
                                                         encoding:NSUTF8StringEncoding];
-            if (bundleID.length) {
-                SGDatabaseManager *db = [SGDatabaseManager sharedManager];
-                SGTokenManager *tm = [[SGTokenManager alloc] init];
-                NSError *err = nil;
-                NSData *tok = [tm synchronizedTokenForBundleIdentifier:bundleID error:&err];
-                [tm release];
-                if (!tok) {
-                    SGLOGE(Skyglow, "code=%s bundle=%s result=failed reason=%s", SGND_TOKEN_GENERATE_FAILED,
-                                [bundleID UTF8String], [[err description] UTF8String]);
-                }
-                [db setMuted:NO forBundleIdentifier:bundleID];
-                SGP_FlushActiveTopicFilter();
+            if (!SG_IsIdentifierStringSafe(bundleID)) {
+                [bundleID release];
+                replyError(SGCERR_INVALID_REQUEST, @"enable bundle id invalid");
+                return;
             }
+            SGDatabaseManager *db = [SGDatabaseManager sharedManager];
+            SGTokenManager *tm = [[SGTokenManager alloc] init];
+            NSError *err = nil;
+            NSData *tok = [tm synchronizedTokenForBundleIdentifier:bundleID error:&err];
+            [tm release];
+            if (!tok) {
+                SGLOGE(Skyglow, "code=%s bundle=%s result=failed reason=%s", SGND_TOKEN_GENERATE_FAILED,
+                            [bundleID UTF8String], [[err description] UTF8String]);
+            }
+            [db setMuted:NO forBundleIdentifier:bundleID];
+            SGP_FlushActiveTopicFilter();
             [bundleID release];
             reply(SGCMSG_GENERIC_ACK, nil);
         } forMessageType:SGCMSG_ENABLE_APP];
@@ -305,10 +313,13 @@ int main(int argc, char *argv[]) {
             NSString *bundleID = [[NSString alloc] initWithBytes:bp->bundleID
                                                           length:strnlen(bp->bundleID, sizeof(bp->bundleID))
                                                         encoding:NSUTF8StringEncoding];
-            if (bundleID.length) {
-                [[SGDatabaseManager sharedManager] setMuted:YES forBundleIdentifier:bundleID];
-                SGP_FlushActiveTopicFilter();
+            if (!SG_IsIdentifierStringSafe(bundleID)) {
+                [bundleID release];
+                replyError(SGCERR_INVALID_REQUEST, @"disable bundle id invalid");
+                return;
             }
+            [[SGDatabaseManager sharedManager] setMuted:YES forBundleIdentifier:bundleID];
+            SGP_FlushActiveTopicFilter();
             [bundleID release];
             reply(SGCMSG_GENERIC_ACK, nil);
         } forMessageType:SGCMSG_DISABLE_APP];
@@ -324,9 +335,9 @@ int main(int argc, char *argv[]) {
             NSString *bundleID = [[NSString alloc] initWithBytes:bp->bundleID
                                                           length:strnlen(bp->bundleID, sizeof(bp->bundleID))
                                                         encoding:NSUTF8StringEncoding];
-            if (!bundleID.length) {
+            if (!SG_IsIdentifierStringSafe(bundleID)) {
                 [bundleID release];
-                replyError(SGCERR_INVALID_REQUEST, @"delete bundle id missing");
+                replyError(SGCERR_INVALID_REQUEST, @"delete bundle id invalid");
                 return;
             }
 

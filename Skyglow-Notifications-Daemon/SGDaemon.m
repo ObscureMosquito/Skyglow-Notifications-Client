@@ -1126,7 +1126,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
     NSString *address = [serverAddress stringByTrimmingCharactersInSet:
                          [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if ([address length] == 0) return NO;
+    if (!SG_IsIdentifierStringSafe(address)) return NO;
 
     BOOL hasNewCertificate = ([certificatePEM length] > 0);
     if (hasNewCertificate && !SGCertificatePEMLooksValid(certificatePEM)) return NO;
