@@ -7,7 +7,7 @@ Simple Cydia Tweak that will open a low power TCP socket and constantly listen f
 
 ## Usage
 
-#### Setting up Skyglow Notifications (only for iOS 6):
+#### Setting up Skyglow Notifications:
 
 1. Download Skyglow Notifications from Cydia, on thru repo https://cydia.skyglow.es or https://cydia.preloading.dev
 2. Enter settings
