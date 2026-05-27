@@ -59,6 +59,13 @@ typedef void (^SNChannelBundleListCompletion)(BOOL ok, NSArray *bundleIds, NSStr
 + (void)deleteProfileAtIndex:(NSInteger)profileIndex completion:(SNChannelCommandCompletion)completion;
 
 /**
+ * Switches the active profile via the daemon.  The daemon writes the
+ * activeProfile key, reloads, and triggers an immediate reconnect to the
+ * new server.  Completion fires on the main queue.
+ */
++ (void)setActiveProfileAtIndex:(NSInteger)profileIndex completion:(SNChannelCommandCompletion)completion;
+
+/**
  * Creates or edits a profile through the daemon.  Pass a PEM string for
  * creation/certificate replacement; pass nil for address-only edits that
  * preserve the existing certificate.  Completion fires on the main queue.

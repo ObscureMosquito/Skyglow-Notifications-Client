@@ -478,11 +478,6 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
     return (num && [num integerValue] >= 1 && [num integerValue] <= 5) ? [num integerValue] : 1;
 }
 
-- (void)setActiveProfileIndex:(NSInteger)index {
-    if (index < 1 || index > 5) return;
-    [self setMainPrefValue:@(index) forKey:@"activeProfile"];
-}
-
 - (NSString *)profilePathForIndex:(NSInteger)index {
     return SGProfilePathForIndex(index);
 }

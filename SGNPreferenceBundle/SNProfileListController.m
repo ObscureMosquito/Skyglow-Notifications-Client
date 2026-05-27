@@ -7,10 +7,6 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-static void SNPostReloadConfig(void) {
-    [SNChannelGateway postReloadConfig];
-}
-
 enum {
     SectionProfiles = 0,
     SectionAdd      = 1,
@@ -34,16 +30,20 @@ enum {
 
 @implementation SNProfileListController {
     NSMutableArray *_profileIndices;
-    NSMutableSet   *_pendingDeletionIndices;  /* in-flight (pre-spinner grace) */
-    NSMutableSet   *_deletingIndices;         /* visible spinner */
+    NSMutableSet   *_pendingDeletionIndices;  /* delete: in-flight (pre-spinner grace) */
+    NSMutableSet   *_deletingIndices;         /* delete: visible spinner */
     SNDeferredActivity *_deleteActivity;
+    NSNumber       *_activatingIndex;         /* set-active: in-flight (visible spinner) */
+    SNDeferredActivity *_activateActivity;
 }
 
-- (BOOL)_isDeleting {
-    return (_deletingIndices.count > 0 || _pendingDeletionIndices.count > 0);
+- (BOOL)_isBusy {
+    return (_deletingIndices.count > 0 ||
+            _pendingDeletionIndices.count > 0 ||
+            _activatingIndex != nil);
 }
-- (void)_setBackButtonHiddenForDeletingState {
-    self.navigationItem.hidesBackButton = [self _isDeleting];
+- (void)_setBackButtonHiddenForBusyState {
+    self.navigationItem.hidesBackButton = [self _isBusy];
 }
 
 /* iOS 4-5 PSRootController calls these on every pushed VC during the
@@ -131,7 +131,9 @@ enum {
         cell.detailTextLabel.text = (addr && [addr length] > 0) ? addr : @"Not Configured";
         cell.detailTextLabel.textColor = [UIColor grayColor];
 
-        if ([_deletingIndices containsObject:@(idx)]) {
+        BOOL showSpinner = [_deletingIndices containsObject:@(idx)] ||
+                           (_activatingIndex && [_activatingIndex integerValue] == idx);
+        if (showSpinner) {
             UIActivityIndicatorView *spin = [[UIActivityIndicatorView alloc]
                 initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
             [spin startAnimating];
@@ -164,6 +166,8 @@ enum {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
 
+    if ([self _isBusy]) return;
+
     if (indexPath.section == SectionAdd) {
         NSInteger newIdx = 0;
         for (NSInteger i = 1; i <= 5; i++) {
@@ -193,15 +197,61 @@ enum {
     }
 }
 
+#pragma mark - Set Active flow
+
+- (void)_performSetActiveForIndex:(NSInteger)idx {
+    if ([self _isBusy]) return;
+
+    NSNumber *idxKey = [[NSNumber alloc] initWithInteger:idx];
+    [_activatingIndex release];
+    _activatingIndex = idxKey;   /* transfer ownership */
+    [self _setBackButtonHiddenForBusyState];
+
+    [_activateActivity release];
+    _activateActivity = [[SNDeferredActivity alloc] initWithShowBlock:^{
+        if (!_activatingIndex || [_activatingIndex integerValue] != idx) return;
+        [self.tableView reloadData];
+    } hideBlock:^{
+
+    }];
+    [_activateActivity begin];
+
+    [SNChannelGateway setActiveProfileAtIndex:idx
+                                   completion:^(BOOL ok, NSString *message) {
+        SNDeferredActivity *activity = [_activateActivity retain];
+        [activity finishWithCompletion:^{
+            [_activatingIndex release];
+            _activatingIndex = nil;
+            [_activateActivity release];
+            _activateActivity = nil;
+            [self _setBackButtonHiddenForBusyState];
+
+            if (!ok) {
+                UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Switch Profile"
+                                                             message:message ?: @"The daemon did not respond."
+                                                            delegate:nil
+                                                   cancelButtonTitle:@"OK"
+                                                   otherButtonTitles:nil];
+                [av show];
+                [av release];
+                [self.tableView reloadData];
+                return;
+            }
+            [self.tableView reloadData];
+        }];
+        [activity release];
+    }];
+}
+
 #pragma mark - Swipe to delete
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
-    if ([self _isDeleting]) return NO;
+    if ([self _isBusy]) return NO;
     return (indexPath.section == SectionProfiles);
 }
 
 - (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if ([self _isDeleting]) return UITableViewCellEditingStyleNone;
+    if ([self _isBusy]) return UITableViewCellEditingStyleNone;
     if (indexPath.section != SectionProfiles) return UITableViewCellEditingStyleNone;
     return UITableViewCellEditingStyleDelete;
 }
@@ -209,7 +259,7 @@ enum {
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle != UITableViewCellEditingStyleDelete) return;
     if (indexPath.row >= (NSInteger)_profileIndices.count) return;
-    if ([self _isDeleting]) return;
+    if ([self _isBusy]) return;
 
     NSInteger idx = [[_profileIndices objectAtIndex:indexPath.row] integerValue];
     NSNumber *idxKey = [NSNumber numberWithInteger:idx];
@@ -217,14 +267,14 @@ enum {
 
     [tableView setEditing:NO animated:YES];
     [_pendingDeletionIndices addObject:idxKey];
-    [self _setBackButtonHiddenForDeletingState];
+    [self _setBackButtonHiddenForBusyState];
 
     [_deleteActivity release];
     _deleteActivity = [[SNDeferredActivity alloc] initWithShowBlock:^{
         if (![_pendingDeletionIndices containsObject:idxKey]) return;
         [_pendingDeletionIndices removeObject:idxKey];
         [_deletingIndices addObject:idxKey];
-        [self _setBackButtonHiddenForDeletingState];
+        [self _setBackButtonHiddenForBusyState];
         if (capturedPath.row < (NSInteger)_profileIndices.count &&
             [[_profileIndices objectAtIndex:capturedPath.row] integerValue] == idx) {
             [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
@@ -247,7 +297,7 @@ enum {
             [_deletingIndices removeObject:idxKey];
             [_deleteActivity release];
             _deleteActivity = nil;
-            [self _setBackButtonHiddenForDeletingState];
+            [self _setBackButtonHiddenForBusyState];
 
             if (!ok) {
                 UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Delete Profile"
@@ -292,9 +342,7 @@ enum {
 
         id setActiveAction = makeAction(actionClass, actionSel, @"Set Active", 0,
             ^(id action) {
-                [[SNDataManager shared] setActiveProfileIndex:capturedIdx];
-                SNPostReloadConfig();
-                [self.tableView reloadData];
+                [self _performSetActiveForIndex:capturedIdx];
             });
 
         id viewAction = makeAction(actionClass, actionSel, @"View Details", 0,
@@ -332,9 +380,7 @@ enum {
 - (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
     NSInteger idx = actionSheet.tag;
     if (buttonIndex == 0) {
-        [[SNDataManager shared] setActiveProfileIndex:idx];
-        SNPostReloadConfig();
-        [self.tableView reloadData];
+        [self _performSetActiveForIndex:idx];
     } else if (buttonIndex == 1) {
         SNServerInfoViewController *vc =
             [[SNServerInfoViewController alloc] initWithProfileIndex:idx];
@@ -348,6 +394,8 @@ enum {
     [_pendingDeletionIndices release];
     [_deletingIndices release];
     [_deleteActivity release];
+    [_activatingIndex release];
+    [_activateActivity release];
     [super dealloc];
 }
 

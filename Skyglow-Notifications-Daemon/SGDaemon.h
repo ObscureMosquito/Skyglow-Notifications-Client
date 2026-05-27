@@ -123,6 +123,15 @@ typedef NS_ENUM(NSInteger, SGEvent) {
 - (BOOL)performDeleteProfileAtIndex:(NSInteger)profileIdx;
 
 /**
+ * Switches the active profile slot.  Writes activeProfile to the main
+ * prefs plist, reloads configuration, and kicks the FSM so an existing
+ * connection drops and a fresh connection to the new server's address
+ * is attempted immediately.  Returns YES on success; NO if the index
+ * is invalid or the target profile has no plist on disk.
+ */
+- (BOOL)performSetActiveProfileAtIndex:(NSInteger)profileIdx;
+
+/**
  * Atomically creates or edits a profile slot.  The daemon owns the profile
  * plist and per-profile certificate file.  Passing nil/empty certificatePEM
  * preserves the existing certificate for address-only edits.

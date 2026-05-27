@@ -1256,6 +1256,27 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     return YES;
 }
 
+- (BOOL)performSetActiveProfileAtIndex:(NSInteger)profileIdx {
+    if (profileIdx < 1 || profileIdx > 5) return NO;
+
+    NSString *profilePath = SGPath([NSString stringWithFormat:
+        SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
+    if (![[NSFileManager defaultManager] fileExistsAtPath:profilePath]) return NO;
+
+    if ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx) return YES;
+
+    NSString *mainPath = SGPath(SG_PREFS_PLIST_PATH);
+    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:mainPath] ?: [NSMutableDictionary dictionary];
+    [prefs setObject:[NSNumber numberWithInteger:profileIdx] forKey:@"activeProfile"];
+    if (![prefs writeToFile:mainPath atomically:YES]) return NO;
+
+    [[SGConfiguration sharedConfiguration] reloadFromDisk];
+
+    [self handleEvent:SGEventConfigReloaded payload:nil];
+
+    return YES;
+}
+
 #pragma mark - SpringBoard Push Delivery (via SGControlChannel)
 
 - (kern_return_t)_deliverPushTopic:(NSString *)topic payload:(NSDictionary *)payload {

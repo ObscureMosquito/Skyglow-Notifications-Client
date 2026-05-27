@@ -143,6 +143,35 @@ static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
     }];
 }
 
++ (void)setActiveProfileAtIndex:(NSInteger)profileIndex completion:(SNChannelCommandCompletion)completion {
+    if (profileIndex < 1 || profileIndex > 5) {
+        if (completion) completion(NO, @"Invalid profile index.");
+        return;
+    }
+
+    SGCProfileIndexPayload payload;
+    memset(&payload, 0, sizeof(payload));
+    payload.profileIndex = (uint8_t)profileIndex;
+
+    [DaemonClient() sendRequest:SGCMSG_SET_ACTIVE_PROFILE
+                        payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
+                        timeout:SG_CONTROL_DELETE_APP_TIMEOUT_SEC
+                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
+        BOOL ok = (err == SGCERR_OK);
+        NSString *message = nil;
+        if (!ok) {
+            if (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE) {
+                message = @"Could not communicate with the Skyglow daemon. Try again after restarting it.";
+            } else {
+                message = @"The daemon could not switch to this profile.";
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(ok, message);
+        });
+    }];
+}
+
 + (void)saveProfileAtIndex:(NSInteger)profileIndex
              serverAddress:(NSString *)serverAddress
             certificatePEM:(NSString *)certificatePEM

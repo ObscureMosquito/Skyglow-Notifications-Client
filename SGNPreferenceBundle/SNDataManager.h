@@ -29,7 +29,6 @@
 
 /** Multi-Profile API */
 - (NSInteger)activeProfileIndex;
-- (void)setActiveProfileIndex:(NSInteger)index;
 - (NSString *)profilePathForIndex:(NSInteger)index;
 - (NSDictionary *)profileForIndex:(NSInteger)index;
 - (BOOL)profileExistsAtIndex:(NSInteger)index;

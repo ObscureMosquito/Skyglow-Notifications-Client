@@ -171,6 +171,12 @@ typedef enum : uint8_t {
      * address-only edit that preserves the existing certificate. */
     SGCMSG_SAVE_PROFILE        = 0x22,  /* SGCProfileSavePayload */
 
+    /* Prefs -> daemon: switch the active profile slot.  Daemon writes the
+     * activeProfile key in main prefs, reloads from disk, and triggers the
+     * FSM reconnect cascade (Connected → ResolvingDNS) so the new server's
+     * connection is attempted immediately.  Payload is SGCProfileIndexPayload. */
+    SGCMSG_SET_ACTIVE_PROFILE  = 0x23,  /* SGCProfileIndexPayload */
+
     /* Responses */
     SGCMSG_GENERIC_ACK         = 0x30,  /* (empty payload)           */
     SGCMSG_TOKEN_RESPONSE      = 0x31,  /* SGCTokenResponsePayload   */
