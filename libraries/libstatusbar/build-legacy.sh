@@ -1,9 +1,9 @@
 #!/bin/bash
-# Build libstatusbar as a fat dylib spanning armv6, armv7, armv7s, arm64.
-
 set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+SRC_DIR="$ROOT/src"
+LIB_DIR="$ROOT/lib"
 BUILD_DIR="$ROOT/.build"
 PKG_DIR="$BUILD_DIR/pkg"
 mkdir -p "$BUILD_DIR"
@@ -24,7 +24,7 @@ SRC_FILES=(
 )
 
 COMMON_INCLUDES=(
-    -I"$ROOT"
+    -I"$SRC_DIR"
     -I"$HOME/theos/vendor/include"
     -I"$HOME/theos/vendor/include/AppSupport"
     -I"$HOME/theos/include"
@@ -36,7 +36,7 @@ COMMON_CFLAGS=(
     -fno-objc-arc
     -fvisibility=hidden
     -DGO_EASY_ON_ME=1
-    -include "$ROOT/sgn_shims.h"
+    -include "$SRC_DIR/sgn_shims.h"
     -w
     -include dlfcn.h
 )
@@ -46,7 +46,7 @@ compile_arch() {
     echo "  cc [$arch min=$min sdk=$(basename "$sdk")]"
     local objs=()
     for f in "${SRC_FILES[@]}"; do
-        local src="$ROOT/$f"
+        local src="$SRC_DIR/$f"
         local obj="$BUILD_DIR/${f%.mm}.${arch}.o"
         xcrun --sdk "$sdk" clang++ \
             -arch "$arch" -miphoneos-version-min="$min" \
@@ -56,8 +56,6 @@ compile_arch() {
         objs+=("$obj")
     done
     local extra=()
-    # dylib1.o is the dylib entry stub; armv* needs it on legacy SDKs but
-    # arm64 doesn't (and the 7.0 SDK's dylib1.o is misaligned anyway).
     if [ "$arch" != "arm64" ] && [ -f "$sdk/usr/lib/dylib1.o" ]; then
         extra+=("$sdk/usr/lib/dylib1.o")
     fi
@@ -97,22 +95,28 @@ mkdir -p "$PKG_DIR/DEBIAN"
 mkdir -p "$PKG_DIR/Library/MobileSubstrate/DynamicLibraries"
 mkdir -p "$PKG_DIR/usr/include/libstatusbar"
 
-cp "$ROOT/control"                   "$PKG_DIR/DEBIAN/control"
+cp "$SRC_DIR/control"                "$PKG_DIR/DEBIAN/control"
 cp "$BUILD_DIR/libstatusbar.dylib"   "$PKG_DIR/Library/MobileSubstrate/DynamicLibraries/"
-cp "$ROOT/libstatusbar.plist"        "$PKG_DIR/Library/MobileSubstrate/DynamicLibraries/"
+cp "$SRC_DIR/libstatusbar.plist"     "$PKG_DIR/Library/MobileSubstrate/DynamicLibraries/"
 
 for h in CPDistributedMessagingCenter.h LSStatusBarClient.h LSStatusBarItem.h \
          LSStatusBarServer.h UIApplication_libstatusbar.h \
          UIStatusBarCustomItem.h UIStatusBarCustomItemView.h \
          classes.h classlist.h common.h defines.h; do
-    cp "$ROOT/$h" "$PKG_DIR/usr/include/libstatusbar/"
+    cp "$SRC_DIR/$h" "$PKG_DIR/usr/include/libstatusbar/"
 done
 
 find "$PKG_DIR" -name ".DS_Store" -type f -delete
 
-mkdir -p "$ROOT/../../packages"
-OUT_DEB="$ROOT/../../packages/libstatusbar.deb"
+PKG_ID=$(awk '/^Package:/ {print $2}' "$SRC_DIR/control")
+PKG_VER=$(awk '/^Version:/ {print $2}' "$SRC_DIR/control")
+OUT_DEB="$ROOT/../../packages/${PKG_ID}_${PKG_VER}_iphoneos-arm.deb"
+mkdir -p "$(dirname "$OUT_DEB")"
 dpkg-deb -Zgzip --build "$PKG_DIR" "$OUT_DEB"
 
+mkdir -p "$LIB_DIR"
+cp "$BUILD_DIR/libstatusbar.dylib" "$LIB_DIR/libstatusbar.dylib"
+
 echo "Done: $OUT_DEB"
+echo "      $LIB_DIR/libstatusbar.dylib"
 rm -rf "$BUILD_DIR"
