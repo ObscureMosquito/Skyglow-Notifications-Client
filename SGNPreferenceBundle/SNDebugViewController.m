@@ -2,6 +2,7 @@
 #import "SNDataManager.h"
 #import "SNLogTailViewController.h"
 #import "SNChannelGateway.h"
+#import "SNDeferredActivity.h"
 #include <spawn.h>
 #include <sys/wait.h>
 #import <mach/mach.h>
@@ -29,6 +30,7 @@ typedef enum {
     UITextField    *_manualBundleIDParams;
     NSMutableSet   *_pendingDeletionBundleIDs;
     NSMutableSet   *_deletingBundleIDs;
+    SNDeferredActivity *_deleteActivity;
 }
 @end
 
@@ -359,8 +361,8 @@ typedef enum {
     [_pendingDeletionBundleIDs addObject:bundleId];
     self.navigationItem.hidesBackButton = YES;
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
+    [_deleteActivity release];
+    _deleteActivity = [[SNDeferredActivity alloc] initWithShowBlock:^{
         if (![_pendingDeletionBundleIDs containsObject:bundleId]) return;
         [_pendingDeletionBundleIDs removeObject:bundleId];
         [_deletingBundleIDs addObject:bundleId];
@@ -369,32 +371,45 @@ typedef enum {
             [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
                                   withRowAnimation:UITableViewRowAnimationNone];
         }
-    });
+    } hideBlock:^{
+        [_deletingBundleIDs removeObject:bundleId];
+        if (capturedPath.row < (NSInteger)_savedApps.count) {
+            [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
+                                  withRowAnimation:UITableViewRowAnimationNone];
+        }
+    }];
+    [_deleteActivity begin];
 
     [SNChannelGateway deleteAppForBundleId:bundleId
                                 completion:^(BOOL ok, NSString *message) {
-        [_pendingDeletionBundleIDs removeObject:bundleId];
-        [_deletingBundleIDs removeObject:bundleId];
-        self.navigationItem.hidesBackButton = [self _isDeleting];
+        SNDeferredActivity *activity = [_deleteActivity retain];
+        [activity finishWithCompletion:^{
+            [_pendingDeletionBundleIDs removeObject:bundleId];
+            [_deletingBundleIDs removeObject:bundleId];
+            [_deleteActivity release];
+            _deleteActivity = nil;
+            self.navigationItem.hidesBackButton = [self _isDeleting];
 
-        if (!ok) {
-            if (capturedPath.row < (NSInteger)_savedApps.count) {
-                [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
-                                      withRowAnimation:UITableViewRowAnimationNone];
+            if (!ok) {
+                if (capturedPath.row < (NSInteger)_savedApps.count) {
+                    [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
+                                          withRowAnimation:UITableViewRowAnimationNone];
+                }
+                UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Delete Token"
+                                                             message:message ?: @"The daemon did not respond."
+                                                            delegate:nil
+                                                   cancelButtonTitle:@"OK"
+                                                   otherButtonTitles:nil];
+                [av show];
+                [av release];
+                return;
             }
-            UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Delete Token"
-                                                         message:message ?: @"The daemon did not respond."
-                                                        delegate:nil
-                                               cancelButtonTitle:@"OK"
-                                               otherButtonTitles:nil];
-            [av show];
-            [av release];
-            return;
-        }
 
-        /* Success: refresh table + the saved-tokens count cell in Stats. */
-        [self loadStats];
-        [self.tableView reloadData];
+            /* Success: refresh table + the saved-tokens count cell in Stats. */
+            [self loadStats];
+            [self.tableView reloadData];
+        }];
+        [activity release];
     }];
 }
 
@@ -436,6 +451,7 @@ typedef enum {
     [_savedApps release];
     [_pendingDeletionBundleIDs release];
     [_deletingBundleIDs release];
+    [_deleteActivity release];
     [super dealloc];
 }
 

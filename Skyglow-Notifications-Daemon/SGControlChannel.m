@@ -24,8 +24,6 @@
 
 /* Timing bounds are shared with callers via SGControlChannelProtocol.h. */
 #define kSGCDefaultTimeoutSec    SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC
-#define kSGCReconnectInitialSec  SG_CONTROL_RECONNECT_INITIAL_SEC
-#define kSGCReconnectMaxSec      SG_CONTROL_RECONNECT_MAX_SEC
 #define kSGCSendTimeoutMs        ((mach_msg_timeout_t)SG_CONTROL_SEND_TIMEOUT_MS)
 
 #define SGC_RECV_TRAILER_BYTES   256     // kernel-trailer padding for mach_msg recv
@@ -53,7 +51,6 @@
     NSMutableDictionary   *_eventHandlers;       /* @(subId) -> [Block copy] */
     NSMutableArray        *_pendingQueue;        /* requests issued while disconnected, replayed on connect */
     uint64_t               _nextRequestId;
-    uint32_t               _reconnectAttempt;
     uint32_t               _lookupFailureCount;
     SGControlConnectionHandler _connectionHandler;
 
@@ -381,6 +378,10 @@ static void *SGCRecvThreadEntry(void *arg) {
         uint64_t rid = _nextRequestId++;
         [self _clientRegisterPendingRequestLocked:rid timeout:timeout completion:compCopy];
 
+        if (!_connected) {
+            [self _clientAttemptLookupLocked];
+        }
+
         if (_connected) {
             [self _clientDispatchRequestLocked:rid type:messageType payload:payloadCopy];
         } else {
@@ -656,6 +657,8 @@ static void *SGCRecvThreadEntry(void *arg) {
 #pragma mark - Client-Side Dispatch
 
 - (void)_clientAttemptLookupLocked {
+    if (_stopping || _connected) return;
+
     mach_port_t bsPort = MACH_PORT_NULL;
     task_get_bootstrap_port(mach_task_self(), &bsPort);
     mach_port_t serverPort = MACH_PORT_NULL;
@@ -663,19 +666,17 @@ static void *SGCRecvThreadEntry(void *arg) {
     if (kr != KERN_SUCCESS) {
         _lookupFailureCount++;
         if (_lookupFailureCount == 1) {
-            SGLOGW(SGControlChannel, "code=%s role=client service=%s kr=%d action=retry", SGND_CONTROL_LOOKUP_FAILED, _serviceName, kr);
+            SGLOGW(SGControlChannel, "code=%s role=client service=%s kr=%d action=wait_for_request", SGND_CONTROL_LOOKUP_FAILED, _serviceName, kr);
         } else {
-            SGLOGD(SGControlChannel, "code=%s role=client service=%s kr=%d attempt=%u action=retry", SGND_CONTROL_LOOKUP_RETRY,
+            SGLOGD(SGControlChannel, "code=%s role=client service=%s kr=%d attempt=%u action=wait_for_request", SGND_CONTROL_LOOKUP_RETRY,
                         _serviceName, kr, _lookupFailureCount);
         }
         _connected = NO;
-        [self _clientScheduleReconnectLocked];
         return;
     }
 
     _serverPort = serverPort;
     _connected = YES;
-    _reconnectAttempt = 0;
     if (_lookupFailureCount > 1) {
         SGLOGI(SGControlChannel, "code=%s role=client service=%s suppressed_retries=%u result=connected", SGND_CONTROL_LOOKUP_RECOVERED,
                     _serviceName, _lookupFailureCount - 1);
@@ -709,20 +710,6 @@ static void *SGCRecvThreadEntry(void *arg) {
     }
 }
 
-- (void)_clientScheduleReconnectLocked {
-    if (_stopping) return;
-    _reconnectAttempt++;
-    NSTimeInterval delay = kSGCReconnectInitialSec * (1U << MIN(_reconnectAttempt - 1, (uint32_t)10));
-    if (delay > kSGCReconnectMaxSec) delay = kSGCReconnectMaxSec;
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                   _stateQueue, ^{
-        if (_stopping || _connected) return;
-        SGLOGD(SGControlChannel, "code=%s role=client service=%s attempt=%u", SGND_CONTROL_LOOKUP_RETRY, _serviceName, _reconnectAttempt);
-        [self _clientAttemptLookupLocked];
-    });
-}
-
 - (void)_clientDispatchRequestLocked:(uint64_t)requestId
                                 type:(SGControlMessageType)type
                              payload:(NSData *)payload {
@@ -740,7 +727,33 @@ static void *SGCRecvThreadEntry(void *arg) {
     if (kr != KERN_SUCCESS) {
         SGLOGW(SGControlChannel, "code=%s role=client type=0x%02x kr=%d result=unreachable", SGND_CONTROL_SEND_FAILED, type, kr);
         [self _clientFailPendingRequestLocked:requestId error:SGCERR_UNREACHABLE];
+        [self _clientMarkDisconnectedLocked];
     }
+}
+
+- (void)_clientMarkDisconnectedLocked {
+    if (_serverPort != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), _serverPort);
+        _serverPort = MACH_PORT_NULL;
+    }
+
+    BOOL wasConnected = _connected;
+    _connected = NO;
+
+    if (wasConnected && _connectionHandler) {
+        SGControlConnectionHandler handlerCopy = SGC_RETAIN(_connectionHandler);
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            handlerCopy(NO);
+            SGC_RELEASE(handlerCopy);
+        });
+    }
+
+    NSArray *rids = [_pendingRequests allKeys];
+    for (NSNumber *rid in rids) {
+        [self _clientFailPendingRequestLocked:[rid unsignedLongLongValue] error:SGCERR_UNREACHABLE];
+    }
+
+    [_eventHandlers removeAllObjects];
 }
 
 - (void)_clientRegisterPendingRequestLocked:(uint64_t)requestId
@@ -860,29 +873,7 @@ static void *SGCRecvThreadEntry(void *arg) {
     }
 
     SGLOGI(SGControlChannel, "code=%s role=client service=%s action=reconnect", SGND_CONTROL_PEER_DIED, _serviceName);
-    mach_port_deallocate(mach_task_self(), _serverPort);
-    _serverPort = MACH_PORT_NULL;
-    _connected = NO;
-
-    if (_connectionHandler) {
-        SGControlConnectionHandler handlerCopy = SGC_RETAIN(_connectionHandler);
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            handlerCopy(NO);
-            SGC_RELEASE(handlerCopy);
-        });
-    }
-
-    /* Fail every in-flight request so callers see UNREACHABLE rather than wait for individual timeouts. */
-    NSArray *rids = [_pendingRequests allKeys];
-    for (NSNumber *rid in rids) {
-        [self _clientFailPendingRequestLocked:[rid unsignedLongLongValue] error:SGCERR_UNREACHABLE];
-    }
-
-    /* Event handlers from the prior connection are no longer valid — caller must re-subscribe. */
-    [_eventHandlers removeAllObjects];
-
-    _reconnectAttempt = 0;
-    [self _clientScheduleReconnectLocked];
+    [self _clientMarkDisconnectedLocked];
 }
 
 @end

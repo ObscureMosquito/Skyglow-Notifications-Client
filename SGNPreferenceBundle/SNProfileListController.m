@@ -2,6 +2,7 @@
 #import "SNServerInfoViewController.h"
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
+#import "SNDeferredActivity.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -31,25 +32,13 @@ enum {
 
 @end
 
-@interface SNProfileListController () <UIAlertViewDelegate>
-@property (nonatomic, retain) NSMutableSet  *pendingDeletionIndices;
-@property (nonatomic, retain) NSMutableSet  *deletingIndices;
-@property (nonatomic, retain) NSNumber      *failedDeletionIndex;
-@property (nonatomic, retain) NSIndexPath   *failedDeletionIndexPath;
-@end
-
 @implementation SNProfileListController {
     NSMutableArray *_profileIndices;
+    NSMutableSet   *_pendingDeletionIndices;  /* in-flight (pre-spinner grace) */
+    NSMutableSet   *_deletingIndices;         /* visible spinner */
+    SNDeferredActivity *_deleteActivity;
 }
 
-- (NSMutableSet *)pendingDeletionIndices {
-    if (!_pendingDeletionIndices) _pendingDeletionIndices = [[NSMutableSet alloc] init];
-    return _pendingDeletionIndices;
-}
-- (NSMutableSet *)deletingIndices {
-    if (!_deletingIndices) _deletingIndices = [[NSMutableSet alloc] init];
-    return _deletingIndices;
-}
 - (BOOL)_isDeleting {
     return (_deletingIndices.count > 0 || _pendingDeletionIndices.count > 0);
 }
@@ -68,7 +57,9 @@ enum {
     self = [super initWithStyle:UITableViewStyleGrouped];
     if (self) {
         self.title = @"Server Profiles";
-        _profileIndices = [[NSMutableArray alloc] init];
+        _profileIndices         = [[NSMutableArray alloc] init];
+        _pendingDeletionIndices = [[NSMutableSet alloc] init];
+        _deletingIndices        = [[NSMutableSet alloc] init];
     }
     return self;
 }
@@ -225,53 +216,59 @@ enum {
     NSIndexPath *capturedPath = [[indexPath copy] autorelease];
 
     [tableView setEditing:NO animated:YES];
-    [self.pendingDeletionIndices addObject:idxKey];
+    [_pendingDeletionIndices addObject:idxKey];
+    [self _setBackButtonHiddenForDeletingState];
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        if (![self.pendingDeletionIndices containsObject:idxKey]) return;
-        [self.pendingDeletionIndices removeObject:idxKey];
-        [self.deletingIndices addObject:idxKey];
+    [_deleteActivity release];
+    _deleteActivity = [[SNDeferredActivity alloc] initWithShowBlock:^{
+        if (![_pendingDeletionIndices containsObject:idxKey]) return;
+        [_pendingDeletionIndices removeObject:idxKey];
+        [_deletingIndices addObject:idxKey];
         [self _setBackButtonHiddenForDeletingState];
         if (capturedPath.row < (NSInteger)_profileIndices.count &&
             [[_profileIndices objectAtIndex:capturedPath.row] integerValue] == idx) {
             [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
                                   withRowAnimation:UITableViewRowAnimationNone];
         }
-    });
+    } hideBlock:^{
+        [_deletingIndices removeObject:idxKey];
+        if (capturedPath.row < (NSInteger)_profileIndices.count) {
+            [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
+                                  withRowAnimation:UITableViewRowAnimationNone];
+        }
+    }];
+    [_deleteActivity begin];
 
     [SNChannelGateway deleteProfileAtIndex:idx
                                 completion:^(BOOL ok, NSString *message) {
-        [self.pendingDeletionIndices removeObject:idxKey];
-        [self.deletingIndices removeObject:idxKey];
-        [self _setBackButtonHiddenForDeletingState];
+        SNDeferredActivity *activity = [_deleteActivity retain];
+        [activity finishWithCompletion:^{
+            [_pendingDeletionIndices removeObject:idxKey];
+            [_deletingIndices removeObject:idxKey];
+            [_deleteActivity release];
+            _deleteActivity = nil;
+            [self _setBackButtonHiddenForDeletingState];
 
-        if (!ok) {
-            self.failedDeletionIndex = idxKey;
-            self.failedDeletionIndexPath = capturedPath;
-            UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Delete Profile"
-                                                         message:message ?: @"The daemon did not respond. Try again."
-                                                        delegate:self
-                                               cancelButtonTitle:@"OK"
-                                               otherButtonTitles:nil];
-            [av show];
-            [av release];
-            /* Force the row back to its non-spinner state. */
-            if (capturedPath.row < (NSInteger)_profileIndices.count) {
-                [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
-                                      withRowAnimation:UITableViewRowAnimationNone];
+            if (!ok) {
+                UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Delete Profile"
+                                                             message:message ?: @"The daemon did not respond. Try again."
+                                                            delegate:nil
+                                                   cancelButtonTitle:@"OK"
+                                                   otherButtonTitles:nil];
+                [av show];
+                [av release];
+                if (capturedPath.row < (NSInteger)_profileIndices.count) {
+                    [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
+                                          withRowAnimation:UITableViewRowAnimationNone];
+                }
+                return;
             }
-            return;
-        }
 
-        [self _reloadProfileIndices];
-        [self.tableView reloadData];
+            [self _reloadProfileIndices];
+            [self.tableView reloadData];
+        }];
+        [activity release];
     }];
-}
-
-- (void)alertView:(UIAlertView *)alertView didDismissWithButtonIndex:(NSInteger)buttonIndex {
-    self.failedDeletionIndex = nil;
-    self.failedDeletionIndexPath = nil;
 }
 
 #pragma mark - Action sheet for non-active profile
@@ -350,8 +347,7 @@ enum {
     [_profileIndices release];
     [_pendingDeletionIndices release];
     [_deletingIndices release];
-    [_failedDeletionIndex release];
-    [_failedDeletionIndexPath release];
+    [_deleteActivity release];
     [super dealloc];
 }
 

@@ -1,6 +1,7 @@
 #import "SNAppListController.h"
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
+#import "SNDeferredActivity.h"
 #import <Preferences/PSSpecifier.h>
 #import <Preferences/PSTableCell.h>
 #import <UIKit/UIKit.h>
@@ -26,6 +27,7 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
 @property (nonatomic, strong) PSSpecifier *failedDeletionSpecifier;
 @property (nonatomic, strong) NSIndexPath *failedDeletionIndexPath;
 @property (nonatomic, strong) NSString *failedDeletionBundleId;
+@property (nonatomic, strong) SNDeferredActivity *deleteActivity;
 @end
 
 @implementation SNAppListController
@@ -38,6 +40,7 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
     [_failedDeletionSpecifier release];
     [_failedDeletionIndexPath release];
     [_failedDeletionBundleId release];
+    [_deleteActivity release];
     [super dealloc];
 }
 
@@ -274,7 +277,7 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
 }
 
 - (void)_setBackButtonDisabledForDeletingState {
-    self.navigationItem.hidesBackButton = [self _isDeleting];
+    self.navigationItem.hidesBackButton = [self _hasDeleteRequestInFlight];
 }
 
 - (void)_setSpecifier:(PSSpecifier *)specifier deleting:(BOOL)deleting bundleId:(NSString *)bundleId {
@@ -297,13 +300,16 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
 - (void)_scheduleVisibleSpinnerForSpecifier:(PSSpecifier *)specifier
                                   indexPath:(NSIndexPath *)indexPath
                                    bundleId:(NSString *)bundleId {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
+    self.deleteActivity = [[[SNDeferredActivity alloc] initWithShowBlock:^{
         if (![self.pendingDeletionBundleIDs containsObject:bundleId]) return;
         [self.pendingDeletionBundleIDs removeObject:bundleId];
         [self _setSpecifier:specifier deleting:YES bundleId:bundleId];
         [self _setVisibleCellAtIndexPath:indexPath deleting:YES];
-    });
+    } hideBlock:^{
+        [self _setSpecifier:specifier deleting:NO bundleId:bundleId];
+        [self _setVisibleCellAtIndexPath:indexPath deleting:NO];
+    }] autorelease];
+    [self.deleteActivity begin];
 }
 
 - (NSUInteger)_bundleRowCountForSection:(NSString *)section excludingSpecifier:(PSSpecifier *)excluded {
@@ -449,23 +455,31 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
     NSString *section = [spec propertyForKey:kSGNSectionPropKey];
     [tableView setEditing:NO animated:YES];
     [self.pendingDeletionBundleIDs addObject:bundleId];
+    [self _setBackButtonDisabledForDeletingState];
     [self _scheduleVisibleSpinnerForSpecifier:spec indexPath:indexPath bundleId:bundleId];
 
     [SNChannelGateway deleteAppForBundleId:bundleId completion:^(BOOL ok, NSString *message) {
-        [self.pendingDeletionBundleIDs removeObject:bundleId];
-        if (!ok) {
-            self.failedDeletionSpecifier = spec;
-            self.failedDeletionIndexPath = indexPath;
-            self.failedDeletionBundleId = bundleId;
-            [self _showDeletionErrorForBundleId:bundleId message:message];
-            return;
-        }
+        SNDeferredActivity *activity = [self.deleteActivity retain];
+        [activity finishWithCompletion:^{
+            [self.pendingDeletionBundleIDs removeObject:bundleId];
+            self.deleteActivity = nil;
+            [self _setBackButtonDisabledForDeletingState];
 
-        if ([section isEqualToString:kSGNSectionSkyglow]) {
-            [[SNDataManager shared] removeAppStatusForBundleId:bundleId];
-        }
-        [self _removeBundleSpecifier:spec section:section bundleId:bundleId];
-        [self _setSpecifier:spec deleting:NO bundleId:bundleId];
+            if (!ok) {
+                self.failedDeletionSpecifier = spec;
+                self.failedDeletionIndexPath = indexPath;
+                self.failedDeletionBundleId = bundleId;
+                [self _showDeletionErrorForBundleId:bundleId message:message];
+                return;
+            }
+
+            if ([section isEqualToString:kSGNSectionSkyglow]) {
+                [[SNDataManager shared] removeAppStatusForBundleId:bundleId];
+            }
+            [self _removeBundleSpecifier:spec section:section bundleId:bundleId];
+            [self _setSpecifier:spec deleting:NO bundleId:bundleId];
+        }];
+        [activity release];
     }];
 }
 

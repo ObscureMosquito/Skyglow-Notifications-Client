@@ -104,15 +104,6 @@
  */
 #define SG_CONTROL_SEND_TIMEOUT_MS              1000
 
-/**
- * Client reconnect backoff bounds.  Starts at the initial value, doubles
- * on every failed bootstrap_look_up, caps at the max.  Tuned so a server
- * that restarts within a second is rediscovered within one client wake
- * while a missing peer does not burn battery thrashing bootstrap.
- */
-#define SG_CONTROL_RECONNECT_INITIAL_SEC        0.5
-#define SG_CONTROL_RECONNECT_MAX_SEC            60.0
-
 /** Message Types */
 
 /**

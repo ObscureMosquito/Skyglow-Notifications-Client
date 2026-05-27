@@ -84,26 +84,29 @@ static inline NSString * SGDBPath()        { return SGPath(SG_DB_PATH); }
 }
 
 - (void)_bootstrapStatusMonitor {
-    /* Cached payload starts zeroed (state == Starting, which renders as
-     * neutral grey in the UI).  Two paths populate it:
-     *
-     *   1. One-shot QUERY_STATUS request — async; reply lands on main
-     *      and fires SNDaemonStatusUpdated.  Covers bundle-load seeding
-     *      and the rare case where state didn't change while suspended.
-     *
-     *   2. STATE_CHANGED subscription — pushes every future transition,
-     *      survives suspend/resume and daemon restarts via Mach port
-     *      lifecycle and the channel's reconnect machinery. */
-    [SNChannelGateway queryStatusWithCompletion:^(SGStatusPayload payload) {
-        self.latestPayload = payload;
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
-    }];
+    [self _refreshDaemonStatus];
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(_applicationWillEnterForeground:)
+                                                 name:UIApplicationWillEnterForegroundNotification
+                                               object:nil];
 
     [SNChannelGateway subscribeToStatusUpdatesWithHandler:^(SGStatusPayload payload) {
         dispatch_async(dispatch_get_main_queue(), ^{
             self.latestPayload = payload;
             [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
         });
+    }];
+}
+
+- (void)_applicationWillEnterForeground:(NSNotification *)notification {
+    [self _refreshDaemonStatus];
+}
+
+- (void)_refreshDaemonStatus {
+    [SNChannelGateway queryStatusWithCompletion:^(SGStatusPayload payload) {
+        self.latestPayload = payload;
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"SNDaemonStatusUpdated" object:nil];
     }];
 }
 

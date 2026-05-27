@@ -18,6 +18,7 @@ SGNPreferenceBundle_FILES = \
     SNCustomizationViewController.m \
     SNDataManager.m \
     SNChannelGateway.m \
+    SNDeferredActivity.m \
     $(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/SGControlChannel.m \
     $(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/SGLog.m \
     $(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/SGCompatibilityShim.m

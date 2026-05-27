@@ -16,10 +16,11 @@
  * Lifecycle is connection-scoped.  When the underlying Mach port to the peer
  * dies — the daemon crashed, SpringBoard restarted, the tweak was unloaded —
  * a dead-name notification fires.  The server cleans up the dead client's
- * subscriptions; the client tears down its pending state and reconnects with
- * exponential backoff.  Pending requests issued while disconnected are
- * queued and replayed on reconnect.  Requests in flight at the moment of
- * disconnect complete with SGCERR_UNREACHABLE.
+ * subscriptions; the client tears down its pending state.  The next outgoing
+ * request attempts a fresh lookup before queueing.  Requests issued while
+ * disconnected are replayed if a later request reconnects before they time
+ * out; requests in flight at the moment of disconnect complete with
+ * SGCERR_UNREACHABLE.
  *
  * Threading:
  *   - One internal pthread per channel runs the blocking mach_msg receive loop.

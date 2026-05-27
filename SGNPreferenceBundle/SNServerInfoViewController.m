@@ -1,6 +1,7 @@
 #import "SNServerInfoViewController.h"
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
+#import "SNDeferredActivity.h"
 #import "../libraries/SFPFilePicker/include/SFPFilePicker.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
@@ -55,6 +56,8 @@ static const NSInteger kAlertTagUnregister  = 2;
 @property (nonatomic, strong) NSString    *pendingPEMPath;
 @property (nonatomic, assign) BOOL         autoFetchInProgress;
 @property (nonatomic, assign) BOOL         unregisterInFlight;
+@property (nonatomic, assign) BOOL         unregisterRequestInFlight;
+@property (nonatomic, strong) SNDeferredActivity *unregisterActivity;
 @property (nonatomic, unsafe_unretained) UITextField *serverAddressField;
 @property (nonatomic, unsafe_unretained) UITextField *registeredAddressField;
 
@@ -653,35 +656,47 @@ static const NSInteger kAlertTagUnregister  = 2;
 }
 
 - (void)_performUnregister {
-    if (_unregisterInFlight) return;
-    _unregisterInFlight = YES;
+    if (_unregisterRequestInFlight) return;
+    _unregisterRequestInFlight = YES;
 
     self.navigationItem.hidesBackButton = YES;
     self.tableView.allowsSelection = NO;
     self.tableView.userInteractionEnabled = NO;
-    [self.tableView reloadData];
+
+    self.unregisterActivity = [[[SNDeferredActivity alloc] initWithShowBlock:^{
+        self.unregisterInFlight = YES;
+        [self.tableView reloadData];
+    } hideBlock:^{
+        self.unregisterInFlight = NO;
+        [self.tableView reloadData];
+    }] autorelease];
+    [self.unregisterActivity begin];
 
     NSInteger idx = self.profileIndex;
     [SNChannelGateway deleteProfileAtIndex:idx
                                 completion:^(BOOL ok, NSString *message) {
-        _unregisterInFlight = NO;
-        self.navigationItem.hidesBackButton = NO;
-        self.tableView.allowsSelection = YES;
-        self.tableView.userInteractionEnabled = YES;
+        SNDeferredActivity *activity = [self.unregisterActivity retain];
+        [activity finishWithCompletion:^{
+            self.unregisterRequestInFlight = NO;
+            self.unregisterActivity = nil;
+            self.navigationItem.hidesBackButton = NO;
+            self.tableView.allowsSelection = YES;
+            self.tableView.userInteractionEnabled = YES;
 
-        if (!ok) {
-            [self.tableView reloadData];
-            UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Unregister"
-                                                         message:message ?: @"The daemon did not respond."
-                                                        delegate:nil
-                                               cancelButtonTitle:@"OK"
-                                               otherButtonTitles:nil];
-            [av show];
-            [av release];
-            return;
-        }
+            if (!ok) {
+                UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Unregister"
+                                                             message:message ?: @"The daemon did not respond."
+                                                            delegate:nil
+                                                   cancelButtonTitle:@"OK"
+                                                   otherButtonTitles:nil];
+                [av show];
+                [av release];
+                return;
+            }
 
-        [self.navigationController popViewControllerAnimated:YES];
+            [self.navigationController popViewControllerAnimated:YES];
+        }];
+        [activity release];
     }];
 }
 
@@ -744,6 +759,7 @@ static const NSInteger kAlertTagUnregister  = 2;
 - (void)dealloc {
     [_pendingServerAddress release];
     [_pendingPEMPath release];
+    [_unregisterActivity release];
 
     [super dealloc];
 }
