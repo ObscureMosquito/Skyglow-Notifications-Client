@@ -1,0 +1,4 @@
+#ifndef SGN_UIKIT_UIStatusBarTimeItemView_H
+#define SGN_UIKIT_UIStatusBarTimeItemView_H
+@class UIStatusBarTimeItemView;
+#endif
