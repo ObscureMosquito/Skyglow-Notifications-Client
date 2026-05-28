@@ -26,7 +26,7 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/SGAvailability.m \
     Skyglow-Notifications-Daemon/SGControlChannel.m \
     Skyglow-Notifications-Daemon/SGCompatibilityShim.m
-SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result -I$(THEOS_PROJECT_DIR)/openssl/include
+SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result -I$(THEOS_PROJECT_DIR)/libraries/openssl/include
 SkyglowNotificationsDaemon_LDFLAGS = \
   -Wl,-sectcreate,__RESTRICT,__restrict,/dev/null \
   $(THEOS_PROJECT_DIR)/libraries/openssl/lib/libssl.a \
