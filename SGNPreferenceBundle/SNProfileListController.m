@@ -52,6 +52,8 @@ enum {
 - (void)setRootController:(id)controller   {}
 - (void)setParentController:(id)controller {}
 - (void)setSpecifier:(id)specifier         {}
+- (void)willResignActive                   {}
+- (void)willBecomeActive                   {}
 
 - (id)init {
     self = [super initWithStyle:UITableViewStyleGrouped];

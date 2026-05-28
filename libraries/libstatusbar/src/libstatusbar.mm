@@ -660,103 +660,39 @@ HOOKDEF(void, SBApplication, exitedCommon)
 
 CFVers QuantizeCFVers()
 {
-	CommonLog_F("CoreFoundation = %f", kCFCoreFoundationVersionNumber);
-	
-	if(kCFCoreFoundationVersionNumber == 478.47)
+	double v = kCFCoreFoundationVersionNumber;
+	CommonLog_F("CoreFoundation = %f", v);
+
+	static const struct { double min; CFVers vers; } versionTable[] = {
+		{ 1240.10, CF_90 },  // iOS 9.0+
+		{ 1145.15, CF_84 },  // iOS 8.4
+		{ 1144.17, CF_83 },  // iOS 8.3
+		{ 1142.16, CF_82 },  // iOS 8.2
+		{ 1141.14, CF_81 },  // iOS 8.1
+		{ 1140.10, CF_80 },  // iOS 8.0
+		{  847.24, CF_71 },  // iOS 7.1
+		{  847.20, CF_70 },  // iOS 7.0
+		{  793.00, CF_60 },  // iOS 6.0 / 6.1
+		{  690.10, CF_51 },  // iOS 5.1
+		{  675.00, CF_50 },  // iOS 5.0
+		{  550.58, CF_43 },  // iOS 4.3 (late point releases)
+		{  550.52, CF_42 },  // iOS 4.2 / 4.3
+		{  550.38, CF_41 },  // iOS 4.1
+		{  550.32, CF_40 },  // iOS 4.0
+		{  478.61, CF_32 },  // iOS 3.2
+		{  478.52, CF_31 },  // iOS 3.1
+		{  478.47, CF_30 },  // iOS 3.0
+	};
+
+	for(size_t i = 0; i < sizeof(versionTable)/sizeof(versionTable[0]); i++)
 	{
-		return CF_30;
+		if(v >= versionTable[i].min)
+		{
+			return versionTable[i].vers;
+		}
 	}
-	else if(kCFCoreFoundationVersionNumber == 478.52)
-	{
-		return CF_31;
-	}
-	else if(kCFCoreFoundationVersionNumber == 478.61)
-	{
-		return CF_32;
-	}
-	else if(kCFCoreFoundationVersionNumber == 550.32)
-	{
-		return CF_40;
-	}
-	else if(kCFCoreFoundationVersionNumber == 550.38)
-	{
-		return CF_41;
-	}
-	else if(kCFCoreFoundationVersionNumber == 550.52)
-	{
-		return CF_42;
-	}
-	else if(kCFCoreFoundationVersionNumber == 550.58)
-	{
-		return CF_43;
-	}
-	else if(kCFCoreFoundationVersionNumber == 675.00) //661.00
-	{
-		return CF_50;
-	}
-	else if(kCFCoreFoundationVersionNumber == 690.10)
-	{
-		return CF_51;
-	}
-	else if(kCFCoreFoundationVersionNumber == 793.00)
-	{
-		return CF_60;
-	}
-	else if(kCFCoreFoundationVersionNumber == 847.20)// && kCFCoreFoundationVersionNumber < 848.0)
-	{
-		return CF_70;	
-	}
-	else if(kCFCoreFoundationVersionNumber == 847.21)
-	{
-		return CF_70;
-	}
-	else if(kCFCoreFoundationVersionNumber == 847.26)
-	{
-		return CF_71;
-	}
-	else if(kCFCoreFoundationVersionNumber == 847.27)
-	{
-		return CF_71;
-	}
-	else if(kCFCoreFoundationVersionNumber == 1140.10)
-	{
-		return CF_80;
-	}
-	else if(kCFCoreFoundationVersionNumber == 1141.14)
-	{
-		return CF_81;
-	}
-	else if(kCFCoreFoundationVersionNumber == 1141.16)
-	{
-		return CF_81;
-	}
-	else if(kCFCoreFoundationVersionNumber == 1142.16)
-	{
-		return CF_82;
-	}
-	else if(kCFCoreFoundationVersionNumber == 1144.17)
-	{
-		return CF_83;
-	}
-	else if(kCFCoreFoundationVersionNumber == 1145.15)
-	{
-		return CF_84;
-	}
-	else if(kCFCoreFoundationVersionNumber == 1240.10)
-	{
-		return CF_90;
-	}
-	
-//	else if(kCFCoreFoundationVersionNumber == 847.23)
-//	{
-//		return CF_70;
-//	}
-	//else if(kCFCoreFoundationVersionNumber > 793.00)
-	else
-	{
-		CommonLog_F("Could not match CoreFoundation = %f", kCFCoreFoundationVersionNumber);
-	}
-	
+
+	CommonLog_F("Could not match CoreFoundation = %f (below minimum supported 3.0)", v);
 	return CF_NONE;
 }
 

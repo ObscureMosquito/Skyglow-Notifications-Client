@@ -21,6 +21,8 @@
 - (void)setRootController:(id)controller   {}
 - (void)setParentController:(id)controller {}
 - (void)setSpecifier:(id)specifier         {}
+- (void)willResignActive                   {}
+- (void)willBecomeActive                   {}
 @end
 
 typedef enum {
@@ -72,6 +74,8 @@ static const NSInteger kAlertTagUnregister  = 2;
 - (void)setRootController:(id)controller   {}
 - (void)setParentController:(id)controller {}
 - (void)setSpecifier:(id)specifier         {}
+- (void)willResignActive                   {}
+- (void)willBecomeActive                   {}
 
 - (id)init {
     return [self initWithProfileIndex:[[SNDataManager shared] activeProfileIndex]];

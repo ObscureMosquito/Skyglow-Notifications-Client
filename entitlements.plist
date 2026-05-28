@@ -10,5 +10,11 @@
     <false/>
     <key>com.apple.wifi.manager-access</key>
     <true/>
+    <key>application-identifier</key>
+    <string>com.skyglow.sgn</string>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>com.skyglow.sgn</string>
+    </array>
 </dict>
 </plist>

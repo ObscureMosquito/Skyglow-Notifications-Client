@@ -2,7 +2,7 @@ Package: com.iptm.libstatusbar
 Name: libstatusbar
 Version: 3.1.6
 Architecture: iphoneos-arm
-Description: pwning the statusbar for you
+Description: pwning the statusbar for you, updated by Requis
 Maintainer: Requis
 Author: phoenix3200, Requis
 Section: Development

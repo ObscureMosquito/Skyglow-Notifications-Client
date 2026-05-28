@@ -9,6 +9,16 @@
 
 NSMutableDictionary* cachedImages[5];
 
+static UIImage* SGNLoadOverlayImage(NSString* itemName)
+{
+	if(![itemName isKindOfClass: [NSString class]] || [itemName length] == 0)
+		return nil;
+	NSString* base = [@"/Library/Application Support/Skyglow Notifications/"
+	                   stringByAppendingPathComponent:
+	                       [itemName stringByAppendingPathExtension: @"png"]];
+	return [UIImage imageWithContentsOfFile: base];
+}
+
 UIImage* UIStatusBarCustomItemView$contentsImageForStyle$(UIStatusBarCustomItemView* self, SEL sel, int style)
 {
 	//SelLog();
@@ -92,11 +102,14 @@ UIImage* UIStatusBarCustomItemView$contentsImageForStyle$(UIStatusBarCustomItemV
 	if(!ret)
 	{
 		NSString* styleStr = isBlack ? @"FSO" : @"Default";
-		
+
 		NSString *imageName = [NSString stringWithFormat: @"%@_%@.png", styleStr, itemName];
 		NSBundle* bundle = [NSBundle bundleWithPath: @"/System/Library/CoreServices/SpringBoard.app"];
 		ret = [$UIImage imageNamed: imageName inBundle: bundle];
 	}
+
+	if(!ret)
+		ret = SGNLoadOverlayImage(itemName);
 
 	if(!ret)
 		NSLog(@"image %@ not found", itemName);
@@ -190,6 +203,10 @@ _UILegibilityImageSet* UIStatusBarCustomItemView$contentsImage(UIStatusBarCustom
 	if(!image && image_base)
 	{
 		image = [image_base _flatImageWithColor: tintColor];
+	}
+	if(!image)
+	{
+		image = SGNLoadOverlayImage(itemName);
 	}
 	/*
 	if(!image)

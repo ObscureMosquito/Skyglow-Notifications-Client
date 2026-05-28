@@ -1,5 +1,4 @@
 #import <UIKit/UIKit.h>
-#import <objc/runtime.h>
 #import "LSStatusBarItem.h"
 #import "../Skyglow-Notifications-Daemon/SGStatusServer.h"
 #import "../Skyglow-Notifications-Daemon/SGSharedConstants.h"
@@ -9,86 +8,40 @@
 
 static NSString * const kStatusBarIndicatorEnabledKey = @"statusBarIndicatorEnabled";
 static NSString * const kIndicatorIdentifier          = @"com.skyglow.snd.indicator";
-static NSString * const kIndicatorViewClassName       = @"SGNIndicatorItemView";
 
-#pragma mark - Color mapping
+#pragma mark - State → image name mapping
 
-static UIColor *SGNColorForState(SGState state) {
+static NSString *SGNImageNameForState(SGState state) {
     switch (state) {
         case SGStateConnected:
-            return [UIColor colorWithRed:0.2f green:0.7f blue:0.2f alpha:1.0f];
+            return @"sgn_connected";
+        case SGStateResolvingDNS:
         case SGStateConnecting:
         case SGStateAuthenticating:
-        case SGStateResolvingDNS:
         case SGStateBackingOff:
         case SGStateRegistering:
-            return [UIColor orangeColor];
+            return @"sgn_connecting";
+        case SGStateIdleDNSFailed:
         case SGStateIdleNoNetwork:
         case SGStateIdleCircuitOpen:
-        case SGStateIdleDNSFailed:
-            return [UIColor colorWithRed:0.9f green:0.6f blue:0.1f alpha:1.0f];
         case SGStateErrorAuth:
         case SGStateErrorBadConfig:
         case SGStateErrorVersionMismatch:
         case SGStateError:
-            return [UIColor colorWithRed:0.85f green:0.2f blue:0.2f alpha:1.0f];
+            return @"sgn_error";
+        case SGStateStarting:
+        case SGStateDisabled:
+        case SGStateIdleUnregistered:
+        case SGStateShuttingDown:
         default:
-            return [UIColor grayColor];
+            return @"sgn_off";
     }
-}
-
-#pragma mark - Custom view (registered dynamically)
-
-/* libstatusbar's UIStatusBarCustomItemView class is created at runtime via
- * objc_allocateClassPair, so there's no compile-time symbol to inherit from
- * statically.  We mirror the same pattern: register a UIStatusBarCustomItemView
- * subclass after libstatusbar has set up its base class, override
- * contentsImageForStyle: to draw a coloured circle, and reference it from
- * the LSStatusBarItem by name. */
-
-static UIColor *gIndicatorColor = nil;
-
-static UIImage *SGNIndicator_DrawCircle(id self, SEL _cmd, int style) {
-    (void)self; (void)_cmd; (void)style;
-    CGFloat side = 12.0f;
-    CGSize size = CGSizeMake(side, side);
-    UIGraphicsBeginImageContextWithOptions(size, NO, 0.0f);
-    CGContextRef ctx = UIGraphicsGetCurrentContext();
-    UIColor *c = gIndicatorColor ?: [UIColor grayColor];
-    CGContextSetFillColorWithColor(ctx, c.CGColor);
-    CGContextFillEllipseInRect(ctx, CGRectMake(1.0f, 1.0f, side - 2.0f, side - 2.0f));
-    UIImage *img = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    return img;
-}
-
-static void SGNIndicator_RegisterViewClassIfNeeded(void) {
-    if (NSClassFromString(kIndicatorViewClassName)) {
-        SGLOGI(SGNStatusBar, "view class already registered");
-        return;
-    }
-    Class super = NSClassFromString(@"UIStatusBarCustomItemView");
-    if (!super) {
-        SGLOGE(SGNStatusBar, "UIStatusBarCustomItemView superclass not found — libstatusbar not loaded?");
-        return;
-    }
-    Class mine = objc_allocateClassPair(super,
-        [kIndicatorViewClassName UTF8String], 0);
-    if (!mine) {
-        SGLOGE(SGNStatusBar, "objc_allocateClassPair returned NULL");
-        return;
-    }
-    class_addMethod(mine,
-                    @selector(contentsImageForStyle:),
-                    (IMP)SGNIndicator_DrawCircle,
-                    "@@:i");
-    objc_registerClassPair(mine);
-    SGLOGI(SGNStatusBar, "view class registered as subclass of UIStatusBarCustomItemView");
 }
 
 #pragma mark - Lifecycle
 
 static LSStatusBarItem *gIndicatorItem = nil;
+static NSString        *gIndicatorImageName = nil;
 
 static BOOL SGNIndicatorPrefEnabled(void) {
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:SG_PREFS_PLIST_PATH];
@@ -100,11 +53,11 @@ static BOOL SGNIndicatorPrefEnabled(void) {
 }
 
 static void SGNIndicatorApplyState(SGState state) {
-    UIColor *next = SGNColorForState(state);
-    if ([gIndicatorColor isEqual:next]) return;
-    [gIndicatorColor release];
-    gIndicatorColor = [next retain];
-    [gIndicatorItem update];
+    NSString *next = SGNImageNameForState(state);
+    if ([gIndicatorImageName isEqualToString:next]) return;
+    [gIndicatorImageName release];
+    gIndicatorImageName = [next retain];
+    if (gIndicatorItem) gIndicatorItem.imageName = gIndicatorImageName;
 }
 
 static void SGNIndicatorEnsureCreated(void) {
@@ -112,7 +65,6 @@ static void SGNIndicatorEnsureCreated(void) {
         SGLOGI(SGNStatusBar, "ensureCreated: already present, skip");
         return;
     }
-    SGNIndicator_RegisterViewClassIfNeeded();
     gIndicatorItem = [[LSStatusBarItem alloc]
         initWithIdentifier:kIndicatorIdentifier
                  alignment:StatusBarAlignmentRight];
@@ -120,9 +72,10 @@ static void SGNIndicatorEnsureCreated(void) {
         SGLOGE(SGNStatusBar, "LSStatusBarItem alloc returned nil");
         return;
     }
-    [gIndicatorItem setCustomViewClass:kIndicatorViewClassName];
+    gIndicatorItem.imageName = gIndicatorImageName ?: @"sgn_off";
     [gIndicatorItem setVisible:YES];
-    SGLOGI(SGNStatusBar, "indicator item created and visible");
+    SGLOGI(SGNStatusBar, "indicator item created and visible (image=%s)",
+           [(gIndicatorImageName ?: @"sgn_off") UTF8String]);
 }
 
 static void SGNIndicatorTearDown(void) {

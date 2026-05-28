@@ -17,6 +17,8 @@
 - (void)setRootController:(id)controller   {}
 - (void)setParentController:(id)controller {}
 - (void)setSpecifier:(id)specifier         {}
+- (void)willResignActive                   {}
+- (void)willBecomeActive                   {}
 
 - (void)viewDidLoad {
     [super viewDidLoad];

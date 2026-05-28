@@ -89,40 +89,66 @@
 }
 @end
 
-@implementation SNAppToggleCell
+@implementation SNAppToggleCell {
+    /* iOS 4's PSTableCell doesn't expose a -specifier getter; calling
+     * self.specifier crashes with unrecognized selector. */
+    PSSpecifier *_sgnSpecifier;
+}
 
 - (instancetype)initWithStyle:(UITableViewCellStyle)style
               reuseIdentifier:(NSString *)reuseIdentifier
                     specifier:(PSSpecifier *)specifier {
     self = [super initWithStyle:style reuseIdentifier:reuseIdentifier specifier:specifier];
     if (self) {
+        _sgnSpecifier = [specifier retain];
         self.textLabel.text   = nil;
         self.textLabel.hidden = YES;
         self.detailTextLabel.hidden = YES;
-        
+
         _appIconView = [[UIImageView alloc] init];
         _appIconView.layer.cornerRadius  = 4.0;
         _appIconView.layer.masksToBounds = YES;
         _appIconView.contentMode = UIViewContentModeScaleAspectFit;
         [self.contentView addSubview:_appIconView];
-        
+
         _appNameLabel = [[UILabel alloc] init];
         _appNameLabel.font = [UIFont boldSystemFontOfSize:16.0];
         _appNameLabel.backgroundColor = [UIColor clearColor];
         _appNameLabel.textColor = [UIColor blackColor];
         [self.contentView addSubview:_appNameLabel];
-        
+
         NSString *bundleId = [specifier propertyForKey:@"bundleId"];
         if (bundleId) [self configureCellForBundleId:bundleId];
     }
     return self;
 }
 
+/* iOS 4's PSSwitchCell installs its default UISwitch into the cell's
+ * subview tree *after* our -init runs, so an init-time sweep alone
+ * leaves the toggle visible on APNs rows.  Walk the cell recursively
+ * and remove any UISwitch that isn't our own _toggleSwitch.  Called
+ * from syncAccessoryState and layoutSubviews so reused/redrawn cells
+ * stay clean. */
+- (void)_sgnRemoveStraySwitchesIn:(UIView *)root {
+    for (UIView *sub in [[root.subviews copy] autorelease]) {
+        if ([sub isKindOfClass:[UISwitch class]]) {
+            if (sub != _toggleSwitch) [sub removeFromSuperview];
+        } else {
+            [self _sgnRemoveStraySwitchesIn:sub];
+        }
+    }
+}
+
 - (void)layoutSubviews {
     [super layoutSubviews];
+
+    if ([[_sgnSpecifier propertyForKey:@"sgnHideToggle"] boolValue]) {
+        [self _sgnRemoveStraySwitchesIn:self];
+    }
+
     CGFloat h = self.contentView.bounds.size.height;
     CGFloat iconSize = 32.0;
-    
+
     _appIconView.frame = CGRectMake(6, (h - iconSize) / 2.0, iconSize, iconSize);
     
     CGFloat labelX = CGRectGetMaxX(_appIconView.frame) + 11.0;
@@ -131,16 +157,28 @@
     _appNameLabel.centerY = h / 2.0;
 }
 
+/* iOS 4's PSTableCell init path calls -setControl: to install the
+ * default accessory control for switch-style cells (the spec uses
+ * cell:PSSwitchCell).  We manage accessoryView ourselves through
+ * syncAccessoryState, so swallow the call.  -control is stubbed for
+ * symmetry in case anything reads it back. */
+- (void)setControl:(id)control {}
+- (id)control { return nil; }
+
 - (void)refreshCellContentsWithSpecifier:(PSSpecifier *)specifier {
     [super refreshCellContentsWithSpecifier:specifier];
+    if (_sgnSpecifier != specifier) {
+        [_sgnSpecifier release];
+        _sgnSpecifier = [specifier retain];
+    }
     NSString *bundleId = [specifier propertyForKey:@"bundleId"];
     if (bundleId) [self configureCellForBundleId:bundleId];
     [self syncAccessoryState];
 }
 
 - (void)syncAccessoryState {
-    BOOL deleting = [[self.specifier propertyForKey:@"sgnDeleting"] boolValue];
-    BOOL hideToggle = [[self.specifier propertyForKey:@"sgnHideToggle"] boolValue];
+    BOOL deleting = [[_sgnSpecifier propertyForKey:@"sgnDeleting"] boolValue];
+    BOOL hideToggle = [[_sgnSpecifier propertyForKey:@"sgnHideToggle"] boolValue];
 
     if (deleting) {
         if (!_activityIndicator) {
@@ -154,6 +192,7 @@
     [_activityIndicator stopAnimating];
     if (hideToggle) {
         self.accessoryView = nil;
+        [self _sgnRemoveStraySwitchesIn:self];
         return;
     }
 
@@ -167,7 +206,7 @@
 }
 
 - (void)setDeletingAccessoryVisible:(BOOL)deleting {
-    [self.specifier setProperty:@(deleting) forKey:@"sgnDeleting"];
+    [_sgnSpecifier setProperty:@(deleting) forKey:@"sgnDeleting"];
     [self syncAccessoryState];
     self.userInteractionEnabled = !deleting;
 }
@@ -196,12 +235,12 @@
         }
     }
 
-    self.userInteractionEnabled = ![[self.specifier propertyForKey:@"sgnDeleting"] boolValue];
+    self.userInteractionEnabled = ![[_sgnSpecifier propertyForKey:@"sgnDeleting"] boolValue];
     self.selectionStyle = UITableViewCellSelectionStyleNone;
 }
 
 - (void)toggleChanged:(UISwitch *)sender {
-    NSString *bundleId = [self.specifier propertyForKey:@"bundleId"];
+    NSString *bundleId = [_sgnSpecifier propertyForKey:@"bundleId"];
     if (!bundleId) return;
 
     [[SNDataManager shared] setAppStatusValue:sender.isOn forBundleId:bundleId];
@@ -214,6 +253,7 @@
 }
 
 - (void)dealloc {
+    [_sgnSpecifier release];
     [_appIconView release];
     [_appNameLabel release];
     [_toggleSwitch release];

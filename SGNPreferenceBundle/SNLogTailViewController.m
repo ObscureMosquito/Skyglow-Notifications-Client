@@ -100,6 +100,8 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
 - (void)setRootController:(id)controller   {}
 - (void)setParentController:(id)controller {}
 - (void)setSpecifier:(id)specifier         {}
+- (void)willResignActive                   {}
+- (void)willBecomeActive                   {}
 
 #pragma mark - Lifecycle
 

@@ -67,10 +67,23 @@ static id GetIvar(id obj, const char *name) {
 
 static id SBApp_LookupByIdentifier(NSString *bundleId) {
     SBApplicationController *ctrl = [%c(SBApplicationController) sharedInstance];
+    id app = nil;
     if ([ctrl respondsToSelector:@selector(applicationWithBundleIdentifier:)]) {
-        return [ctrl applicationWithBundleIdentifier:bundleId];
+        app = [ctrl applicationWithBundleIdentifier:bundleId];
+    } else {
+        app = [ctrl applicationWithDisplayIdentifier:bundleId];
     }
-    return [ctrl applicationWithDisplayIdentifier:bundleId];
+    if (!app) return nil;
+
+    NSString *reportedId = nil;
+    if ([app respondsToSelector:@selector(bundleIdentifier)]) {
+        reportedId = [app performSelector:@selector(bundleIdentifier)];
+    } else if ([app respondsToSelector:@selector(displayIdentifier)]) {
+        reportedId = [app performSelector:@selector(displayIdentifier)];
+    }
+    if (!reportedId.length) return nil;
+    if (![reportedId isEqualToString:bundleId]) return nil;
+    return app;
 }
 
 static NSMutableDictionary *SGN_OwnedPlistAt(NSString *path) {
