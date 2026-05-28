@@ -1,5 +1,6 @@
 #import "SNCustomizationViewController.h"
 #import "SNDataManager.h"
+#import "SNChannelGateway.h"
 
 static NSString * const kStatusBarIndicatorEnabledKey = @"statusBarIndicatorEnabled";
 
@@ -245,6 +246,7 @@ typedef enum {
 
 - (void)_indicatorSwitchChanged:(UISwitch *)sw {
     [[SNDataManager shared] setMainPrefValue:@(sw.on) forKey:kStatusBarIndicatorEnabledKey];
+    [SNChannelGateway postReloadConfig];
 }
 
 - (void)dealloc {

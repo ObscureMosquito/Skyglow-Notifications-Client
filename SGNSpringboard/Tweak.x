@@ -364,23 +364,38 @@ static void StartSpringBoardControlChannel(void) {
             replyError(SGCERR_INVALID_REQUEST, @"register input bundle id invalid");
             return;
         }
-        if (bundleId.length) {
-            if (SGN_IS_PRE_IOS_9) {
-                NSString *bundleIdRet = [bundleId retain];
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    id app = SBApp_LookupByIdentifier(bundleIdRet);
-                    SBRemoteNotificationServer *server = [%c(SBRemoteNotificationServer) sharedInstance];
-                    if (app && server) {
-                        [server registerApplication:app forEnvironment:@"production" withTypes:7];
-                    }
-                    [bundleIdRet release];
-                });
-            } else {
-                SGN_AsyncFetchAndDeliverToken(bundleId, nil, nil, 0);
+        /* Bundle existence check.  SBApplicationController has to be hit on
+         * the main queue (it's not thread-safe), so we hop, look up, and
+         * dispatch the reply from there.  Previously this handler ACKed
+         * unconditionally before the async lookup even ran, which let the
+         * debug menu happily "register" arbitrary garbage strings. */
+        NSString *bundleIdRet = [bundleId retain];
+        SGControlReplyBlock      replyCopy      = [reply copy];
+        SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            id app = SBApp_LookupByIdentifier(bundleIdRet);
+            if (!app) {
+                replyErrorCopy(SGCERR_NOT_FOUND,
+                    [NSString stringWithFormat:@"No installed application has bundle id '%@'.", bundleIdRet]);
+                [bundleIdRet release];
+                [replyCopy release];
+                [replyErrorCopy release];
+                return;
             }
-        }
+            if (SGN_IS_PRE_IOS_9) {
+                SBRemoteNotificationServer *server = [%c(SBRemoteNotificationServer) sharedInstance];
+                if (server) {
+                    [server registerApplication:app forEnvironment:@"production" withTypes:7];
+                }
+            } else {
+                SGN_AsyncFetchAndDeliverToken(bundleIdRet, nil, nil, 0);
+            }
+            replyCopy(SGCMSG_GENERIC_ACK, nil);
+            [bundleIdRet release];
+            [replyCopy release];
+            [replyErrorCopy release];
+        });
         [bundleId release];
-        reply(SGCMSG_GENERIC_ACK, nil);
     } forMessageType:SGCMSG_REGISTER_INPUT_APP];
 
     [gSGCSBServer registerHandler:^(const SGControlChannelMessage *req,
@@ -903,6 +918,13 @@ static void SGN_InstallTokenGuard(void) {
 
     StartSpringBoardControlChannel();
     StartDaemonControlChannelClient();
+
+    /* Status bar dot — lives in SGNStatusBarIndicator.m, subscribes to the
+     * daemon's STATE_CHANGED + CONFIG_RELOADED events on the channel we
+     * just started, and creates/destroys the libstatusbar item per the
+     * customization toggle in prefs. */
+    extern void SGNStatusBarIndicator_Start(SGControlChannel *daemonClient);
+    SGNStatusBarIndicator_Start(gSGCDaemonClient);
 
     if (SGN_IS_PRE_IOS_8) {
         %init(HookUninstall_Classic);

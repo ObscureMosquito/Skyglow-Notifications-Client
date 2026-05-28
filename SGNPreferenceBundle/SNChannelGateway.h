@@ -37,6 +37,13 @@ typedef void (^SNChannelBundleListCompletion)(BOOL ok, NSArray *bundleIds, NSStr
  */
 + (void)postRegisterInputAppForBundleId:(NSString *)bundleId;
 
+/* Same as postRegisterInputAppForBundleId: but waits for the SpringBoard
+ * tweak to acknowledge.  Completion fires on the main queue with ok=YES
+ * on ack, or ok=NO if SB didn't respond.  Used by debug tooling where
+ * silent fire-and-forget hides real failures. */
++ (void)registerInputAppForBundleId:(NSString *)bundleId
+                         completion:(SNChannelCommandCompletion)completion;
+
 /**
  * Unified per-app state commands sent to the DAEMON (not the SB tweak).
  * These replace the prior pattern of the prefs bundle writing the DB

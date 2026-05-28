@@ -366,6 +366,70 @@ int main(int argc, char *argv[]) {
             [bundleID release];
         } forMessageType:SGCMSG_DELETE_APP];
 
+        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                          SGControlReplyBlock reply,
+                                          SGControlReplyErrorBlock replyError) {
+            SGControlChannel *sb = [daemon springBoardClient];
+            if (!sb) { replyError(SGCERR_UNREACHABLE, @"SpringBoard channel not attached"); return; }
+            SGControlReplyBlock      replyCopy      = [reply copy];
+            SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
+            [sb sendRequest:SGCMSG_LIST_PUSH_REGISTERED_APPS
+                    payload:nil
+                    timeout:0
+                 completion:^(SGControlError err, const SGControlChannelMessage *response) {
+                if (err == SGCERR_OK && response) {
+                    NSData *body = [NSData dataWithBytes:response->payload
+                                                  length:response->payloadLength];
+                    replyCopy(SGCMSG_BUNDLE_ID_LIST, body);
+                } else {
+                    replyErrorCopy(err, (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                        ? @"SpringBoard did not respond"
+                        : @"SpringBoard rejected the list request");
+                }
+                [replyCopy release];
+                [replyErrorCopy release];
+            }];
+        } forMessageType:SGCMSG_LIST_PUSH_REGISTERED_APPS];
+
+        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                          SGControlReplyBlock reply,
+                                          SGControlReplyErrorBlock replyError) {
+            if (req->payloadLength < sizeof(SGCBundleIdPayload)) {
+                replyError(SGCERR_INVALID_REQUEST, @"register-input payload too short");
+                return;
+            }
+            SGControlChannel *sb = [daemon springBoardClient];
+            if (!sb) { replyError(SGCERR_UNREACHABLE, @"SpringBoard channel not attached"); return; }
+            NSData *payloadCopy = [NSData dataWithBytes:req->payload length:req->payloadLength];
+            SGControlReplyBlock      replyCopy      = [reply copy];
+            SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
+            [sb sendRequest:SGCMSG_REGISTER_INPUT_APP
+                    payload:payloadCopy
+                    timeout:0
+                 completion:^(SGControlError err, const SGControlChannelMessage *response) {
+                if (err == SGCERR_OK) {
+                    replyCopy(SGCMSG_GENERIC_ACK, nil);
+                } else {
+                    NSString *detail = nil;
+                    if (response && response->messageType == SGCMSG_ERROR_RESPONSE &&
+                        response->payloadLength >= sizeof(SGCErrorResponsePayload)) {
+                        SGCErrorResponsePayload *ep = (SGCErrorResponsePayload *)response->payload;
+                        detail = [[[NSString alloc] initWithBytes:ep->message
+                                                           length:strnlen(ep->message, sizeof(ep->message))
+                                                         encoding:NSUTF8StringEncoding] autorelease];
+                    }
+                    if (!detail.length) {
+                        detail = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                            ? @"SpringBoard did not respond"
+                            : @"SpringBoard rejected the register request";
+                    }
+                    replyErrorCopy(err, detail);
+                }
+                [replyCopy release];
+                [replyErrorCopy release];
+            }];
+        } forMessageType:SGCMSG_REGISTER_INPUT_APP];
+
         if (![controlChannel start]) {
             SGLOGE(Skyglow, "code=%s service=%s result=failed", SGND_DAEMON_CONTROL_START_FAILED, SKYGLOW_CONTROL_SERVICE_DAEMON);
         } else {

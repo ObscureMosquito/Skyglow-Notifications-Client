@@ -18,15 +18,12 @@ static NSString * const kSGNAPNsEmptyFooter = @"Applications that have registere
 static NSString * const kSGNSkyglowPopulatedFooter = @"Toggle to mute Skyglow notifications for an app. Swipe to forget, the app will prompt you for a provider next time it asks for notifications.";
 static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered with Apple Push for notifications. Swipe to forget, the app will prompt you for a provider next time it opens.";
 
-@interface SNAppListController () <UIAlertViewDelegate>
+@interface SNAppListController ()
 @property (nonatomic, strong) NSArray *apsdBundles;
 @property (nonatomic, assign) BOOL apsdLoadFailed;
 @property (nonatomic, strong) NSString *apsdLoadErrorMessage;
 @property (nonatomic, strong) NSMutableSet *deletingBundleIDs;
 @property (nonatomic, strong) NSMutableSet *pendingDeletionBundleIDs;
-@property (nonatomic, strong) PSSpecifier *failedDeletionSpecifier;
-@property (nonatomic, strong) NSIndexPath *failedDeletionIndexPath;
-@property (nonatomic, strong) NSString *failedDeletionBundleId;
 @property (nonatomic, strong) SNDeferredActivity *deleteActivity;
 @end
 
@@ -37,9 +34,6 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
     [_apsdLoadErrorMessage release];
     [_deletingBundleIDs release];
     [_pendingDeletionBundleIDs release];
-    [_failedDeletionSpecifier release];
-    [_failedDeletionIndexPath release];
-    [_failedDeletionBundleId release];
     [_deleteActivity release];
     [super dealloc];
 }
@@ -80,14 +74,11 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
 }
 
 - (NSArray *)specifiers {
-    if (!_specifiers) {
-        NSMutableArray *specs = [NSMutableArray array];
-
-        [self _buildSkyglowSectionInto:specs];
-        [self _buildAPNsSectionInto:specs];
-
-        _specifiers = [specs copy];
-    }
+    NSMutableArray *specs = [[NSMutableArray alloc] init];
+    [self _buildSkyglowSectionInto:specs];
+    [self _buildAPNsSectionInto:specs];
+    [_specifiers release];
+    _specifiers = specs;
     return _specifiers;
 }
 
@@ -216,48 +207,6 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
     }
 }
 
-- (PSSpecifier *)_skyglowEmptyPlaceholderSpecifier {
-    PSSpecifier *placeholder = [PSSpecifier preferenceSpecifierNamed:@"No registered applications."
-                                                              target:self
-                                                                 set:NULL
-                                                                 get:NULL
-                                                              detail:Nil
-                                                                cell:PSStaticTextCell
-                                                                edit:Nil];
-    [placeholder setProperty:kSGNSectionSkyglow forKey:kSGNSectionPropKey];
-    [placeholder setProperty:@YES forKey:kSGNPlaceholderPropKey];
-    return placeholder;
-}
-
-- (PSSpecifier *)_apnsEmptyPlaceholderSpecifier {
-    PSSpecifier *placeholder = [PSSpecifier preferenceSpecifierNamed:@"No registered applications."
-                                                              target:self
-                                                                 set:NULL
-                                                                 get:NULL
-                                                              detail:Nil
-                                                                cell:PSStaticTextCell
-                                                                edit:Nil];
-    [placeholder setProperty:kSGNSectionAPNs forKey:kSGNSectionPropKey];
-    [placeholder setProperty:@YES forKey:kSGNPlaceholderPropKey];
-    return placeholder;
-}
-
-- (PSSpecifier *)_groupSpecifierForSection:(NSString *)section {
-    for (PSSpecifier *candidate in [self specifiers]) {
-        if ([[candidate propertyForKey:kSGNSectionPropKey] isEqualToString:section] &&
-            [[candidate propertyForKey:kSGNSectionGroupPropKey] boolValue]) {
-            return candidate;
-        }
-    }
-    return nil;
-}
-
-- (void)_setEmptyFooterForGroup:(PSSpecifier *)group section:(NSString *)section {
-    NSString *footer = [section isEqualToString:kSGNSectionAPNs] ? kSGNAPNsEmptyFooter : kSGNSkyglowEmptyFooter;
-    [group setProperty:footer forKey:@"footerText"];
-    [self reloadSpecifier:group animated:YES];
-}
-
 - (NSMutableSet *)deletingBundleIDs {
     if (!_deletingBundleIDs) _deletingBundleIDs = [[NSMutableSet alloc] init];
     return _deletingBundleIDs;
@@ -276,8 +225,15 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
     return ([self.deletingBundleIDs count] > 0 || [self.pendingDeletionBundleIDs count] > 0);
 }
 
+- (void)_backButtonHideForDelete {
+    [self.navigationItem setHidesBackButton:YES animated:NO];
+}
+- (void)_backButtonRestoreAfterDelete {
+    [self.navigationItem setHidesBackButton:NO animated:NO];
+}
+
 - (void)_setBackButtonDisabledForDeletingState {
-    self.navigationItem.hidesBackButton = [self _hasDeleteRequestInFlight];
+    [self.navigationItem setHidesBackButton:[self _hasDeleteRequestInFlight] animated:NO];
 }
 
 - (void)_setSpecifier:(PSSpecifier *)specifier deleting:(BOOL)deleting bundleId:(NSString *)bundleId {
@@ -287,7 +243,6 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
         [self.deletingBundleIDs removeObject:bundleId];
     }
     [specifier setProperty:@(deleting) forKey:kSGNDeletingPropKey];
-    [self _setBackButtonDisabledForDeletingState];
 }
 
 - (void)_setVisibleCellAtIndexPath:(NSIndexPath *)indexPath deleting:(BOOL)deleting {
@@ -300,26 +255,24 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
 - (void)_scheduleVisibleSpinnerForSpecifier:(PSSpecifier *)specifier
                                   indexPath:(NSIndexPath *)indexPath
                                    bundleId:(NSString *)bundleId {
+    PSSpecifier *specRet  = [specifier retain];
+    NSIndexPath *pathCopy = [indexPath copy];
+    NSString    *bidCopy  = [bundleId copy];
+
     self.deleteActivity = [[[SNDeferredActivity alloc] initWithShowBlock:^{
-        if (![self.pendingDeletionBundleIDs containsObject:bundleId]) return;
-        [self.pendingDeletionBundleIDs removeObject:bundleId];
-        [self _setSpecifier:specifier deleting:YES bundleId:bundleId];
-        [self _setVisibleCellAtIndexPath:indexPath deleting:YES];
+        if (![self.pendingDeletionBundleIDs containsObject:bidCopy]) return;
+        [self.pendingDeletionBundleIDs removeObject:bidCopy];
+        [self _setSpecifier:specRet deleting:YES bundleId:bidCopy];
+        [self _setVisibleCellAtIndexPath:pathCopy deleting:YES];
+        [self _backButtonHideForDelete];
     } hideBlock:^{
-        [self _setSpecifier:specifier deleting:NO bundleId:bundleId];
-        [self _setVisibleCellAtIndexPath:indexPath deleting:NO];
+        [self _setSpecifier:specRet deleting:NO bundleId:bidCopy];
+        [self _setVisibleCellAtIndexPath:pathCopy deleting:NO];
+        [specRet release];
+        [pathCopy release];
+        [bidCopy release];
     }] autorelease];
     [self.deleteActivity begin];
-}
-
-- (NSUInteger)_bundleRowCountForSection:(NSString *)section excludingSpecifier:(PSSpecifier *)excluded {
-    NSUInteger count = 0;
-    for (PSSpecifier *candidate in [self specifiers]) {
-        if (candidate == excluded) continue;
-        if (![candidate propertyForKey:@"bundleId"]) continue;
-        if ([[candidate propertyForKey:kSGNSectionPropKey] isEqualToString:section]) count++;
-    }
-    return count;
 }
 
 - (void)_removeAPNsBundleFromCachedList:(NSString *)bundleId {
@@ -327,36 +280,6 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
     NSMutableArray *next = [NSMutableArray arrayWithArray:self.apsdBundles];
     [next removeObject:bundleId];
     self.apsdBundles = next;
-}
-
-- (void)_removeBundleSpecifier:(PSSpecifier *)specifier
-                       section:(NSString *)section
-                      bundleId:(NSString *)bundleId {
-    BOOL wasLastBundleRow = ([self _bundleRowCountForSection:section excludingSpecifier:specifier] == 0);
-
-    if ([section isEqualToString:kSGNSectionAPNs]) {
-        [self _removeAPNsBundleFromCachedList:bundleId];
-    }
-
-    if (!wasLastBundleRow) {
-        [self removeSpecifier:specifier animated:YES];
-        return;
-    }
-
-    PSSpecifier *group = [self _groupSpecifierForSection:section];
-    [self removeSpecifier:specifier animated:YES];
-
-    if ([section isEqualToString:kSGNSectionSkyglow] && group) {
-        [self _setEmptyFooterForGroup:group section:section];
-        [self insertSpecifier:[self _skyglowEmptyPlaceholderSpecifier]
-               afterSpecifier:group
-                     animated:YES];
-    } else if ([section isEqualToString:kSGNSectionAPNs] && group) {
-        [self _setEmptyFooterForGroup:group section:section];
-        [self insertSpecifier:[self _apnsEmptyPlaceholderSpecifier]
-               afterSpecifier:group
-                     animated:YES];
-    }
 }
 
 - (void)_showDeletionErrorForBundleId:(NSString *)bundleId message:(NSString *)message {
@@ -368,30 +291,11 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
 
     UIAlertView *av = [[UIAlertView alloc] initWithTitle:title
                                                  message:body
-                                                delegate:self
+                                                delegate:nil
                                        cancelButtonTitle:@"OK"
                                        otherButtonTitles:nil];
     [av show];
     [av release];
-}
-
-- (void)_clearFailedDeletionState {
-    PSSpecifier *specifier = self.failedDeletionSpecifier;
-    NSIndexPath *indexPath = self.failedDeletionIndexPath;
-    NSString *bundleId = self.failedDeletionBundleId;
-
-    self.failedDeletionSpecifier = nil;
-    self.failedDeletionIndexPath = nil;
-    self.failedDeletionBundleId = nil;
-
-    if (!bundleId.length || !specifier) return;
-    [self.pendingDeletionBundleIDs removeObject:bundleId];
-    [self _setSpecifier:specifier deleting:NO bundleId:bundleId];
-    if (indexPath) [self _setVisibleCellAtIndexPath:indexPath deleting:NO];
-}
-
-- (void)alertView:(UIAlertView *)alertView didDismissWithButtonIndex:(NSInteger)buttonIndex {
-    [self _clearFailedDeletionState];
 }
 
 - (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -455,29 +359,36 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
     NSString *section = [spec propertyForKey:kSGNSectionPropKey];
     [tableView setEditing:NO animated:YES];
     [self.pendingDeletionBundleIDs addObject:bundleId];
-    [self _setBackButtonDisabledForDeletingState];
     [self _scheduleVisibleSpinnerForSpecifier:spec indexPath:indexPath bundleId:bundleId];
 
-    [SNChannelGateway deleteAppForBundleId:bundleId completion:^(BOOL ok, NSString *message) {
+    PSSpecifier *specRet  = [spec retain];
+    NSIndexPath *pathCopy = [indexPath copy];
+    NSString    *bidCopy  = [bundleId copy];
+    NSString    *secCopy  = [section copy];
+
+    [SNChannelGateway deleteAppForBundleId:bidCopy completion:^(BOOL ok, NSString *message) {
         SNDeferredActivity *activity = [self.deleteActivity retain];
         [activity finishWithCompletion:^{
-            [self.pendingDeletionBundleIDs removeObject:bundleId];
+            [self.pendingDeletionBundleIDs removeObject:bidCopy];
             self.deleteActivity = nil;
-            [self _setBackButtonDisabledForDeletingState];
+            [self _backButtonRestoreAfterDelete];
 
             if (!ok) {
-                self.failedDeletionSpecifier = spec;
-                self.failedDeletionIndexPath = indexPath;
-                self.failedDeletionBundleId = bundleId;
-                [self _showDeletionErrorForBundleId:bundleId message:message];
-                return;
+                [self _showDeletionErrorForBundleId:bidCopy message:message];
+            } else {
+                if ([secCopy isEqualToString:kSGNSectionSkyglow]) {
+                    [[SNDataManager shared] removeAppStatusForBundleId:bidCopy];
+                } else if ([secCopy isEqualToString:kSGNSectionAPNs]) {
+                    [self _removeAPNsBundleFromCachedList:bidCopy];
+                }
+                [self _setSpecifier:specRet deleting:NO bundleId:bidCopy];
+                [self reloadSpecifiers];
             }
 
-            if ([section isEqualToString:kSGNSectionSkyglow]) {
-                [[SNDataManager shared] removeAppStatusForBundleId:bundleId];
-            }
-            [self _removeBundleSpecifier:spec section:section bundleId:bundleId];
-            [self _setSpecifier:spec deleting:NO bundleId:bundleId];
+            [specRet release];
+            [pathCopy release];
+            [bidCopy release];
+            [secCopy release];
         }];
         [activity release];
     }];

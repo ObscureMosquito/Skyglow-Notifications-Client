@@ -281,16 +281,21 @@ typedef enum {
                 return;
             }
 
-            [[SNDataManager shared] setAppStatusValue:YES forBundleId:bundleID];
-
-            [SNChannelGateway postRegisterInputAppForBundleId:bundleID];
-
-            [self showAlert:@"Request Sent"
-                    message:[NSString stringWithFormat:@"Registration request for '%@' sent to SpringBoard.", bundleID]];
+            NSString *bidCopy = [bundleID copy];
+            [SNChannelGateway registerInputAppForBundleId:bidCopy
+                                               completion:^(BOOL ok, NSString *message) {
+                if (ok) {
+                    [self showAlert:@"Registered"
+                            message:[NSString stringWithFormat:@"SpringBoard accepted registration for '%@'.", bidCopy]];
+                } else {
+                    [self showAlert:@"Registration Failed"
+                            message:message ?: @"SpringBoard did not respond."];
+                }
+                [bidCopy release];
+                [self loadStats];
+                [self.tableView reloadData];
+            }];
             _manualBundleIDParams.text = @"";
-
-            [self loadStats];
-            [self.tableView reloadData];
 
         } else if (indexPath.row == 2) {
 
@@ -354,10 +359,6 @@ typedef enum {
 
     [tableView setEditing:NO animated:YES];
 
-    /* Route through the daemon's DELETE_APP cascade (drops DB row + flushes
-     * server filter + asks SpringBoard to clear iOS-native registration).
-     * Previously this code wrote SQLite directly, racing the daemon's own
-     * writes and bypassing the SB cleanup. */
     [_pendingDeletionBundleIDs addObject:bundleId];
     self.navigationItem.hidesBackButton = YES;
 

@@ -58,6 +58,11 @@ typedef NS_ENUM(NSInteger, SGEvent) {
  */
 - (void)attachSpringBoardClient:(SGControlChannel *)client;
 
+/* Exposed so the daemon's IPC entry points can proxy prefs-bundle requests
+ * to SpringBoard.  Prefs no longer holds its own SB channel, its only
+ * persistent connection is to the daemon, which always stays warm. */
+- (SGControlChannel *)springBoardClient;
+
 /**
  * Starts the daemon's connection state machine.
  */

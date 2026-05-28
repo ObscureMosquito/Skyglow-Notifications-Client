@@ -64,10 +64,8 @@ minimumVisibleDuration:(NSTimeInterval)minimumVisibleDuration
 
     SNDeferredActivityBlock completionCopy = [completion copy];
     SNDeferredActivityBlock finishBlock = [^{
-        if (_visible) {
-            _visible = NO;
-            if (_hideBlock) _hideBlock();
-        }
+        _visible = NO;
+        if (_hideBlock) _hideBlock();
         if (completionCopy) completionCopy();
         [completionCopy release];
     } copy];

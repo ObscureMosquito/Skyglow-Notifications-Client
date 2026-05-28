@@ -244,6 +244,7 @@ typedef enum : uint16_t {
     SGCERR_UNAUTHORIZED      = 5,  /* sender lacks capability for this request */
     SGCERR_INTERNAL          = 6,  /* server-side failure, retryable */
     SGCERR_DAEMON_BUSY       = 7,  /* server queue full; back off and retry */
+    SGCERR_NOT_FOUND         = 8,  /* request references an entity that does not exist */
 } SGControlError;
 
 #pragma pack(4)

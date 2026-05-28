@@ -34,7 +34,6 @@ COMMON_CFLAGS=(
     -fobjc-abi-version=2
     -fobjc-legacy-dispatch
     -fno-objc-arc
-    -fvisibility=hidden
     -DGO_EASY_ON_ME=1
     -include "$SRC_DIR/sgn_shims.h"
     -w

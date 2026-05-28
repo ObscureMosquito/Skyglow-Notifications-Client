@@ -6,9 +6,7 @@
 @implementation SNChannelGateway
 
 static SGControlChannel *gDaemonClient = nil;
-static SGControlChannel *gSpringBoardClient = nil;
 static dispatch_once_t   gDaemonOnce;
-static dispatch_once_t   gSpringBoardOnce;
 
 static void SNCopyCString(char *dst, size_t dstSize, const char *src) {
     if (!dst || dstSize == 0) return;
@@ -32,14 +30,6 @@ static SGControlChannel *DaemonClient(void) {
     return gDaemonClient;
 }
 
-static SGControlChannel *SpringBoardClient(void) {
-    dispatch_once(&gSpringBoardOnce, ^{
-        gSpringBoardClient = [SGControlChannel clientForServiceName:SKYGLOW_CONTROL_SERVICE_SPRINGBOARD];
-        [gSpringBoardClient start];
-    });
-    return gSpringBoardClient;
-}
-
 + (void)postReloadConfig {
     [DaemonClient() sendRequest:SGCMSG_RELOAD_CONFIG
                         payload:nil
@@ -59,10 +49,36 @@ static SGControlChannel *SpringBoardClient(void) {
     SGCBundleIdPayload payload;
     memset(&payload, 0, sizeof(payload));
     SNCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
-    [SpringBoardClient() sendRequest:SGCMSG_REGISTER_INPUT_APP
+    [DaemonClient() sendRequest:SGCMSG_REGISTER_INPUT_APP
                              payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
                              timeout:0
                           completion:nil];
+}
+
++ (void)registerInputAppForBundleId:(NSString *)bundleId
+                         completion:(SNChannelCommandCompletion)completion {
+    if (bundleId.length == 0) {
+        if (completion) completion(NO, @"Bundle ID required.");
+        return;
+    }
+    SGCBundleIdPayload payload;
+    memset(&payload, 0, sizeof(payload));
+    SNCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
+    [DaemonClient() sendRequest:SGCMSG_REGISTER_INPUT_APP
+                             payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
+                             timeout:SG_CONTROL_DELETE_APP_TIMEOUT_SEC
+                          completion:^(SGControlError err, const SGControlChannelMessage *response) {
+        BOOL ok = (err == SGCERR_OK);
+        NSString *message = nil;
+        if (!ok) {
+            message = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                ? @"Could not communicate with SpringBoard. Try again after respringing."
+                : @"SpringBoard rejected the registration request.";
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(ok, message);
+        });
+    }];
 }
 
 static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
@@ -282,7 +298,7 @@ static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
 + (void)queryNativelyPushRegisteredBundlesWithCompletion:(SNChannelBundleListCompletion)completion {
     if (!completion) return;
 
-    [SpringBoardClient() sendRequest:SGCMSG_LIST_PUSH_REGISTERED_APPS
+    [DaemonClient() sendRequest:SGCMSG_LIST_PUSH_REGISTERED_APPS
                              payload:nil
                              timeout:0
                           completion:^(SGControlError err, const SGControlChannelMessage *response) {

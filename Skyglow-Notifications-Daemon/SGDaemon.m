@@ -246,6 +246,10 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     _controlChannel = channel;
 }
 
+- (SGControlChannel *)springBoardClient {
+    return _springBoardClient;
+}
+
 - (void)attachSpringBoardClient:(SGControlChannel *)client {
     if (client == _springBoardClient) return;
     [client retain];

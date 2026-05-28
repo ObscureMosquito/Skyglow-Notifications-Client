@@ -795,17 +795,16 @@ static void *SGCRecvThreadEntry(void *arg) {
         @"completion": (id)compCopy ?: (id)[NSNull null],
     };
     SGC_RELEASE(compCopy);
-
-    /* dispatch_after fires once and has nothing to clean up — no source to
-     * cancel + release.  The response path just removes the request from
-     * _pendingRequests; when this block fires later, the lookup misses and
-     * it no-ops.  The previous dispatch_source_t pattern UAF'd the source
-     * pointer (block captured raw pointer, source released before timer
-     * fired, kernel ran the block anyway, deref crashed the state queue). */
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)),
                    _stateQueue, ^{
         if (_pendingRequests[@(requestId)] != nil) {
+            SGLOGW(SGControlChannel, "timeout: service=%s rid=%llu timeout=%.1fs", _serviceName, requestId, timeout);
             [self _clientFailPendingRequestLocked:requestId error:SGCERR_TIMEOUT];
+
+            if (!_isServer && _connected) {
+                SGLOGW(SGControlChannel, "timeout: marking channel disconnected for reconnect on next send");
+                [self _clientMarkDisconnectedLocked];
+            }
         }
     });
 }
@@ -857,7 +856,7 @@ static void *SGCRecvThreadEntry(void *arg) {
     if (comp && comp != [NSNull null]) {
         SGControlClientCompletion compCopy = [(SGControlClientCompletion)comp copy];
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            compCopy(err, err == SGCERR_OK ? responseCopy : NULL);
+            compCopy(err, responseCopy);
             free(responseCopy);
             SGC_RELEASE(compCopy);
         });

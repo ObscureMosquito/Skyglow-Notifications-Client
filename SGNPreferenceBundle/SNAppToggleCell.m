@@ -131,6 +131,13 @@
     _appNameLabel.centerY = h / 2.0;
 }
 
+- (void)refreshCellContentsWithSpecifier:(PSSpecifier *)specifier {
+    [super refreshCellContentsWithSpecifier:specifier];
+    NSString *bundleId = [specifier propertyForKey:@"bundleId"];
+    if (bundleId) [self configureCellForBundleId:bundleId];
+    [self syncAccessoryState];
+}
+
 - (void)syncAccessoryState {
     BOOL deleting = [[self.specifier propertyForKey:@"sgnDeleting"] boolValue];
     BOOL hideToggle = [[self.specifier propertyForKey:@"sgnHideToggle"] boolValue];
