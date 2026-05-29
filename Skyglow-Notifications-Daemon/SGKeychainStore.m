@@ -1,4 +1,5 @@
 #import "SGKeychainStore.h"
+#import "SGLog.h"
 #import <Security/Security.h>
 
 static NSString * const kSGKeychainService = @"com.skyglow.daemon.privatekey";
@@ -32,16 +33,21 @@ BOOL SGKeychain_StorePrivateKeyPEM(NSString *pem, NSInteger profileIndex) {
                  forKey:(__bridge id)kSecAttrAccessible];
 
     OSStatus status = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+    SGLOGI(SGKeychainStore, "code=%s op=add profile=%ld status=%ld result=%s",
+           SGND_KEYCHAIN_STORE_STATUS, (long)profileIndex, (long)status,
+           status == errSecSuccess ? "ok" : "failed");
     return (status == errSecSuccess);
 }
 
 NSString *SGKeychain_FetchPrivateKeyPEM(NSInteger profileIndex) {
     NSMutableDictionary *query = SGKeychain_BaseQuery(profileIndex);
-    [query setObject:(__bridge id)kSecReturnData forKey:(__bridge id)kSecReturnData];
+    [query setObject:(__bridge id)kCFBooleanTrue forKey:(__bridge id)kSecReturnData];
     [query setObject:(__bridge id)kSecMatchLimitOne forKey:(__bridge id)kSecMatchLimit];
 
     CFTypeRef result = NULL;
     OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+    SGLOGI(SGKeychainStore, "code=%s op=fetch profile=%ld status=%ld has_data=%d",
+           SGND_KEYCHAIN_FETCH_STATUS, (long)profileIndex, (long)status, result != NULL);
     if (status != errSecSuccess || !result) return nil;
 
     NSData *data = [(NSData *)result autorelease];
