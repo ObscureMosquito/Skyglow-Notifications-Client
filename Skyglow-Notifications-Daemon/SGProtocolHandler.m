@@ -47,6 +47,10 @@ static char     *_regPendingPrivKey = NULL;
 static size_t    _regPendingPrivKeyLen = 0;
 static RSA      *_regPendingRSA = NULL;
 static int64_t   _regTimestamp = 0;
+/* Guards the _regPending* trio.  The RSA-2048 keypair is pre-generated on a
+ * background queue while the connection is still being established, so the
+ * connection worker never blocks for multi-second keygen on the I/O path. */
+static pthread_mutex_t _regKeyLock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Protocol phase — gates which server messages we accept at any given moment */
 typedef enum {
@@ -125,6 +129,9 @@ const char *SGP_ConnectErrorName(int code) {
         case -3: return "SGP_CONNECT_SELECT_TIMEOUT";
         case -4: return "SGP_CONNECT_SOCKET_ERROR";
         case -7: return "SGP_CONNECT_TLS_FAILED";
+        case -8: return "SGP_CONNECT_PINNED_CERT_INVALID";
+        case -9: return "SGP_CONNECT_NO_PEER_CERT";
+        case -10: return "SGP_CONNECT_PIN_MISMATCH";
         default: return "SGP_CONNECT_UNKNOWN";
     }
 }
@@ -274,9 +281,16 @@ static int SG_SendChallengeResponse(SGPMsgType type, RSA *rsa, NSString *addr, i
 }
 
 
-BOOL SGP_BeginFirstTimeRegistration(void) {
-    if (!SGP_IsConnected()) return NO;
+void SGP_PrepareRegistrationKeypair(void) {
+    pthread_mutex_lock(&_regKeyLock);
+    BOOL alreadyHave = (_regPendingRSA != NULL);
+    pthread_mutex_unlock(&_regKeyLock);
+    if (alreadyHave) return;
 
+    /* RSA-2048 keygen is the multi-second cost on A4/iOS 4.3 hardware.  It runs
+     * OUTSIDE _regKeyLock so it never blocks the connection worker (which takes
+     * the lock only to read the finished result).  Idempotent: a second caller
+     * either short-circuits above or loses the publish race below. */
     BIGNUM *bn = BN_new(); BN_set_word(bn, RSA_F4);
     RSA *rsa = RSA_new(); RSA_generate_key_ex(rsa, 2048, bn, NULL);
     BN_free(bn);
@@ -288,12 +302,37 @@ BOOL SGP_BeginFirstTimeRegistration(void) {
     if (!privBuf) {
         BIO_free(privBio);
         RSA_free(rsa);
-        return NO;
+        return;
     }
     BIO_read(privBio, privBuf, (int)privLen);
     BIO_free(privBio);
+
+    pthread_mutex_lock(&_regKeyLock);
+    if (_regPendingRSA) {
+        /* Lost the race to a concurrent prepare — discard ours. */
+        pthread_mutex_unlock(&_regKeyLock);
+        SGP_ZeroAndFreeKeyMaterial(privBuf, (size_t)privLen);
+        RSA_free(rsa);
+        return;
+    }
     _regPendingPrivKey    = privBuf;
     _regPendingPrivKeyLen = (size_t)privLen;
+    _regPendingRSA        = rsa;
+    pthread_mutex_unlock(&_regKeyLock);
+    SGLOGI(SGProtocolHandler, "code=%s result=ready", SGND_REGISTRATION_KEY_PREPARED);
+}
+
+BOOL SGP_BeginFirstTimeRegistration(void) {
+    if (!SGP_IsConnected()) return NO;
+
+    /* No-op if the keypair was pre-generated during connect; otherwise this
+     * generates it inline as a fallback (e.g. if pre-gen was never kicked). */
+    SGP_PrepareRegistrationKeypair();
+
+    pthread_mutex_lock(&_regKeyLock);
+    RSA *rsa = _regPendingRSA;
+    pthread_mutex_unlock(&_regKeyLock);
+    if (!rsa) return NO;
 
     uint8_t *pubDer = NULL;
     int pubDerLen = i2d_RSA_PUBKEY(rsa, &pubDer);
@@ -311,7 +350,6 @@ BOOL SGP_BeginFirstTimeRegistration(void) {
     [payload appendBytes:tsBE length:8];
     uint32_t ver = htonl(SGP_VERSION); [payload appendBytes:&ver length:4];
 
-    _regPendingRSA = rsa;
     OPENSSL_free(pubDer);
 
     _phase = SGPProtoChallengeWait;
@@ -373,12 +411,14 @@ void SGP_DisconnectFromServer(void) {
     if (_sslctx) { SSL_CTX_free(_sslctx); _sslctx = NULL; }
     if (_sock >= 0) { close(_sock); _sock = -1; }
     [_userAddress release]; _userAddress = nil;
+    pthread_mutex_lock(&_regKeyLock);
     if (_regPendingRSA) { RSA_free(_regPendingRSA); _regPendingRSA = NULL; }
     if (_regPendingPrivKey) {
         SGP_ZeroAndFreeKeyMaterial(_regPendingPrivKey, _regPendingPrivKeyLen);
         _regPendingPrivKey    = NULL;
         _regPendingPrivKeyLen = 0;
     }
+    pthread_mutex_unlock(&_regKeyLock);
     _pingPendingSince = 0.0;
     _lastFrameReceivedAt = 0.0;
     _phase = SGPProtoPreHello;
@@ -392,23 +432,13 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
 
     _sslctx = SSL_CTX_new(TLS_client_method());
     SSL_CTX_set_options(_sslctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
-    SSL_CTX_set_verify(_sslctx, SSL_VERIFY_PEER, NULL);
-    const char *utf8Cert = [pinnedCert UTF8String];
-    BIO *b = BIO_new_mem_buf((void *)utf8Cert, (int)strlen(utf8Cert));
-    X509 *x = PEM_read_bio_X509(b, NULL, 0, NULL);
-    if (!x) {
-        SGLOGE(SGP, "code=%s result=failed reason=pem_read_x509", SGND_PROTOCOL_CONNECT_CERT_FAILED);
-        unsigned long openSslErr;
-        while ((openSslErr = ERR_get_error()) != 0) {
-            char errBuf[256];
-            ERR_error_string_n(openSslErr, errBuf, sizeof(errBuf));
-            SGLOGE(SGP, "code=%s reason=%s", SGND_PROTOCOL_OPENSSL_ERROR, errBuf);
-        }
-    } else {
-        X509_STORE_add_cert(SSL_CTX_get_cert_store(_sslctx), x);
-        X509_free(x);
-    }
-    BIO_free(b);
+    /* We pin the exact server certificate ourselves after the handshake (below),
+     * so OpenSSL's own chain verification is deliberately not used: it would
+     * reject a self-signed pinned leaf, and for a CA-anchored cert it would
+     * accept ANY sibling leaf that CA issued.  A byte-comparison of the leaf the
+     * server actually presents against the pinned cert is both stricter and
+     * independent of chain/hostname semantics (we connect by IP). */
+    SSL_CTX_set_verify(_sslctx, SSL_VERIFY_NONE, NULL);
 
     _sock = socket(AF_INET, SOCK_STREAM, 0);
     if (_sock < 0) { SGP_DisconnectFromServer(); return -1; }
@@ -433,7 +463,7 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     if (connectResult < 0) {
         if (_sock >= FD_SETSIZE) { SGP_DisconnectFromServer(); return -3; }
         fd_set wfds; FD_ZERO(&wfds); FD_SET(_sock, &wfds);
-        struct timeval tv = {10, 0};
+        struct timeval tv = {SGP_NET_OP_TIMEOUT_SEC, 0};
         int sel = select(_sock + 1, NULL, &wfds, NULL, &tv);
         if (sel <= 0) { SGP_DisconnectFromServer(); return -3; }
 
@@ -445,14 +475,65 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     fcntl(_sock, F_SETFL, flags);
 
     struct timeval timeout;
-    timeout.tv_sec = 10;
+    timeout.tv_sec = SGP_NET_OP_TIMEOUT_SEC;
     timeout.tv_usec = 0;
     setsockopt(_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(_sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 
+    /* Parse the pinned certificate into DER here — after the socket-level early
+     * returns above — so no error path leaks it. */
+    unsigned char *pinnedDer = NULL;
+    int pinnedDerLen = 0;
+    {
+        const char *utf8Cert = [pinnedCert UTF8String];
+        BIO *b = utf8Cert ? BIO_new_mem_buf((void *)utf8Cert, (int)strlen(utf8Cert)) : NULL;
+        X509 *pinnedX = b ? PEM_read_bio_X509(b, NULL, 0, NULL) : NULL;
+        if (b) BIO_free(b);
+        if (!pinnedX) {
+            SGLOGE(SGP, "code=%s result=failed reason=pem_read_x509", SGND_PROTOCOL_CONNECT_CERT_FAILED);
+            unsigned long openSslErr;
+            while ((openSslErr = ERR_get_error()) != 0) {
+                char errBuf[256];
+                ERR_error_string_n(openSslErr, errBuf, sizeof(errBuf));
+                SGLOGE(SGP, "code=%s reason=%s", SGND_PROTOCOL_OPENSSL_ERROR, errBuf);
+            }
+            SGP_DisconnectFromServer();
+            return -8;
+        }
+        pinnedDerLen = i2d_X509(pinnedX, &pinnedDer);
+        X509_free(pinnedX);
+        if (pinnedDerLen <= 0 || !pinnedDer) {
+            if (pinnedDer) OPENSSL_free(pinnedDer);
+            SGP_DisconnectFromServer();
+            return -8;
+        }
+    }
+
     _ssl = SSL_new(_sslctx);
     SSL_set_fd(_ssl, _sock);
-    if (SSL_connect(_ssl) != 1) { SGP_DisconnectFromServer(); return -7; }
+    if (SSL_connect(_ssl) != 1) { OPENSSL_free(pinnedDer); SGP_DisconnectFromServer(); return -7; }
+
+    /* Certificate pinning: the leaf the server actually presented must be
+     * byte-identical to the pinned certificate, or we refuse the connection. */
+    X509 *peer = SSL_get_peer_certificate(_ssl);
+    if (!peer) {
+        OPENSSL_free(pinnedDer);
+        SGLOGE(SGP, "code=%s result=failed reason=no_peer_cert", SGND_PROTOCOL_CONNECT_CERT_FAILED);
+        SGP_DisconnectFromServer();
+        return -9;
+    }
+    unsigned char *peerDer = NULL;
+    int peerDerLen = i2d_X509(peer, &peerDer);
+    X509_free(peer);
+    BOOL pinMatch = (peerDer && peerDerLen == pinnedDerLen &&
+                     memcmp(peerDer, pinnedDer, (size_t)pinnedDerLen) == 0);
+    if (peerDer) OPENSSL_free(peerDer);
+    OPENSSL_free(pinnedDer);
+    if (!pinMatch) {
+        SGLOGE(SGP, "code=%s result=failed reason=pin_mismatch", SGND_PROTOCOL_CONNECT_CERT_FAILED);
+        SGP_DisconnectFromServer();
+        return -10;
+    }
 
     return 0;
 }

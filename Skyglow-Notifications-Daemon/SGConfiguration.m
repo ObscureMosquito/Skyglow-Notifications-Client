@@ -2,6 +2,14 @@
 #import "SGKeychainStore.h"
 #import "SGLog.h"
 
+/* Scrubs a private-key buffer before releasing it so the PEM never lingers in
+ * freed heap memory. */
+static void SG_ZeroAndReleaseData(NSMutableData *data) {
+    if (!data) return;
+    [data resetBytesInRange:NSMakeRange(0, [data length])];
+    [data release];
+}
+
 @implementation SGConfiguration {
     NSString *_serverAddress;
     NSString *_serverIPAddress;
@@ -10,7 +18,7 @@
     BOOL _isEnabled;
     BOOL _hasProfile;
     NSString *_deviceAddress;
-    NSString *_privateKeyPEM;
+    NSMutableData *_privateKeyPEM;
     NSString *_serverPubKeyPEM;
     NSInteger _activeProfileIndex;
     NSInteger _logLevel;
@@ -53,7 +61,7 @@
     BOOL nextHasProfile = NO;
     NSString *nextServerAddress = nil;
     NSString *nextDeviceAddress = nil;
-    NSString *nextPrivateKeyPEM = nil;
+    NSMutableData *nextPrivateKeyPEM = nil;
     NSString *nextServerPubKeyPEM = nil;
 
     NSString *profilePath = SGPath([NSString stringWithFormat:
@@ -63,7 +71,7 @@
         nextHasProfile = YES;
         nextServerAddress = [profilePrefs[@"server_address"] copy];
         nextDeviceAddress = [profilePrefs[@"device_address"] copy];
-        nextPrivateKeyPEM = [SGKeychain_FetchPrivateKeyPEM(nextActiveProfileIndex) copy];
+        nextPrivateKeyPEM = [SGKeychain_FetchPrivateKeyPEM(nextActiveProfileIndex) mutableCopy];
         nextServerPubKeyPEM = [[self readKeyFromFile:profilePrefs[@"server_pub_key"]] copy];
     }
 
@@ -77,7 +85,7 @@
         self->_serverAddress = nextServerAddress;
         [self->_deviceAddress release];
         self->_deviceAddress = nextDeviceAddress;
-        [self->_privateKeyPEM release];
+        SG_ZeroAndReleaseData(self->_privateKeyPEM);
         self->_privateKeyPEM = nextPrivateKeyPEM;
         [self->_serverPubKeyPEM release];
         self->_serverPubKeyPEM = nextServerPubKeyPEM;
@@ -155,7 +163,7 @@
     [_serverIPAddress release];
     [_serverPort release];
     [_deviceAddress release];
-    [_privateKeyPEM release];
+    SG_ZeroAndReleaseData(_privateKeyPEM);
     [_serverPubKeyPEM release];
     if (_isolationQueue) dispatch_release(_isolationQueue);
     [super dealloc];
@@ -227,10 +235,12 @@
     return [result autorelease];
 }
 
-- (NSString *)privateKeyPEM {
-    __block NSString *result = nil;
+- (NSData *)privateKeyPEM {
+    __block NSData *result = nil;
     dispatch_sync(_isolationQueue, ^{
-        result = [self->_privateKeyPEM retain];
+        if (self->_privateKeyPEM) {
+            result = [[NSData alloc] initWithData:self->_privateKeyPEM];
+        }
     });
     return [result autorelease];
 }

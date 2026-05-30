@@ -8,11 +8,10 @@
 #include <openssl/err.h>
 
 RSA *SG_CryptoGetClientPrivateKey(void) {
-    NSString *keyString = [[SGConfiguration sharedConfiguration] privateKeyPEM];
-    if (!keyString || keyString.length == 0) return NULL;
+    NSData *keyData = [[SGConfiguration sharedConfiguration] privateKeyPEM];
+    if (!keyData || keyData.length == 0) return NULL;
 
-    const char *utf8Key = [keyString UTF8String];
-    BIO *bio = BIO_new_mem_buf((void *)utf8Key, (int)strlen(utf8Key));
+    BIO *bio = BIO_new_mem_buf((void *)keyData.bytes, (int)keyData.length);
     if (!bio) return NULL;
 
     RSA *key = PEM_read_bio_RSAPrivateKey(bio, NULL, NULL, NULL);

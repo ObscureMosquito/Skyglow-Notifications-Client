@@ -45,7 +45,9 @@ static inline NSString * SGPath(NSString *path) {
  */
 @property (nonatomic, readonly) NSInteger logLevel;
 @property (nonatomic, readonly, copy) NSString *deviceAddress;
-@property (nonatomic, readonly, copy) NSString *privateKeyPEM;
+/* PEM-encoded RSA private key as raw bytes.  Returned as an immutable snapshot;
+ * the backing store is zeroed on reload/dealloc so the key never lingers. */
+@property (nonatomic, readonly) NSData *privateKeyPEM;
 @property (nonatomic, readonly, copy) NSString *serverPubKeyPEM;
 
 /**

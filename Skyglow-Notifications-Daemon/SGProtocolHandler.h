@@ -13,6 +13,10 @@
 /** Timing (seconds) */
 #define SGP_PONG_TIMEOUT_SEC       15
 #define SGP_CHALLENGE_WINDOW_SEC  300
+/* Bound on a single blocking network operation: the TCP connect wait and the
+ * per-read/write socket timeout.  The daemon's FSM watchdogs derive their
+ * per-state deadlines from this so both layers share one source of truth. */
+#define SGP_NET_OP_TIMEOUT_SEC      10
 
 /** Fixed Field Lengths (bytes) */
 #define SGP_ROUTING_KEY_LEN     32
@@ -191,6 +195,15 @@ void SGP_SendClientDisconnect(void);
  * (TLS connected, keypair generation) failed.
  */
 BOOL SGP_BeginFirstTimeRegistration(void);
+
+/**
+ * Pre-generates the RSA-2048 registration keypair and caches it so the
+ * subsequent SGP_BeginFirstTimeRegistration() is instant rather than blocking
+ * the connection worker for multi-second keygen.  Idempotent and thread-safe:
+ * safe to call from a background queue the moment a connection attempt begins
+ * for an unregistered profile.  No-op once a keypair is cached.
+ */
+void SGP_PrepareRegistrationKeypair(void);
 
 /**
  * Begins the login handshake by sending C_LOGIN with the device address and key.

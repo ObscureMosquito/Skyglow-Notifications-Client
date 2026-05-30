@@ -28,9 +28,9 @@
  *  Overwrites any existing entry.  Returns YES on success. */
 BOOL SGKeychain_StorePrivateKeyPEM(NSString *pem, NSInteger profileIndex);
 
-/** Retrieve the PEM-encoded RSA private key for the given profile slot.
- *  Returns nil if absent or on error. */
-NSString *SGKeychain_FetchPrivateKeyPEM(NSInteger profileIndex);
+/** Retrieve the PEM-encoded RSA private key for the given profile slot as a
+ *  mutable, zeroable NSData.  Returns nil if absent or on error. */
+NSData *SGKeychain_FetchPrivateKeyPEM(NSInteger profileIndex);
 
 /** Delete the keychain entry for the given profile slot.  Returns YES
  *  on success or if the entry was already absent. */

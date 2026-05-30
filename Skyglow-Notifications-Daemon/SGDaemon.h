@@ -11,7 +11,6 @@
 #define SG_MAX_BACKOFF_SECONDS            600
 #define SG_MAX_CONSECUTIVE_FAILURES       14    // ~67 min total retry then stop
 #define SG_MAX_JITTER_SECONDS             5
-#define SG_AUTH_FAILURE_BACKOFF_SECONDS   30
 
 typedef NS_ENUM(NSInteger, SGEvent) {
     // External Triggers

@@ -23,13 +23,27 @@ static const int64_t       kSGDrainSafetyIntervalSec              = 300;
 static const int64_t       kSGDrainSafetyLeewaySec                 =  30;
 static const int64_t       kSGLocalPendingFallbackDeadlineSec      = 86400;
 static const NSUInteger    kSGSeenMessageIDCap                     = 200;
-static const uint32_t      kSGAuthTimeoutSec                       = 30;
-static const uint32_t      kSGDNSWatchdogSec                       = 30;
-static const uint32_t      kSGFSMWatchdogSec                       = 90;
 static const NSTimeInterval kSGNotificationProcessingAssertionSec  = 15.0;
 static NSString * const    kSGProfileCertificateDirectory          = @"/var/mobile/Library/SkyglowNotifications";
 
 typedef struct { SGState from; SGState to; } SGTransition;
+
+/* Per-state watchdog deadlines.  Each transient state gets one bound: if the
+ * FSM has not advanced out of it within `seconds`, `onTimeout` is posted.  All
+ * values derive from SGP_NET_OP_TIMEOUT_SEC (the transport socket timeout) so a
+ * watchdog tracks the work it guards rather than being a guessed number:
+ *   - single network op (DNS lookup, TCP+TLS connect): one op + scheduling slack
+ *   - handshake (auth, register): two network legs (challenge then response)
+ * BackingOff / IdleDNSFailed are deliberately absent: their delay is the
+ * dynamic computed backoff, armed in the entry action, not a fixed deadline. */
+typedef struct { SGState state; SGEvent onTimeout; uint32_t seconds; } SGStateDeadline;
+
+static const SGStateDeadline kSGStateDeadlines[] = {
+    { SGStateResolvingDNS,   SGEventDNSFailed,     SGP_NET_OP_TIMEOUT_SEC + 5 },
+    { SGStateConnecting,     SGEventConnectFailed, SGP_NET_OP_TIMEOUT_SEC + 5 },
+    { SGStateAuthenticating, SGEventAuthTimeout,   SGP_NET_OP_TIMEOUT_SEC * 2 },
+    { SGStateRegistering,    SGEventDisconnected,  SGP_NET_OP_TIMEOUT_SEC * 2 },
+};
 
 static NSString *SGProfileCertificatePathForIndex(NSInteger profileIdx) {
     return [NSString stringWithFormat:@"%@/profile%ld-server.pem",
@@ -496,6 +510,11 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         return;
     }
 
+    /* Every handled arm below drives a transition, which bumps _fsmGeneration.
+     * If the generation is unchanged after dispatch the event was a no-op in
+     * this state — surface it instead of letting it vanish silently. */
+    uint32_t genBeforeDispatch = _fsmGeneration;
+
     switch (currentState) {
         case SGStateStarting:
         case SGStateDisabled:
@@ -571,6 +590,14 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             if (event == SGEventConfigReloaded) {
                 _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
+            } else if (event == SGEventAuthFailed) {
+                /* Wire registration succeeded but the device address / private
+                 * key could not be persisted (e.g. keychain write or reload
+                 * failed).  The half-registered profile is useless — wipe it and
+                 * back off rather than waiting for the registration watchdog. */
+                strlcpy(_lastErrorDetail, "Registration succeeded but key could not be stored", sizeof(_lastErrorDetail));
+                [self performProfileWipeInline];
+                [self executeFailureBackoff];
             } else if (event == SGEventDisconnected) {
                 strlcpy(_lastErrorDetail, "Disconnected during registration", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
@@ -630,7 +657,12 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         default:
             break;
     }
-    
+
+    if (_fsmGeneration == genBeforeDispatch) {
+        SGLOGW(SGDaemon, "code=%s state=%s event=%ld result=no_transition",
+               SGND_FSM_UNHANDLED_EVENT, SGState_GetName(currentState), (long)event);
+    }
+
     [_stateLock unlock];
 }
 
@@ -662,10 +694,18 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     SGLOGD(SGDaemon, "code=%s to=%s generation=%u", SGND_FSM_TRANSITION, SGState_GetName(newState), capturedGen);
 
     if (_controlChannel) {
+        /* Snapshot under the lock so the payload reflects this transition, but
+         * publish off the lock: postEvent can fan out to subscribers and we must
+         * never run their callbacks while holding _stateLock (re-entry would
+         * deadlock).  The serial entry-action queue preserves STATE_CHANGED
+         * ordering and runs the entry action for this state right after. */
         SGStatusPayload snapshot;
         SGStatusServer_Current(&snapshot);
         NSData *payload = [NSData dataWithBytes:&snapshot length:sizeof(snapshot)];
-        [_controlChannel postEvent:SGCEVT_STATE_CHANGED payload:payload];
+        SGControlChannel *channel = _controlChannel;
+        dispatch_async(_entryActionQueue, ^{
+            [channel postEvent:SGCEVT_STATE_CHANGED payload:payload];
+        });
     }
 
     BOOL leavingDisabled = (current.state == SGStateDisabled && newState != SGStateDisabled);
@@ -684,21 +724,29 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         }
 
         switch (newState) {
-            case SGStateResolvingDNS:
+            case SGStateResolvingDNS: {
                 SGP_AbortConnection();
+                /* If this profile has no identity yet it will have to register,
+                 * which needs a fresh RSA-2048 keypair.  Kick keygen now so it
+                 * overlaps DNS + TLS instead of stalling the connection worker
+                 * (and the disable signal) once S_HELLO arrives. */
+                NSString *addr = [[SGConfiguration sharedConfiguration] deviceAddress];
+                if (!addr || addr.length == 0) {
+                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        SGP_PrepareRegistrationKeypair();
+                    });
+                }
                 [self performDNSResolution];
                 break;
+            }
             case SGStateConnecting:
                 [self performSocketConnection];
-                [self scheduleTimerForEvent:SGEventConnectFailed delay:kSGFSMWatchdogSec generation:capturedGen];
                 break;
             case SGStateAuthenticating:
                 [self startConnectionScopedWorker];
-                [self scheduleTimerForEvent:SGEventAuthTimeout delay:kSGAuthTimeoutSec generation:capturedGen];
                 break;
-            case SGStateRegistering:
-                [self scheduleTimerForEvent:SGEventDisconnected delay:kSGFSMWatchdogSec generation:capturedGen];
-                break;
+            /* SGStateRegistering has no entry action of its own — its watchdog,
+             * like every transient state's, is armed from the deadline table. */
             case SGStateConnected:
                 [self _scheduleKeepAliveTimer];
                 break;
@@ -725,6 +773,22 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             [self _exitActiveMode];
         }
     });
+
+    /* Arm this state's watchdog from the unified deadline table.  States with a
+     * dynamic delay (BackingOff / IdleDNSFailed) arm their own timer in the
+     * entry action above and are intentionally not in the table. */
+    [self armWatchdogForState:newState generation:capturedGen];
+}
+
+- (void)armWatchdogForState:(SGState)state generation:(uint32_t)generation {
+    for (size_t i = 0; i < sizeof(kSGStateDeadlines) / sizeof(kSGStateDeadlines[0]); i++) {
+        if (kSGStateDeadlines[i].state == state) {
+            [self scheduleTimerForEvent:kSGStateDeadlines[i].onTimeout
+                                  delay:kSGStateDeadlines[i].seconds
+                             generation:generation];
+            return;
+        }
+    }
 }
 
 - (void)executeFailureBackoff {
@@ -1523,8 +1587,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     uint32_t gen = _fsmGeneration;
     [_stateLock unlock];
 
-    [self scheduleTimerForEvent:SGEventDNSFailed delay:kSGDNSWatchdogSec generation:gen];
-
+    /* The ResolvingDNS watchdog is armed centrally from the deadline table in
+     * executeTransitionToState; this method only performs the lookup. */
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSDictionary *txt = [SGServerLocator resolveEndpointForServerAddress:address];
 
