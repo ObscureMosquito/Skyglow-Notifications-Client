@@ -4,9 +4,9 @@
 #include <pthread.h>
 #include <string.h>
 #include <stddef.h>
+#include <sys/sysctl.h>
+#include <unistd.h>
 
-/* MRC/ARC bridge: daemon + SB tweak are MRC, prefs bundle is ARC.  ARC
- * collapses these to no-ops; under MRC they emit the explicit calls.
  * dispatch_release is guarded the same way (forbidden under OS_OBJECT_USE_OBJC). */
 #if __has_feature(objc_arc)
   #define SGC_RELEASE(x)            do { (void)(x); } while (0)
@@ -21,13 +21,13 @@
   #define SGC_PIN(x)                [[(x) retain] autorelease]
   #define SGC_DISPATCH_RELEASE(x)   dispatch_release(x)
 #endif
-
-/* Timing bounds are shared with callers via SGControlChannelProtocol.h. */
 #define kSGCDefaultTimeoutSec    SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC
 #define kSGCSendTimeoutMs        ((mach_msg_timeout_t)SG_CONTROL_SEND_TIMEOUT_MS)
 
 #define SGC_RECV_TRAILER_BYTES   256     // kernel-trailer padding for mach_msg recv
 #define SGC_RECV_BACKOFF_USEC    10000   // recv-loop nap when port is transiently NULL
+#define SGC_MAX_SUBSCRIPTIONS    64      // hard cap on live subscriptions (memory-DoS bound)
+#define SGC_MAX_PENDING_QUEUE    256     // hard cap on requests queued while disconnected
 
 @implementation SGControlChannel {
     BOOL                   _isServer;
@@ -385,6 +385,12 @@ static void *SGCRecvThreadEntry(void *arg) {
         if (_connected) {
             [self _clientDispatchRequestLocked:rid type:messageType payload:payloadCopy];
         } else {
+            if ([_pendingQueue count] >= SGC_MAX_PENDING_QUEUE) {
+                NSDictionary *oldest = [_pendingQueue objectAtIndex:0];
+                uint64_t oldRid = [oldest[@"rid"] unsignedLongLongValue];
+                [_pendingQueue removeObjectAtIndex:0];
+                [self _clientFailPendingRequestLocked:oldRid error:SGCERR_DAEMON_BUSY];
+            }
             NSMutableDictionary *queued = [NSMutableDictionary dictionary];
             queued[@"rid"] = @(rid);
             queued[@"type"] = @(messageType);
@@ -486,8 +492,11 @@ static void *SGCRecvThreadEntry(void *arg) {
         if (!msg) { usleep(SGC_RECV_BACKOFF_USEC); continue; }
         memset(msg, 0, bufSize);
 
-        kern_return_t kr = mach_msg(&msg->mach_header, MACH_RCV_MSG, 0,
-                                    (mach_msg_size_t)bufSize, port,
+        kern_return_t kr = mach_msg(&msg->mach_header,
+                                    MACH_RCV_MSG |
+                                    MACH_RCV_TRAILER_TYPE(MACH_RCV_TRAILER_AUDIT) |
+                                    MACH_RCV_TRAILER_ELEMENTS(MACH_RCV_TRAILER_AUDIT),
+                                    0, (mach_msg_size_t)bufSize, port,
                                     MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
         if (kr != KERN_SUCCESS) {
             free(msg);
@@ -505,14 +514,32 @@ static void *SGCRecvThreadEntry(void *arg) {
     }
 }
 
+static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, uid_t *outEuid) {
+    mach_msg_audit_trailer_t *trailer =
+        (mach_msg_audit_trailer_t *)((uint8_t *)&msg->mach_header +
+                                     round_msg(msg->mach_header.msgh_size));
+    if (outPid) *outPid = -1;
+    if (outEuid) *outEuid = (uid_t)-1;
+    if (trailer->msgh_trailer_size < sizeof(mach_msg_audit_trailer_t)) return YES;
+    uid_t euid = (uid_t)trailer->msgh_audit.val[1];
+    pid_t pid  = (pid_t)trailer->msgh_audit.val[5];
+    if (outPid) *outPid = pid;
+    if (outEuid) *outEuid = euid;
+    return (euid == 0);
+}
+
 - (void)_dispatchIncomingMessageLocked:(SGControlChannelMessage *)msg {
     if (_stopping) return;
 
     mach_msg_id_t mid = msg->mach_header.msgh_id;
 
-    /* Dead-name body is mach_dead_name_notification_t, not our envelope —
-     * recognise by id alone and never read SGControlChannel fields from it. */
     if (mid == MACH_NOTIFY_DEAD_NAME) {
+        pid_t spid; uid_t seuid;
+        if (!SGCDeadNameIsAuthentic(msg, &spid, &seuid)) {
+            SGLOGW(SGControlChannel, "code=%s reason=forged_dead_name pid=%d euid=%d action=discard",
+                   SGND_CONTROL_UNAUTHORIZED, (int)spid, (int)seuid);
+            return;
+        }
         if (_isServer) [self _serverHandleDeadNameLocked:msg];
         else           [self _clientHandleDeadNameLocked:msg];
         return;
@@ -564,14 +591,70 @@ static void *SGCRecvThreadEntry(void *arg) {
 
 #pragma mark - Server-Side Dispatch
 
+
+static const char * const kSGCAllowedSenderNames[] = { "SpringBoard", "Preferences", "Settings" };
+
+static BOOL SGCResolveSenderName(pid_t pid, char *out, size_t outLen) {
+    if (!out || outLen == 0) return NO;
+    out[0] = '\0';
+    if (pid <= 0) return NO;
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, pid };
+    struct kinfo_proc kp;
+    size_t len = sizeof(kp);
+    if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0 || len == 0) return NO;
+    strlcpy(out, kp.kp_proc.p_comm, outLen);
+    return (out[0] != '\0');
+}
+
+static BOOL SGCSenderAuthorized(uid_t euid, const char *senderName) {
+    if (euid == 0) return YES;                 /* our own root command-line tools */
+    if (!senderName || senderName[0] == '\0') return NO;
+    for (size_t i = 0; i < sizeof(kSGCAllowedSenderNames) / sizeof(kSGCAllowedSenderNames[0]); i++) {
+        if (strcmp(senderName, kSGCAllowedSenderNames[i]) == 0) return YES;
+    }
+    return NO;
+}
+
 - (void)_serverDispatchRequestLocked:(SGControlChannelMessage *)msg {
     mach_port_t replyPort = msg->mach_header.msgh_remote_port;
     SGControlMessageType type = (SGControlMessageType)msg->messageType;
     uint64_t requestId = msg->requestId;
 
-    /* First request from this client: retain the send right + register a
-     * dead-name notification.  Subsequent requests just drop the duplicate
-     * send right we received. */
+    {
+        mach_msg_audit_trailer_t *trailer =
+            (mach_msg_audit_trailer_t *)((uint8_t *)&msg->mach_header +
+                                         round_msg(msg->mach_header.msgh_size));
+        BOOL haveToken = (trailer->msgh_trailer_size >= sizeof(mach_msg_audit_trailer_t));
+
+        if (!haveToken) {
+            SGLOGW(SGControlChannel, "code=%s type=0x%02x result=allowed_unenforced",
+                   SGND_CONTROL_AUTH_UNENFORCED, type);
+        } else {
+            uid_t senderEuid = (uid_t)trailer->msgh_audit.val[1];
+            pid_t senderPid  = (pid_t)trailer->msgh_audit.val[5];
+            char  senderName[32];
+            SGCResolveSenderName(senderPid, senderName, sizeof(senderName));
+
+            if (!SGCSenderAuthorized(senderEuid, senderName)) {
+                SGLOGW(SGControlChannel,
+                       "code=%s type=0x%02x pid=%d euid=%d sender=%s result=denied",
+                       SGND_CONTROL_UNAUTHORIZED, type, (int)senderPid, (int)senderEuid,
+                       senderName[0] ? senderName : "(unknown)");
+                SGCErrorResponsePayload err;
+                memset(&err, 0, sizeof(err));
+                SGCCopyCString(err.message, sizeof(err.message), "unauthorized sender");
+                SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
+                               SGCMSG_ERROR_RESPONSE, 0, SGCERR_UNAUTHORIZED,
+                               requestId, 0, &err, sizeof(err));
+                if (MACH_PORT_VALID(replyPort)) mach_port_deallocate(mach_task_self(), replyPort);
+                return;
+            }
+            SGLOGD(SGControlChannel, "code=%s type=0x%02x pid=%d sender=%s result=allowed",
+                   SGND_CONTROL_AUTH_UNENFORCED, type, (int)senderPid,
+                   senderName[0] ? senderName : "(root)");
+        }
+    }
+
     NSNumber *portKey = @(replyPort);
     if (![_clientPorts containsObject:portKey]) {
         [_clientPorts addObject:portKey];
@@ -609,6 +692,16 @@ static void *SGCRecvThreadEntry(void *arg) {
      * dispatched block owns its lifetime and frees regardless of whether
      * the handler responds. */
     SGControlChannelMessage *requestCopy = (SGControlChannelMessage *)malloc(sizeof(*msg));
+    if (!requestCopy) {
+        SGLOGW(SGControlChannel, "code=%s type=0x%02x result=oom", SGND_CONTROL_ALLOC_FAILED, type);
+        SGCErrorResponsePayload err;
+        memset(&err, 0, sizeof(err));
+        SGCCopyCString(err.message, sizeof(err.message), "daemon out of memory");
+        SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
+                       SGCMSG_ERROR_RESPONSE, 0, SGCERR_INTERNAL,
+                       requestId, 0, &err, sizeof(err));
+        return;
+    }
     memcpy(requestCopy, msg, sizeof(*msg));
 
     SGControlReplyBlock reply = ^(SGControlMessageType respType, NSData *respPayload) {
@@ -642,6 +735,16 @@ static void *SGCRecvThreadEntry(void *arg) {
                        &err, sizeof(err));
         return;
     }
+    if ([_subscriptions count] >= SGC_MAX_SUBSCRIPTIONS) {
+        SGLOGW(SGControlChannel, "code=%s reason=subscription_cap count=%lu action=reject",
+               SGND_CONTROL_UNAUTHORIZED, (unsigned long)[_subscriptions count]);
+        SGCErrorResponsePayload err; memset(&err, 0, sizeof(err));
+        SGCCopyCString(err.message, sizeof(err.message), "subscription limit reached");
+        SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
+                       SGCMSG_ERROR_RESPONSE, 0, SGCERR_DAEMON_BUSY, msg->requestId, 0,
+                       &err, sizeof(err));
+        return;
+    }
     SGCSubscribePayload *sub = (SGCSubscribePayload *)msg->payload;
     uint64_t subId = _nextSubscriptionId++;
     _subscriptions[@(subId)] = @{ @"port": @(replyPort), @"event": @(sub->eventType) };
@@ -660,12 +763,6 @@ static void *SGCRecvThreadEntry(void *arg) {
 }
 
 - (void)_serverHandleDeadNameLocked:(SGControlChannelMessage *)msg {
-    /**
-     * mach_dead_name_notification_t carries the dying port name in the
-     * first port descriptor.  We use a tolerant read against our envelope's
-     * payload area since the wire format is compact and the field offsets
-     * are stable across Mach versions.
-     */
     mach_dead_name_notification_t *note = (mach_dead_name_notification_t *)msg;
     mach_port_t deadPort = note->not_port;
 
@@ -713,7 +810,6 @@ static void *SGCRecvThreadEntry(void *arg) {
     }
     _lookupFailureCount = 0;
 
-    /* Dead-name notification fires to our reply port if the server dies. */
     mach_port_t prev = MACH_PORT_NULL;
     mach_port_request_notification(mach_task_self(), _serverPort, MACH_NOTIFY_DEAD_NAME, 0,
                                    _replyPort, MACH_MSG_TYPE_MAKE_SEND_ONCE, &prev);
@@ -848,8 +944,18 @@ static void *SGCRecvThreadEntry(void *arg) {
     SGControlError err = (msg->messageType == SGCMSG_ERROR_RESPONSE)
         ? (SGControlError)msg->errorCode : SGCERR_OK;
 
-    /* Heap-copy the response so the completion block can outlive this frame. */
     SGControlChannelMessage *responseCopy = (SGControlChannelMessage *)malloc(sizeof(*msg));
+    if (!responseCopy) {
+        id oomComp = entry[@"completion"];
+        if (oomComp && oomComp != [NSNull null]) {
+            SGControlClientCompletion compCopy = [(SGControlClientCompletion)oomComp copy];
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                compCopy(SGCERR_INTERNAL, NULL);
+                SGC_RELEASE(compCopy);
+            });
+        }
+        return;
+    }
     memcpy(responseCopy, msg, sizeof(*msg));
 
     id comp = entry[@"completion"];

@@ -43,11 +43,18 @@
             return nil;
         }
 
-        chmod([dbPath UTF8String], 0644);
+        sqlite3_busy_timeout(_database, 3000);
+
+        chmod([dbPath UTF8String], 0600);
         chown([dbPath UTF8String], 501, 501);
 
         sqlite3_exec(_database, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
         sqlite3_exec(_database, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
+
+        chmod([[dbPath stringByAppendingString:@"-wal"] UTF8String], 0600);
+        chmod([[dbPath stringByAppendingString:@"-shm"] UTF8String], 0600);
+        chown([[dbPath stringByAppendingString:@"-wal"] UTF8String], 501, 501);
+        chown([[dbPath stringByAppendingString:@"-shm"] UTF8String], 501, 501);
 
         char *errorMsg = NULL;
         const char *notifTable = "CREATE TABLE IF NOT EXISTS notifications "
@@ -127,8 +134,14 @@
 
         char stamp[64];
         snprintf(stamp, sizeof(stamp), "PRAGMA user_version = %d", targetVersion);
-        sqlite3_exec(_database, stamp, NULL, NULL, NULL);
-        sqlite3_exec(_database, "COMMIT", NULL, NULL, NULL);
+
+        if (sqlite3_exec(_database, stamp, NULL, NULL, NULL) != SQLITE_OK ||
+            sqlite3_exec(_database, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+            SGLOGE(SGDatabaseManager, "code=%s from=%d to=%d result=failed reason=commit", SGND_DATABASE_MIGRATION_FAILED,
+                        currentVersion, targetVersion);
+            sqlite3_exec(_database, "ROLLBACK", NULL, NULL, NULL);
+            return;
+        }
 
         SGLOGI(SGDatabaseManager, "code=%s from=%d to=%d result=ok", SGND_DATABASE_MIGRATED, currentVersion, targetVersion);
         currentVersion = targetVersion;
@@ -136,7 +149,7 @@
 }
 
 - (void)dealloc {
-    if (_database) sqlite3_close(_database);
+    [self closeDatabase];
     if (_databaseQueue) dispatch_release(_databaseQueue);
     [super dealloc];
 }

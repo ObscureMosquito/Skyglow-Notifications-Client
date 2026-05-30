@@ -43,13 +43,13 @@ int main(int argc, char *argv[]) {
         SGConfiguration *config = [SGConfiguration sharedConfiguration];
         SGLog_SetMinLevel((SGLogLevel)[config logLevel]);
 
-        int pid_fd = open([SGPath(SG_PID_PATH) UTF8String], O_RDWR | O_CREAT, 0666);
+        int pid_fd = open([SGPath(SG_PID_PATH) UTF8String], O_RDWR | O_CREAT | O_NOFOLLOW, 0644);
         if (pid_fd < 0) {
             SGLOGE(Skyglow, "code=%s path=%s result=failed errno=%d", SGND_DAEMON_PID_FILE_FAILED, [SGPath(SG_PID_PATH) UTF8String], errno);
             exit(EXIT_FAILURE);
         }
 
-        fchmod(pid_fd, 0666);
+        fchmod(pid_fd, 0644);
 
         if (flock(pid_fd, LOCK_EX | LOCK_NB) != 0) {
             SGLOGE(Skyglow, "code=%s path=%s result=exiting errno=%d", SGND_DAEMON_ALREADY_RUNNING, [SGPath(SG_PID_PATH) UTF8String], errno);

@@ -1675,22 +1675,24 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         SGLOGI(SGDaemon, "code=%s result=started", SGND_PROTOCOL_WORKER_STARTED);
         while (SGP_IsConnected()) {
-            [self->_stateLock lock];
-            double pingInterval = [self _currentKeepAliveInterval];
-            [self->_stateLock unlock];
-            
-            int rc = SGP_ProcessNextIncomingMessage(pingInterval);
-            
-            if (rc != SGP_OK) {
-                SGLOGI(SGDaemon, "code=%s rc=%d name=%s result=exited", SGND_PROTOCOL_WORKER_EXITED, rc, SGP_ErrorName(rc));
-                if (rc == SGP_ERR_AUTH) {
-                    [self handleEvent:SGEventAuthFailed payload:nil];
-                } else if (rc == SGP_ERR_VERSION_MISMATCH) {
-                    [self handleEvent:SGEventVersionMismatch payload:nil];
-                } else {
-                    [self handleEvent:SGEventDisconnected payload:nil];
+            @autoreleasepool {
+                [self->_stateLock lock];
+                double pingInterval = [self _currentKeepAliveInterval];
+                [self->_stateLock unlock];
+
+                int rc = SGP_ProcessNextIncomingMessage(pingInterval);
+
+                if (rc != SGP_OK) {
+                    SGLOGI(SGDaemon, "code=%s rc=%d name=%s result=exited", SGND_PROTOCOL_WORKER_EXITED, rc, SGP_ErrorName(rc));
+                    if (rc == SGP_ERR_AUTH) {
+                        [self handleEvent:SGEventAuthFailed payload:nil];
+                    } else if (rc == SGP_ERR_VERSION_MISMATCH) {
+                        [self handleEvent:SGEventVersionMismatch payload:nil];
+                    } else {
+                        [self handleEvent:SGEventDisconnected payload:nil];
+                    }
+                    break;
                 }
-                break;
             }
         }
         dispatch_async(self->_entryActionQueue, ^{

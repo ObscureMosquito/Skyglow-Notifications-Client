@@ -7,8 +7,15 @@
     SGReachabilityChangeHandler _handler;
 }
 
+static const void *SGReachabilityRetain(const void *info) {
+    return [(SGReachabilityMonitor *)info retain];
+}
+static void SGReachabilityRelease(const void *info) {
+    [(SGReachabilityMonitor *)info release];
+}
+
 static void SGReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) {
-    SGReachabilityMonitor *monitor = (__bridge SGReachabilityMonitor *)info;
+    SGReachabilityMonitor *monitor = (SGReachabilityMonitor *)info;
     BOOL reachable = (flags & kSCNetworkFlagsReachable) && !(flags & kSCNetworkFlagsConnectionRequired);
     BOOL isWWAN = (flags & kSCNetworkReachabilityFlagsIsWWAN);
     
@@ -35,8 +42,14 @@ static void SGReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkRea
     zeroAddr.sin_family = AF_INET;
 
     _reachabilityRef = SCNetworkReachabilityCreateWithAddress(NULL, (const struct sockaddr *)&zeroAddr);
-    SCNetworkReachabilityContext ctx = {0, (__bridge void *)self, NULL, NULL, NULL};
-    SCNetworkReachabilitySetCallback(_reachabilityRef, SGReachabilityCallback, &ctx);
+    if (!_reachabilityRef) return;
+
+    SCNetworkReachabilityContext ctx = {0, (void *)self, SGReachabilityRetain, SGReachabilityRelease, NULL};
+    if (!SCNetworkReachabilitySetCallback(_reachabilityRef, SGReachabilityCallback, &ctx)) {
+        CFRelease(_reachabilityRef);
+        _reachabilityRef = NULL;
+        return;
+    }
 
     /**
      * Use RunLoop scheduling rather than a dispatch queue.

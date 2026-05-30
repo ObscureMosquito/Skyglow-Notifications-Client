@@ -3,8 +3,28 @@
 #import "SGConfiguration.h"
 #import "SGLog.h"
 #include <dns_sd.h>
+#include <arpa/inet.h>
 
 #define DNS_CACHE_MAX_AGE_SECONDS 3600.0
+
+
+static BOOL SG_DNSEndpointValid(NSString *ip, NSString *port) {
+    if (!ip || !port) return NO;
+
+    struct in_addr a4; struct in6_addr a6;
+    const char *ipc = [ip UTF8String];
+    if (!ipc) return NO;
+    if (inet_pton(AF_INET, ipc, &a4) != 1 && inet_pton(AF_INET6, ipc, &a6) != 1) return NO;
+
+    NSUInteger n = [port length];
+    if (n == 0 || n > 5) return NO;
+    for (NSUInteger i = 0; i < n; i++) {
+        unichar c = [port characterAtIndex:i];
+        if (c < '0' || c > '9') return NO;
+    }
+    int p = [port intValue];
+    return (p > 0 && p <= 65535);
+}
 
 @implementation SGServerLocator
 
@@ -19,16 +39,16 @@
     SGLOGI(SGServerLocator, "code=%s name=%s", SGND_DNS_LOOKUP_STARTED, [dnsName UTF8String]);
     NSDictionary *txt = [self performLiveDNSLookup:dnsName];
 
-    if (txt && txt[@"tcp_addr"] && txt[@"tcp_port"]) {
+    if (txt && SG_DNSEndpointValid(txt[@"tcp_addr"], txt[@"tcp_port"])) {
         SGLOGI(SGServerLocator, "code=%s name=%s ip=%s port=%s result=ok", SGND_DNS_LOOKUP_SUCCEEDED,
                     [dnsName UTF8String], [txt[@"tcp_addr"] UTF8String],
                     [txt[@"tcp_port"] UTF8String]);
         [[SGDatabaseManager sharedManager] storeDNSCacheForDomain:dnsName ip:txt[@"tcp_addr"] port:txt[@"tcp_port"]];
-    } else {
-        SGLOGW(SGServerLocator, "code=%s name=%s result=failed", SGND_DNS_LOOKUP_FAILED, [dnsName UTF8String]);
+        return txt;
     }
-    
-    return txt;
+
+    SGLOGW(SGServerLocator, "code=%s name=%s result=failed", SGND_DNS_LOOKUP_FAILED, [dnsName UTF8String]);
+    return nil;
 }
 
 + (void)refreshDNSCacheAsynchronouslyForAddress:(NSString *)serverAddress {
@@ -59,12 +79,14 @@ static void DNSSD_API query_callback(DNSServiceRef sdRef, DNSServiceFlags flags,
                 
                 for (NSString *comp in components) {
                     NSRange range = [comp rangeOfString:@"="];
-                    if (range.location != NSNotFound) {
-                        NSString *key = [comp substringToIndex:range.location];
-                        NSString *val = [comp substringFromIndex:range.location + 1];
-                        [results setObject:val forKey:key];
-                        SGLOGD(SGServerLocator, "code=%s key=%s value=%s", SGND_DNS_TXT_PARSED, [key UTF8String], [val UTF8String]);
-                    }
+                    if (range.location == NSNotFound) continue;
+                    NSString *key = [comp substringToIndex:range.location];
+                    NSString *val = [comp substringFromIndex:range.location + 1];
+
+                    if (![key isEqualToString:@"tcp_addr"] && ![key isEqualToString:@"tcp_port"]) continue;
+                    if ([val length] == 0 || [results objectForKey:key]) continue;
+                    [results setObject:val forKey:key];
+                    SGLOGD(SGServerLocator, "code=%s key=%s value=%s", SGND_DNS_TXT_PARSED, [key UTF8String], [val UTF8String]);
                 }
             }
             ptr += len;
@@ -97,7 +119,7 @@ static void DNSSD_API query_callback(DNSServiceRef sdRef, DNSServiceFlags flags,
         int sel = select(dns_fd + 1, &readfds, NULL, NULL, &tv);
         if (sel > 0 && FD_ISSET(dns_fd, &readfds)) {
             DNSServiceProcessResult(sdRef);
-            if (results.count > 0) done = YES; 
+            if (results[@"tcp_addr"] && results[@"tcp_port"]) done = YES;
         } else if (sel < 0 && errno != EINTR) {
             break;
         }

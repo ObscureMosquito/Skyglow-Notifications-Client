@@ -30,11 +30,15 @@ typedef enum : uint32_t {
 } SGState;
 
 /**
- * Fixed-size binary packet for IPC status communication.
+ * Fixed-size binary status snapshot.
  *
- * IMPORTANT: Both the daemon and the preference bundle read/write this struct
- * across a Unix socket.  They ship in the same .deb so the sizes always match.
- * If you change this struct, rebuild BOTH targets.
+ * The daemon serialises this struct verbatim over the control channel (Mach):
+ * SGCMSG_QUERY_STATUS replies and SGCEVT_STATE_CHANGED events carry its raw
+ * bytes, which the preference bundle reads back.  (There is no Unix socket —
+ * that transport was removed; see SGStatusServer.c.)  #pragma pack(4) fixes the
+ * layout so it is identical under 32-bit (armv7) and 64-bit (arm64); daemon and
+ * Settings share an arch per device.  They ship in the same .deb, so sizes
+ * always match — if you change this struct, rebuild BOTH targets.
  */
 #pragma pack(4)
 typedef struct {

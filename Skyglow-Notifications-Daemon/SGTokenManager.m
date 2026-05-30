@@ -43,7 +43,6 @@
 
     NSString *salt = [NSString stringWithFormat:@"%@Hello from the Skyglow Notifications developers!", serverAddr];
     NSData *e2eeKey = SG_CryptoDeriveE2EEKey([NSData dataWithBytes:K length:16], salt, 32);
-
     NSData *addrData = [serverAddr dataUsingEncoding:NSUTF8StringEncoding];
     NSMutableData *deviceToken = [[NSMutableData alloc] initWithLength:32];
     uint8_t *ptr = [deviceToken mutableBytes];

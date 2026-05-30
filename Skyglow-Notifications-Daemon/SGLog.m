@@ -188,12 +188,14 @@ void SGLog_Write(SGLogLevel level, const char *tag, const char *fmt, ...) {
             SG_RotateLocked();
         }
     }
+
+    aslclient aslSnapshot = _aslClient;
     pthread_mutex_unlock(&_logLock);
 
     if (_syslogEnabled) {
         int aslLevel = _aslLevels[level];
         if (aslLevel >= 0) {
-            asl_log(_aslClient, NULL, aslLevel, "[%s] %s", safeTag, body);
+            asl_log(aslSnapshot, NULL, aslLevel, "[%s] %s", safeTag, body);
         }
     }
 }
