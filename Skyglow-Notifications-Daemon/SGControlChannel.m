@@ -7,7 +7,6 @@
 #include <sys/sysctl.h>
 #include <unistd.h>
 
- * dispatch_release is guarded the same way (forbidden under OS_OBJECT_USE_OBJC). */
 #if __has_feature(objc_arc)
   #define SGC_RELEASE(x)            do { (void)(x); } while (0)
   #define SGC_RETAIN(x)             (x)
@@ -32,7 +31,6 @@
 @implementation SGControlChannel {
     BOOL                   _isServer;
     char                  *_serviceName;          /* strdup'd; freed in dealloc */
-
     BOOL                   _started;
     volatile BOOL          _stopping;
 
@@ -53,16 +51,8 @@
     uint64_t               _nextRequestId;
     uint32_t               _lookupFailureCount;
     SGControlConnectionHandler _connectionHandler;
-
-    /* Receive thread */
     pthread_t              _recvThread;
     BOOL                   _recvThreadCreated;
-
-    /* Serial queue protecting all mutable state.  Receive thread dispatches
-     * incoming messages here; public API methods dispatch state mutations
-     * here.  Caller handlers (completions, event handlers) are fanned out
-     * to the global concurrent queue from inside, so they never hold the
-     * state queue. */
     dispatch_queue_t       _stateQueue;
 }
 

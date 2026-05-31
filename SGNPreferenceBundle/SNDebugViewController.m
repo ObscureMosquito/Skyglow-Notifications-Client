@@ -89,12 +89,17 @@ typedef enum {
         [self showAlert:@"Error" message:@"sndrestart binary not found in bundle."];
         return;
     }
-    pid_t pid = 0;
-    const char *cpath = [path fileSystemRepresentation];
-    char *const args[] = { (char *)cpath, NULL };
-    if (posix_spawn(&pid, cpath, NULL, NULL, args, environ) == 0) {
-        waitpid(pid, NULL, 0);
-    }
+
+    NSString *pathCopy = [path copy];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        pid_t pid = 0;
+        const char *cpath = [pathCopy fileSystemRepresentation];
+        char *const args[] = { (char *)cpath, NULL };
+        if (posix_spawn(&pid, cpath, NULL, NULL, args, environ) == 0) {
+            waitpid(pid, NULL, 0);
+        }
+        [pathCopy release];
+    });
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -357,6 +362,7 @@ typedef enum {
 
     NSDictionary *app = _savedApps[indexPath.row];
     NSString *bundleId = [[app[@"bundleID"] copy] autorelease];
+    if (![bundleId isKindOfClass:[NSString class]] || bundleId.length == 0) return;  /* addObject:nil would throw */
     NSIndexPath *capturedPath = [[indexPath copy] autorelease];
 
     [tableView setEditing:NO animated:YES];

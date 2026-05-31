@@ -60,7 +60,8 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
         [exclude unionSet:dbBundleIDs];
 
         NSMutableArray *filtered = [NSMutableArray array];
-        for (NSString *bid in bundleIds) {
+        for (id bid in bundleIds) {
+            if (![bid isKindOfClass:[NSString class]] || [bid length] == 0) continue;
             if (![exclude containsObject:bid]) [filtered addObject:bid];
         }
         NSArray *sorted = [filtered sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)];

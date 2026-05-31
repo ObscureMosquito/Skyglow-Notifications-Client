@@ -6,8 +6,17 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 #include <openssl/bio.h>
+#include <openssl/sha.h>
 #include <unistd.h>
 #include <dns_sd.h>
+
+static NSString *SNSafeUTF8(const char *s) {
+    if (!s) return @"";
+    NSString *r = [NSString stringWithUTF8String:s];
+    if (r) return r;
+    r = [[[NSString alloc] initWithCString:s encoding:NSISOLatin1StringEncoding] autorelease];
+    return r ?: @"";
+}
 
 static const NSTimeInterval kSNAutoFetchDNSTimeoutSec  = 5.0;
 static const NSTimeInterval kSNAutoFetchHTTPTimeoutSec = 10.0;
@@ -196,7 +205,7 @@ static sqlite3 *openDBReadOnly(void) {
             int rLen = sqlite3_column_bytes(stmt, 2);
             if (bID) {
                 [results addObject:@{
-                    @"bundleID": [NSString stringWithUTF8String:bID],
+                    @"bundleID": SNSafeUTF8(bID),
                     @"token": (tData && tLen > 0) ? [NSData dataWithBytes:tData length:tLen] : [NSData data],
                     @"routingKey": (rData && rLen > 0) ? [NSData dataWithBytes:rData length:rLen] : [NSData data],
                 }];
@@ -216,7 +225,7 @@ static sqlite3 *openDBReadOnly(void) {
     if (sqlite3_prepare_v2(db, "SELECT DISTINCT bundle_id FROM notifications", -1, &stmt, NULL) == SQLITE_OK) {
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             const char *bID = (const char *)sqlite3_column_text(stmt, 0);
-            if (bID) [ids addObject:[NSString stringWithUTF8String:bID]];
+            if (bID) [ids addObject:SNSafeUTF8(bID)];
         }
     }
     if (stmt) sqlite3_finalize(stmt);
@@ -267,7 +276,7 @@ static sqlite3 *openDBReadOnly(void) {
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             const char *ip = (const char *)sqlite3_column_text(stmt, 0);
             const char *port = (const char *)sqlite3_column_text(stmt, 1);
-            if (ip && port) result = @{@"ip": [NSString stringWithUTF8String:ip], @"port": [NSString stringWithUTF8String:port]};
+            if (ip && port) result = @{@"ip": SNSafeUTF8(ip), @"port": SNSafeUTF8(port)};
         }
     }
     if (stmt) sqlite3_finalize(stmt);
@@ -292,7 +301,7 @@ static sqlite3 *openDBReadOnly(void) {
             ASN1_STRING *data = X509_NAME_ENTRY_get_data(X509_NAME_get_entry(subjectName, idx));
             unsigned char *utf8 = NULL;
             if (ASN1_STRING_to_UTF8(&utf8, data) > 0 && utf8) {
-                [info setObject:[NSString stringWithUTF8String:(char *)utf8] forKey:@"subject"];
+                [info setObject:SNSafeUTF8((char *)utf8) forKey:@"subject"];
                 OPENSSL_free(utf8);
             }
         }
@@ -305,11 +314,24 @@ static sqlite3 *openDBReadOnly(void) {
             ASN1_STRING *data = X509_NAME_ENTRY_get_data(X509_NAME_get_entry(issuerName, idx));
             unsigned char *utf8 = NULL;
             if (ASN1_STRING_to_UTF8(&utf8, data) > 0 && utf8) {
-                [info setObject:[NSString stringWithUTF8String:(char *)utf8] forKey:@"issuer"];
+                [info setObject:SNSafeUTF8((char *)utf8) forKey:@"issuer"];
                 OPENSSL_free(utf8);
             }
         }
     }
+
+    unsigned char *der = NULL;
+    int derLen = i2d_X509(cert, &der);
+    if (der && derLen > 0) {
+        unsigned char md[SHA256_DIGEST_LENGTH];
+        SHA256(der, (size_t)derLen, md);
+        NSMutableString *fp = [NSMutableString stringWithCapacity:SHA256_DIGEST_LENGTH * 3];
+        for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+            [fp appendFormat:(i == 0 ? @"%02X" : @":%02X"), md[i]];
+        }
+        [info setObject:fp forKey:@"fingerprint"];
+    }
+    if (der) OPENSSL_free(der);
 
     X509_free(cert);
     return info;
@@ -321,7 +343,7 @@ static void SNAutoFetch_DNSCallback(DNSServiceRef sdRef, DNSServiceFlags flags,
                                     uint32_t interfaceIndex, DNSServiceErrorType errorCode,
                                     const char *fullname, uint16_t rrtype, uint16_t rrclass,
                                     uint16_t rdlen, const void *rdata, uint32_t ttl, void *context) {
-    NSMutableDictionary *out = (__bridge NSMutableDictionary *)context;
+    NSMutableDictionary *out = (NSMutableDictionary *)context;   /* plain cast — this is an MRC file */
     if (errorCode != kDNSServiceErr_NoError || rdlen == 0) return;
 
     const uint8_t *ptr = (const uint8_t *)rdata;
@@ -329,12 +351,15 @@ static void SNAutoFetch_DNSCallback(DNSServiceRef sdRef, DNSServiceFlags flags,
     while (ptr < end) {
         uint8_t len = *ptr++;
         if (len == 0 || ptr + len > end) break;
-        NSString *entry = [[NSString alloc] initWithBytes:ptr length:len encoding:NSUTF8StringEncoding];
-        for (NSString *comp in [entry componentsSeparatedByCharactersInSet:
-                                [NSCharacterSet whitespaceCharacterSet]]) {
-            NSRange r = [comp rangeOfString:@"="];
-            if (r.location != NSNotFound) {
-                out[[comp substringToIndex:r.location]] = [comp substringFromIndex:r.location + 1];
+        NSString *entry = [[[NSString alloc] initWithBytes:ptr length:len encoding:NSUTF8StringEncoding] autorelease];
+        if (entry) {
+            for (NSString *comp in [entry componentsSeparatedByCharactersInSet:
+                                    [NSCharacterSet whitespaceCharacterSet]]) {
+                NSRange r = [comp rangeOfString:@"="];
+                if (r.location == NSNotFound) continue;
+                NSString *k = [comp substringToIndex:r.location];
+                NSString *v = [comp substringFromIndex:r.location + 1];
+                if (k.length && v.length && ![out objectForKey:k]) out[k] = v;
             }
         }
         ptr += len;
@@ -347,7 +372,7 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
     if (DNSServiceQueryRecord(&sdRef, 0, 0, [dnsName UTF8String],
                               kDNSServiceType_TXT, kDNSServiceClass_IN,
                               SNAutoFetch_DNSCallback,
-                              (__bridge void *)results) != kDNSServiceErr_NoError) {
+                              (void *)results) != kDNSServiceErr_NoError) {
         return nil;
     }
     int fd = DNSServiceRefSockFD(sdRef);

@@ -95,15 +95,7 @@ static void SGNIndicatorReconcileWithPref(void) {
 
 #pragma mark - Entry point
 
-extern "C" void SGNStatusBarIndicator_Start(SGControlChannel *daemonClient) {
-    SGLOGI(SGNStatusBar, "Start: daemonClient=%p", daemonClient);
-    SGNIndicatorReconcileWithPref();
-
-    if (!daemonClient) {
-        SGLOGE(SGNStatusBar, "Start: daemonClient is NULL — no live updates");
-        return;
-    }
-
+static void SGNSubscribeToDaemonEvents(SGControlChannel *daemonClient) {
     [daemonClient subscribeToEvent:SGCEVT_STATE_CHANGED
                            handler:^(SGControlEventType eventType, NSData *data) {
         SGLOGI(SGNStatusBar, "STATE_CHANGED received bytes=%lu", (unsigned long)[data length]);
@@ -123,5 +115,24 @@ extern "C" void SGNStatusBarIndicator_Start(SGControlChannel *daemonClient) {
         SGNIndicatorReconcileWithPref();
     } completion:^(SGControlError err, uint64_t subId) {
         SGLOGI(SGNStatusBar, "CONFIG_RELOADED subscribe completion: err=%d subId=%llu", err, subId);
+    }];
+}
+
+extern "C" void SGNStatusBarIndicator_Start(SGControlChannel *daemonClient) {
+    SGLOGI(SGNStatusBar, "Start: daemonClient=%p", daemonClient);
+    SGNIndicatorReconcileWithPref();
+
+    if (!daemonClient) {
+        SGLOGE(SGNStatusBar, "Start: daemonClient is NULL — no live updates");
+        return;
+    }
+
+    SGNSubscribeToDaemonEvents(daemonClient);
+
+    [daemonClient setConnectionHandler:^(BOOL connected) {
+        if (!connected) return;
+        SGLOGI(SGNStatusBar, "daemon (re)connected — re-subscribing + reconciling");
+        SGNSubscribeToDaemonEvents(daemonClient);
+        SGNIndicatorReconcileWithPref();
     }];
 }

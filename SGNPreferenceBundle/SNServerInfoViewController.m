@@ -44,14 +44,17 @@ typedef enum {
     SectionCount   = 3
 } ServerInfoSection;
 
-static const NSInteger kAlertTagPEMConfirm  = 1;
-static const NSInteger kAlertTagUnregister  = 2;
+static const NSInteger kAlertTagPEMConfirm   = 1;
+static const NSInteger kAlertTagUnregister   = 2;
+static const NSInteger kAlertTagFetchInstall = 3;
 
 
 @interface SNServerInfoViewController () <UIAlertViewDelegate, UITextFieldDelegate, SFPFilePickerDelegate>
 
 @property (nonatomic, strong) NSString    *pendingServerAddress;
 @property (nonatomic, strong) NSString    *pendingPEMPath;
+@property (nonatomic, strong) NSString    *pendingFetchedPEM;
+@property (nonatomic, strong) NSString    *pendingFetchedAddress;
 @property (nonatomic, assign) BOOL         autoFetchInProgress;
 @property (nonatomic, assign) BOOL         unregisterInFlight;
 @property (nonatomic, assign) BOOL         unregisterRequestInFlight;
@@ -433,7 +436,7 @@ static const NSInteger kAlertTagUnregister  = 2;
             self.autoFetchInProgress ||
             self.profileSaveRequestInFlight) return;
 
-        [self.serverAddressField resignFirstResponder];
+        [self.view endEditing:YES];
 
         if (indexPath.row == WizardCertRowAuto) {
             [self _beginAutoFetchCertificate];
@@ -590,9 +593,11 @@ static const NSInteger kAlertTagUnregister  = 2;
     NSDictionary *info = [[SNDataManager shared] parseCertificatePEM:pem];
     NSString *subject = info[@"subject"] ?: @"(unknown subject)";
     NSString *issuer  = info[@"issuer"]  ?: @"(unknown issuer)";
+    NSString *fingerprint = info[@"fingerprint"] ?: @"(unavailable)";
     NSString *message = [NSString stringWithFormat:
-        @"Fetched certificate for %@:\n\nSubject: %@\nIssuer: %@\n\nInstall it as the server certificate?",
-        serverAddress, subject, issuer];
+        @"This certificate was fetched over an unauthenticated connection. Confirm the SHA-256 fingerprint matches your server before installing it as the pinned certificate.\n\n"
+        @"Server: %@\nSubject: %@\nIssuer: %@\n\nSHA-256:\n%@",
+        serverAddress, subject, issuer, fingerprint];
 
     Class alertControllerClass = NSClassFromString(@"UIAlertController");
     if (alertControllerClass) {
@@ -624,8 +629,17 @@ static const NSInteger kAlertTagUnregister  = 2;
         void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
         present(self, presentSel, alert, YES, nil);
     } else {
-        /* iOS < 8: skip confirmation, UIAlertView can't carry both PEM + address. */
-        [self _commitInstallFetchedPEM:pem serverAddress:serverAddress];
+        self.pendingFetchedPEM     = pem;
+        self.pendingFetchedAddress = serverAddress;
+        UIAlertView *av = [[UIAlertView alloc]
+                           initWithTitle:@"Confirm Certificate"
+                                 message:message
+                                delegate:self
+                       cancelButtonTitle:@"Cancel"
+                       otherButtonTitles:@"Install", nil];
+        av.tag = kAlertTagFetchInstall;
+        [av show];
+        [av release];
     }
 }
 
@@ -878,6 +892,14 @@ static const NSInteger kAlertTagUnregister  = 2;
         } else {
             self.pendingPEMPath = nil;
         }
+    } else if (alertView.tag == kAlertTagFetchInstall) {
+        NSString *pem  = [[self.pendingFetchedPEM retain] autorelease];
+        NSString *addr = [[self.pendingFetchedAddress retain] autorelease];
+        self.pendingFetchedPEM     = nil;
+        self.pendingFetchedAddress = nil;
+        if (buttonIndex == 1 && [pem length] > 0) {
+            [self _commitInstallFetchedPEM:pem serverAddress:addr];
+        }
     } else if (alertView.tag == kAlertTagUnregister) {
         if (buttonIndex == 1) {
             [self _performUnregister];
@@ -888,6 +910,8 @@ static const NSInteger kAlertTagUnregister  = 2;
 - (void)dealloc {
     [_pendingServerAddress release];
     [_pendingPEMPath release];
+    [_pendingFetchedPEM release];
+    [_pendingFetchedAddress release];
     [_profileSaveStatusText release];
     [_unregisterActivity release];
     [_profileSaveActivity release];

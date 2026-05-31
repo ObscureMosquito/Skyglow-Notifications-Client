@@ -151,12 +151,13 @@ static void _sgTryHookNotifController(NSMutableArray *specifiers) {
         }
         if (!detailCls) return;
 
-        if (!class_getInstanceMethod(detailCls, @selector(specifiers))) return;
-
+        Method m = class_getInstanceMethod(detailCls, @selector(specifiers));
+        if (!m) return;
+        if (class_getInstanceMethod(class_getSuperclass(detailCls), @selector(specifiers)) == m) return;
+        _sgNotifHookInstalled = YES;
         MSHookMessageEx(detailCls, @selector(specifiers),
                         (IMP)_sgNotifSpecifiersHook, &_sgOrigNotifSpecifiers);
 
-        _sgNotifHookInstalled = YES;
         NSLog(@"[Skyglow] Hooked %@ — Skyglow will appear inside Notifications pane.",
               NSStringFromClass(detailCls));
     } @catch (NSException *e) {
