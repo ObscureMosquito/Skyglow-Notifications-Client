@@ -98,7 +98,7 @@ static inline BOOL SG_IsIdentifierStringSafe(NSString *str) {
 #define SG_CONTROL_MAX_TOKEN_SIZE            48
 #define SG_CONTROL_MAX_BUNDLE_ID_SIZE        256
 #define SG_CONTROL_MAX_REASON_SIZE           64
-#define SG_CONTROL_MAX_USERINFO_SIZE         1024
+#define SG_CONTROL_MAX_USERINFO_SIZE         3072
 #define SG_CONTROL_MAX_ERROR_DETAIL_SIZE     256
 #define SG_CONTROL_MAX_EVENT_DATA_SIZE       1024
 #define SG_CONTROL_MAX_SERVER_ADDRESS_SIZE   256

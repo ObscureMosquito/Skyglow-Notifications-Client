@@ -819,6 +819,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
                 rk,  @"routing_key",
                 mid, @"msg_id",
                 @(raw[SGP_NOTIFY_OFF_FLAGS] & 0x01), @"is_encrypted",
+                @(raw[SGP_NOTIFY_OFF_CONTENT_TYPE]), @"content_type",
                 @(deviceSeq), @"device_seq",
                 nil];
             notif[@"data"] = [NSData dataWithBytes:raw + SGP_NOTIFY_MIN_PAYLOAD length:dl];

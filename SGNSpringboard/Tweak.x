@@ -256,6 +256,10 @@ static void SGN_AsyncFetchAndDeliverToken(NSString *bundleId,
 #pragma mark - Notification Delivery
 
 static NSDictionary *WrapInAPNSFormat(NSDictionary *flat) {
+    if ([flat[@"aps"] isKindOfClass:[NSDictionary class]]) {
+        return flat;
+    }
+
     NSMutableDictionary *alert = [NSMutableDictionary dictionary];
     if (flat[@"title"]) [alert setObject:flat[@"title"] forKey:@"title"];
     if (flat[@"body"])  [alert setObject:flat[@"body"]  forKey:@"body"];
