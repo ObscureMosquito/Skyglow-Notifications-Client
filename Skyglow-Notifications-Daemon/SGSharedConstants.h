@@ -47,13 +47,15 @@
  * version check is unambiguous at the call site.
  *
  */
-#define SGN_CF_VERSION_IOS_7_0   847.20   /* push delivery path: SBRemoteNotificationServer connection:didReceiveMessageForTopic: vs didReceiveIncomingMessage: */
+#define SGN_CF_VERSION_IOS_6_0   700.0/* push delivery path: SBRemoteNotificationServer connection:didReceiveMessageForTopic: vs didReceiveIncomingMessage: */
+#define SGN_CF_VERSION_IOS_7_0   847.20   
 #define SGN_CF_VERSION_IOS_8_0   1140.0   /* uninstall hook: SBApplicationUninstallationOperation (≤7) vs SBApplicationController.uninstallApplication: (≥8) */
 #define SGN_CF_VERSION_IOS_9_0   1200.0   /* registration: classic SBRemoteNotificationServer (≤8) vs UNNotificationRegistrarConnectionListener (≥9) */
 
 /* Convenience predicates read clearer than raw inequalities at the
  * call site.  Use SGN_IS_PRE_IOS_X when the "classic" code path is what
  * runs below the threshold (matches our hooks' code shape). */
+#define SGN_IS_PRE_IOS_6  (kCFCoreFoundationVersionNumber <  SGN_CF_VERSION_IOS_6_0)
 #define SGN_IS_PRE_IOS_7   (kCFCoreFoundationVersionNumber <  SGN_CF_VERSION_IOS_7_0)
 #define SGN_IS_PRE_IOS_8   (kCFCoreFoundationVersionNumber <  SGN_CF_VERSION_IOS_8_0)
 #define SGN_IS_PRE_IOS_9   (kCFCoreFoundationVersionNumber <  SGN_CF_VERSION_IOS_9_0)

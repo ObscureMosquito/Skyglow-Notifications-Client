@@ -277,7 +277,7 @@ static void DeliverNotification(NSString *topic, NSDictionary *userInfo) {
     if (!topic.length) return;
     NSDictionary *apnsPayload = WrapInAPNSFormat(userInfo ?: @{});
 
-    if (SGN_IS_PRE_IOS_7) {
+    if (SGN_IS_PRE_IOS_6) {
         id server = [NSClassFromString(@"SBRemoteNotificationServer") performSelector:@selector(sharedInstance)];
         if (server) {
             SEL sel = @selector(connection:didReceiveMessageForTopic:userInfo:);
