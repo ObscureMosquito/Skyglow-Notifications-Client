@@ -1,5 +1,6 @@
 #import "SGPayloadParser.h"
 #import "SGJSONParser.h"
+#import "SGStructuredTLV.h"
 #import <string.h>
 
 NSDictionary *SG_PayloadParseBinaryData(const uint8_t *buffer, uint32_t length) {
@@ -176,6 +177,10 @@ NSDictionary *SG_PayloadDecode(const uint8_t *buffer, uint32_t length, uint8_t c
              * first field), but never as another structured format. */
             if (sniffed == SGPayloadFormatJSON || sniffed == SGPayloadFormatPlist) return nil;
             return SG_NormalizeTLVToAPNS(SG_PayloadParseBinaryData(buffer, length));
+
+        case SGPayloadFormatTLVStruct:
+            if (sniffed == SGPayloadFormatJSON || sniffed == SGPayloadFormatPlist) return nil;
+            return SG_CanonicalizeAPNSDict(SG_STLVDecode(buffer, length));
 
         default:
             return nil; /* unknown / reserved content type */

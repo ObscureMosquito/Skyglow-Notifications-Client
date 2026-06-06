@@ -17,16 +17,24 @@
  * dictionary ({ "aps": { ... }, <custom keys> }). They differ only in wire
  * form, and all decode to one canonical NSDictionary via SG_PayloadDecode.
  *
- *   TLV   (0x00) — the original compact key/value form. Back-compat default:
- *                  servers that predate this change send a zero byte here.
- *   JSON  (0x01) — origin-sent JSON (e.g. an end-to-end encrypted blob the
- *                  relay never sees in the clear). Decoded by SGJSONParser.
- *   Plist (0x02) — binary or XML property list (NSPropertyListSerialization).
+ *   TLV       (0x00) — the original FLAT compact form (title/body/sound/
+ *                      custom_data only). Back-compat default: servers that
+ *                      predate this change send a zero byte here. Cannot carry
+ *                      nested/array structure — kept for legacy senders.
+ *   JSON      (0x01) — origin-sent JSON (e.g. an end-to-end encrypted blob the
+ *                      relay never sees in the clear). Decoded by SGJSONParser.
+ *   Plist     (0x02) — binary or XML property list (NSPropertyListSerialization).
+ *   TLVStruct (0x03) — STRUCTURED TLV (SGStructuredTLV): a typed, recursive
+ *                      binary encoding that expresses the SAME object graph as
+ *                      JSON/plist (nested maps, arrays, typed scalars, data).
+ *                      The full-fidelity TLV; prefer it over 0x00 for new
+ *                      senders.
  */
 typedef enum : uint8_t {
-    SGPayloadFormatTLV   = 0x00,
-    SGPayloadFormatJSON  = 0x01,
-    SGPayloadFormatPlist = 0x02,
+    SGPayloadFormatTLV       = 0x00,
+    SGPayloadFormatJSON      = 0x01,
+    SGPayloadFormatPlist     = 0x02,
+    SGPayloadFormatTLVStruct = 0x03,
 } SGPayloadFormat;
 
 /** Sentinel returned by SG_PayloadSniffFormat when the leading bytes match no
