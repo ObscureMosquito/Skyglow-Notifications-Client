@@ -41,6 +41,21 @@
 #define SGP_NOTIFY_OFF_DATA         70
 #define SGP_NOTIFY_MIN_PAYLOAD      70
 
+/**
+ * S_NOTIFY flags byte (at SGP_NOTIFY_OFF_FLAGS) — independent bits. When both
+ * are set the server applied compression FIRST, then encryption, so the daemon
+ * decrypts then inflates (you cannot compress ciphertext).
+ */
+#define SGP_NOTIFY_FLAG_ENCRYPTED   0x01  /* AES-256-GCM; iv(12) trails the data    */
+#define SGP_NOTIFY_FLAG_COMPRESSED  0x02  /* raw DEFLATE; inflate after any decrypt */
+
+/**
+ * Hard ceiling on a single inflated payload — a decompression-bomb guard. The
+ * on-wire payload is already capped at SGP_MAX_PAYLOAD_LEN; a legitimate
+ * notification never expands past this, so anything larger is refused.
+ */
+#define SGP_MAX_INFLATED_LEN        65536
+
 /** Return Codes for SGP_ProcessNextIncomingMessage */
 #define SGP_OK                   0
 #define SGP_ERR_CLOSED           1

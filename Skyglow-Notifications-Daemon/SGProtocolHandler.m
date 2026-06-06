@@ -815,17 +815,19 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
                 result = SGP_ERR_PROTO; goto cleanup;
             }
 
+            uint8_t notifFlags = raw[SGP_NOTIFY_OFF_FLAGS];
             NSMutableDictionary *notif = [NSMutableDictionary dictionaryWithObjectsAndKeys:
                 rk,  @"routing_key",
                 mid, @"msg_id",
-                @(raw[SGP_NOTIFY_OFF_FLAGS] & 0x01), @"is_encrypted",
+                @((notifFlags & SGP_NOTIFY_FLAG_ENCRYPTED)  != 0), @"is_encrypted",
+                @((notifFlags & SGP_NOTIFY_FLAG_COMPRESSED) != 0), @"is_compressed",
                 @(raw[SGP_NOTIFY_OFF_CONTENT_TYPE]), @"content_type",
                 @(deviceSeq), @"device_seq",
                 nil];
             notif[@"data"] = [NSData dataWithBytes:raw + SGP_NOTIFY_MIN_PAYLOAD length:dl];
             if (expiresAt > 0) notif[@"expires_at"] = @(expiresAt);
 
-            if (raw[SGP_NOTIFY_OFF_FLAGS] & 0x01) {
+            if (notifFlags & SGP_NOTIFY_FLAG_ENCRYPTED) {
                 if ((uint64_t)SGP_NOTIFY_MIN_PAYLOAD + dl + SGP_GCM_IV_LEN > (uint64_t)len) {
                     result = SGP_ERR_PROTO; goto cleanup;
                 }

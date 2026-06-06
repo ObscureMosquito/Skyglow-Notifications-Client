@@ -68,4 +68,14 @@ SGPayloadFormat SG_PayloadSniffFormat(const uint8_t *buffer, uint32_t length);
  */
 NSDictionary *SG_PayloadDecode(const uint8_t *buffer, uint32_t length, uint8_t contentType);
 
+/**
+ * Inflates a raw-DEFLATE (windowBits -15, no zlib/gzip wrapper) payload. Used
+ * on the SGP_NOTIFY_FLAG_COMPRESSED path AFTER any decryption and BEFORE
+ * SG_PayloadDecode; the encoding is format-agnostic (it wraps JSON/plist/TLV
+ * alike). Output is hard-capped at `maxOut` bytes as a decompression-bomb guard.
+ * Returns an autoreleased NSData, or nil on a corrupt/truncated stream, an empty
+ * result, or an expansion that would exceed `maxOut`.
+ */
+NSData *SG_PayloadInflate(const uint8_t *buffer, uint32_t length, uint32_t maxOut);
+
 #endif

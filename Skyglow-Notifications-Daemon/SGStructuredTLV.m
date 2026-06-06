@@ -17,115 +17,129 @@ typedef struct {
     int depth;
 } SGSTLVCtx;
 
-static uint64_t SGSTLVReadBE(const uint8_t *b, int n) {
+/* Unsigned LEB128 varint. Reads at most 10 bytes (a full 64-bit value),
+ * advancing c->p on success. Returns NO on truncation or 64-bit overflow. */
+static BOOL SGSTLVReadVarint(SGSTLVCtx *c, uint64_t *out) {
     uint64_t v = 0;
-    for (int i = 0; i < n; i++) v = (v << 8) | b[i];
-    return v;
+    int shift = 0;
+    for (int i = 0; i < 10; i++) {
+        if (c->p >= c->end) return NO;
+        uint8_t b = *c->p++;
+        if (shift == 63 && (b & 0x7E)) return NO;
+        v |= (uint64_t)(b & 0x7F) << shift;
+        if (!(b & 0x80)) { *out = v; return YES; }
+        shift += 7;
+    }
+    return NO; /* > 10 bytes, or a continuation bit on the 10th: malformed */
+}
+
+static int64_t SGSTLVZigZagDecode(uint64_t u) {
+    return (int64_t)(u >> 1) ^ -(int64_t)(u & 1);
 }
 
 static id SGSTLVDecodeValue(SGSTLVCtx *c) {
-    if (c->end - c->p < 5) return nil;
-    uint8_t type = c->p[0];
-    uint32_t len = (uint32_t)SGSTLVReadBE(c->p + 1, 4);
-    c->p += 5;
-    if ((uint64_t)len > (uint64_t)(c->end - c->p)) return nil;
+    if (c->p >= c->end) return nil;
+    uint8_t type = *c->p++;
 
-    const uint8_t *payload = c->p;
-    const uint8_t *payloadEnd = c->p + len;
-    id result = nil;
-
+    /* Fixed / self-delimiting types carry no length field. */
     switch (type) {
-        case SG_STLV_T_MAP: {
-            if (++c->depth > SG_STLV_MAX_DEPTH) { c->depth--; return nil; }
-            const uint8_t *savedEnd = c->end;
-            c->end = payloadEnd; /* frame children to this map */
-            NSMutableDictionary *d = [NSMutableDictionary dictionary];
-            BOOL ok = YES;
-            while (c->p < c->end) {
-                if (c->end - c->p < 2) { ok = NO; break; }
-                uint16_t klen = (uint16_t)SGSTLVReadBE(c->p, 2);
-                c->p += 2;
-                if ((uint64_t)klen > (uint64_t)(c->end - c->p)) { ok = NO; break; }
-                NSString *key = [[NSString alloc] initWithBytes:c->p length:klen
-                                                       encoding:NSUTF8StringEncoding];
-                c->p += klen;
-                if (!key) { ok = NO; break; }
-                id v = SGSTLVDecodeValue(c);
-                if (!v) { [key release]; ok = NO; break; }
-                [d setObject:v forKey:key];
-                [key release];
-            }
-            c->end = savedEnd;
-            c->depth--;
-            if (!ok || c->p != payloadEnd) return nil;
-            result = d;
-            break;
-        }
-        case SG_STLV_T_ARRAY: {
-            if (++c->depth > SG_STLV_MAX_DEPTH) { c->depth--; return nil; }
-            const uint8_t *savedEnd = c->end;
-            c->end = payloadEnd;
-            NSMutableArray *a = [NSMutableArray array];
-            BOOL ok = YES;
-            while (c->p < c->end) {
-                id v = SGSTLVDecodeValue(c);
-                if (!v) { ok = NO; break; }
-                [a addObject:v];
-            }
-            c->end = savedEnd;
-            c->depth--;
-            if (!ok || c->p != payloadEnd) return nil;
-            result = a;
-            break;
-        }
-        case SG_STLV_T_STRING: {
-            NSString *s = [[NSString alloc] initWithBytes:payload length:len
-                                                 encoding:NSUTF8StringEncoding];
-            if (!s) return nil; /* invalid UTF-8 */
-            result = [s autorelease];
-            c->p = payloadEnd;
-            break;
-        }
         case SG_STLV_T_INT: {
-            if (len != 8) return nil;
-            int64_t v = (int64_t)SGSTLVReadBE(payload, 8);
-            result = [NSNumber numberWithLongLong:v];
-            c->p = payloadEnd;
-            break;
+            uint64_t u;
+            if (!SGSTLVReadVarint(c, &u)) return nil;
+            return [NSNumber numberWithLongLong:SGSTLVZigZagDecode(u)];
         }
         case SG_STLV_T_DOUBLE: {
-            if (len != 8) return nil;
-            uint64_t bits = SGSTLVReadBE(payload, 8);
+            if (c->end - c->p < 8) return nil;
+            uint64_t bits = 0;
+            for (int i = 0; i < 8; i++) bits = (bits << 8) | c->p[i];
+            c->p += 8;
             double dv;
             memcpy(&dv, &bits, 8); /* bits holds the host-order IEEE-754 pattern */
             if (!isfinite(dv)) return nil;
-            result = [NSNumber numberWithDouble:dv];
-            c->p = payloadEnd;
-            break;
+            return [NSNumber numberWithDouble:dv];
         }
         case SG_STLV_T_BOOL: {
-            if (len != 1) return nil;
-            uint8_t b = payload[0];
+            if (c->p >= c->end) return nil;
+            uint8_t b = *c->p++;
             if (b != 0 && b != 1) return nil;
-            result = [NSNumber numberWithBool:(b == 1)];
-            c->p = payloadEnd;
-            break;
+            return [NSNumber numberWithBool:(b == 1)];
         }
-        case SG_STLV_T_NULL: {
-            if (len != 0) return nil;
-            result = [NSNull null];
-            c->p = payloadEnd;
-            break;
-        }
-        case SG_STLV_T_DATA: {
-            result = [NSData dataWithBytes:payload length:len];
-            c->p = payloadEnd;
-            break;
-        }
+        case SG_STLV_T_NULL:
+            return [NSNull null];
+
+        case SG_STLV_T_STRING:
+        case SG_STLV_T_DATA:
+        case SG_STLV_T_MAP:
+        case SG_STLV_T_ARRAY:
+            break; /* variable-length: handled below */
+
         default:
             return nil; /* unknown type */
     }
-    return result;
+
+    /* Variable-length types: read the varint byte-length, frame the payload. */
+    uint64_t len;
+    if (!SGSTLVReadVarint(c, &len)) return nil;
+    if (len > (uint64_t)(c->end - c->p)) return nil;
+    const uint8_t *payload = c->p;
+    const uint8_t *payloadEnd = c->p + len;
+
+    if (type == SG_STLV_T_STRING) {
+        NSString *s = [[NSString alloc] initWithBytes:payload length:(NSUInteger)len
+                                             encoding:NSUTF8StringEncoding];
+        if (!s) return nil; /* invalid UTF-8 */
+        c->p = payloadEnd;
+        return [s autorelease];
+    }
+
+    if (type == SG_STLV_T_DATA) {
+        NSData *d = [NSData dataWithBytes:payload length:(NSUInteger)len];
+        c->p = payloadEnd;
+        return d;
+    }
+
+    if (type == SG_STLV_T_MAP) {
+        if (++c->depth > SG_STLV_MAX_DEPTH) { c->depth--; return nil; }
+        const uint8_t *savedEnd = c->end;
+        c->end = payloadEnd; /* frame children to this map */
+        NSMutableDictionary *d = [NSMutableDictionary dictionary];
+        BOOL ok = YES;
+        while (c->p < c->end) {
+            uint64_t klen;
+            if (!SGSTLVReadVarint(c, &klen)) { ok = NO; break; }
+            if (klen > (uint64_t)(c->end - c->p)) { ok = NO; break; }
+            NSString *key = [[NSString alloc] initWithBytes:c->p length:(NSUInteger)klen
+                                                   encoding:NSUTF8StringEncoding];
+            c->p += klen;
+            if (!key) { ok = NO; break; }
+            id v = SGSTLVDecodeValue(c);
+            if (!v) { [key release]; ok = NO; break; }
+            [d setObject:v forKey:key];
+            [key release];
+        }
+        c->end = savedEnd;
+        c->depth--;
+        if (!ok || c->p != payloadEnd) return nil;
+        return d;
+    }
+
+    /* SG_STLV_T_ARRAY */
+    {
+        if (++c->depth > SG_STLV_MAX_DEPTH) { c->depth--; return nil; }
+        const uint8_t *savedEnd = c->end;
+        c->end = payloadEnd;
+        NSMutableArray *a = [NSMutableArray array];
+        BOOL ok = YES;
+        while (c->p < c->end) {
+            id v = SGSTLVDecodeValue(c);
+            if (!v) { ok = NO; break; }
+            [a addObject:v];
+        }
+        c->end = savedEnd;
+        c->depth--;
+        if (!ok || c->p != payloadEnd) return nil;
+        return a;
+    }
 }
 
 id SG_STLVDecode(const uint8_t *buffer, uint32_t length) {
@@ -144,25 +158,24 @@ id SG_STLVDecode(const uint8_t *buffer, uint32_t length) {
 
 #pragma mark - Encode (reference / tests)
 
-static void SGSTLVAppendU16(NSMutableData *d, uint16_t v) {
-    uint8_t b[2] = { (uint8_t)(v >> 8), (uint8_t)v };
-    [d appendBytes:b length:2];
+static void SGSTLVAppendVarint(NSMutableData *out, uint64_t v) {
+    uint8_t buf[10];
+    int n = 0;
+    do {
+        uint8_t b = (uint8_t)(v & 0x7F);
+        v >>= 7;
+        if (v) b |= 0x80;
+        buf[n++] = b;
+    } while (v);
+    [out appendBytes:buf length:n];
 }
 
-static void SGSTLVAppendU32(NSMutableData *d, uint32_t v) {
-    uint8_t b[4] = { (uint8_t)(v >> 24), (uint8_t)(v >> 16), (uint8_t)(v >> 8), (uint8_t)v };
-    [d appendBytes:b length:4];
+static uint64_t SGSTLVZigZagEncode(int64_t n) {
+    return ((uint64_t)n << 1) ^ (uint64_t)(n >> 63);
 }
 
-static void SGSTLVAppendHeader(NSMutableData *out, uint8_t type, NSUInteger payloadLen) {
+static void SGSTLVAppendType(NSMutableData *out, uint8_t type) {
     [out appendBytes:&type length:1];
-    SGSTLVAppendU32(out, (uint32_t)payloadLen);
-}
-
-static void SGSTLVAppendBE8(NSMutableData *out, uint64_t u) {
-    uint8_t b[8];
-    for (int i = 0; i < 8; i++) b[i] = (uint8_t)(u >> (56 - 8 * i));
-    [out appendBytes:b length:8];
 }
 
 static BOOL SGSTLVEncodeValue(NSMutableData *out, id obj, int depth) {
@@ -174,12 +187,13 @@ static BOOL SGSTLVEncodeValue(NSMutableData *out, id obj, int depth) {
         for (id key in in) {
             if (![key isKindOfClass:[NSString class]]) return NO;
             NSData *kd = [(NSString *)key dataUsingEncoding:NSUTF8StringEncoding];
-            if (!kd || kd.length > 0xFFFF) return NO;
-            SGSTLVAppendU16(body, (uint16_t)kd.length);
+            if (!kd) return NO;
+            SGSTLVAppendVarint(body, (uint64_t)kd.length);
             [body appendData:kd];
             if (!SGSTLVEncodeValue(body, [in objectForKey:key], depth + 1)) return NO;
         }
-        SGSTLVAppendHeader(out, SG_STLV_T_MAP, body.length);
+        SGSTLVAppendType(out, SG_STLV_T_MAP);
+        SGSTLVAppendVarint(out, (uint64_t)body.length);
         [out appendData:body];
         return YES;
     }
@@ -188,31 +202,34 @@ static BOOL SGSTLVEncodeValue(NSMutableData *out, id obj, int depth) {
         for (id v in (NSArray *)obj) {
             if (!SGSTLVEncodeValue(body, v, depth + 1)) return NO;
         }
-        SGSTLVAppendHeader(out, SG_STLV_T_ARRAY, body.length);
+        SGSTLVAppendType(out, SG_STLV_T_ARRAY);
+        SGSTLVAppendVarint(out, (uint64_t)body.length);
         [out appendData:body];
         return YES;
     }
     if ([obj isKindOfClass:[NSString class]]) {
         NSData *d = [(NSString *)obj dataUsingEncoding:NSUTF8StringEncoding];
         if (!d) d = [NSData data];
-        SGSTLVAppendHeader(out, SG_STLV_T_STRING, d.length);
+        SGSTLVAppendType(out, SG_STLV_T_STRING);
+        SGSTLVAppendVarint(out, (uint64_t)d.length);
         [out appendData:d];
         return YES;
     }
     if ([obj isKindOfClass:[NSData class]]) {
-        SGSTLVAppendHeader(out, SG_STLV_T_DATA, [(NSData *)obj length]);
+        SGSTLVAppendType(out, SG_STLV_T_DATA);
+        SGSTLVAppendVarint(out, (uint64_t)[(NSData *)obj length]);
         [out appendData:(NSData *)obj];
         return YES;
     }
     if ([obj isKindOfClass:[NSNull class]]) {
-        SGSTLVAppendHeader(out, SG_STLV_T_NULL, 0);
+        SGSTLVAppendType(out, SG_STLV_T_NULL);
         return YES;
     }
     if ([obj isKindOfClass:[NSNumber class]]) {
         NSNumber *num = (NSNumber *)obj;
         if (CFGetTypeID((CFTypeRef)num) == CFBooleanGetTypeID()) {
             uint8_t b = [num boolValue] ? 1 : 0;
-            SGSTLVAppendHeader(out, SG_STLV_T_BOOL, 1);
+            SGSTLVAppendType(out, SG_STLV_T_BOOL);
             [out appendBytes:&b length:1];
             return YES;
         }
@@ -221,13 +238,15 @@ static BOOL SGSTLVEncodeValue(NSMutableData *out, id obj, int depth) {
             double dv = [num doubleValue];
             uint64_t bits;
             memcpy(&bits, &dv, 8);
-            SGSTLVAppendHeader(out, SG_STLV_T_DOUBLE, 8);
-            SGSTLVAppendBE8(out, bits);
+            uint8_t b[8];
+            for (int i = 0; i < 8; i++) b[i] = (uint8_t)(bits >> (56 - 8 * i));
+            SGSTLVAppendType(out, SG_STLV_T_DOUBLE);
+            [out appendBytes:b length:8];
             return YES;
         }
         int64_t iv = [num longLongValue];
-        SGSTLVAppendHeader(out, SG_STLV_T_INT, 8);
-        SGSTLVAppendBE8(out, (uint64_t)iv);
+        SGSTLVAppendType(out, SG_STLV_T_INT);
+        SGSTLVAppendVarint(out, SGSTLVZigZagEncode(iv));
         return YES;
     }
     return NO; /* no STLV representation */

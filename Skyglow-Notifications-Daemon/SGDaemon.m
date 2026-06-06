@@ -958,6 +958,24 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             SGLOGD(SGDaemon, "code=%s msg=%s bytes=%lu", SGND_DELIVERY_PAYLOAD_PLAINTEXT, msgHex, (unsigned long)[payloadBytes length]);
         }
 
+        /* Decompress AFTER decrypt (the server compresses then encrypts). The
+         * flag is independent of content_type, so it covers JSON/plist/TLV alike. */
+        if ([messageDict[@"is_compressed"] boolValue]) {
+            NSData *inflated = SG_PayloadInflate((const uint8_t *)payloadBytes.bytes,
+                                                 (uint32_t)payloadBytes.length,
+                                                 SGP_MAX_INFLATED_LEN);
+            if (!inflated) {
+                SGLOGW(SGDaemon, "code=%s msg=%s bytes=%lu ack=parse_failed action=drop", SGND_DELIVERY_INFLATE_FAILED,
+                            msgHex, (unsigned long)[payloadBytes length]);
+                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
+                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                goto cleanup_assertion;
+            }
+            SGLOGD(SGDaemon, "code=%s msg=%s in=%lu out=%lu action=inflate", SGND_DELIVERY_PAYLOAD_INFLATED,
+                        msgHex, (unsigned long)[payloadBytes length], (unsigned long)[inflated length]);
+            payloadBytes = inflated;
+        }
+
         uint8_t contentType = (uint8_t)[messageDict[@"content_type"] unsignedCharValue];
         NSDictionary *parsed = SG_PayloadDecode((const uint8_t *)payloadBytes.bytes, (uint32_t)payloadBytes.length, contentType);
         if (!parsed || parsed.count == 0) {

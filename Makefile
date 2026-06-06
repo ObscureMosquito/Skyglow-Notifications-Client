@@ -36,7 +36,7 @@ SkyglowNotificationsDaemon_LDFLAGS = \
 SkyglowNotificationsDaemon_CODESIGN_FLAGS = -Sentitlements.plist
 SkyglowNotificationsDaemon_INSTALL_PATH = /usr/local/bin
 SkyglowNotificationsDaemon_FRAMEWORKS = UIKit SystemConfiguration CFNetwork Security IOKit
-SkyglowNotificationsDaemon_LIBRARIES += sqlite3
+SkyglowNotificationsDaemon_LIBRARIES += sqlite3 z
 
 
 include $(THEOS_MAKE_PATH)/tool.mk

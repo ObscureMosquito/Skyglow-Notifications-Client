@@ -5,43 +5,59 @@
 
 /**
  * Structured TLV (STLV) — a typed, recursive binary encoding of the same
- * object model JSON and plist describe.
+ * object model JSON and plist describe. Tuned for minimum size: only the
+ * variable-length types carry a length, and that length (plus every integer)
+ * is a varint, so small values cost 1-2 bytes instead of a fixed 4-8.
+ *
+ *  VARINT (unsigned LEB128): base-128, little-endian groups. Each byte holds 7
+ *  value bits in its low bits; the high bit (0x80) means "another byte follows".
+ *  Decoders accept at most 10 bytes (a full 64-bit value) and reject anything
+ *  that would overflow 64 bits. Encoders emit the minimal number of bytes.
  *
  *  Every VALUE is:
  *
  *      type    : uint8
- *      length  : uint32, big-endian   (byte count of payload)
- *      payload : `length` bytes        (interpretation depends on type)
+ *      [length : varint]   — ONLY for the variable-length types (MAP, ARRAY,
+ *                            STRING, DATA); it is the byte count of `payload`.
+ *      payload : interpretation depends on type (see below)
+ *
+ *  The fixed/self-delimiting types carry NO length field — their size is fixed
+ *  by the type, or (for INT) self-described by the varint itself.
  *
  *  Types:
  *
- *    0x01 MAP    payload = zero or more ENTRIES, packed back to back until the
- *               payload is exhausted. Each ENTRY is:
- *                   keyLen : uint16, big-endian
+ *    0x01 MAP    length = byte count of the entries that follow.
+ *               payload = zero or more ENTRIES packed back to back until the
+ *               declared length is exhausted. Each ENTRY is:
+ *                   keyLen : varint
  *                   key    : keyLen bytes, UTF-8 (NOT NUL-terminated)
  *                   value  : a VALUE (recursive)
  *               Duplicate keys: last one wins.
  *
- *    0x02 ARRAY payload = zero or more VALUEs packed back to back until the
- *               payload is exhausted.
+ *    0x02 ARRAY length = byte count of the values that follow.
+ *               payload = zero or more VALUEs packed back to back until the
+ *               declared length is exhausted.
  *
- *    0x03 STRING payload = UTF-8 bytes (NOT NUL-terminated). Must be valid UTF-8.
+ *    0x03 STRING length = byte count.
+ *               payload = UTF-8 bytes (NOT NUL-terminated). Must be valid UTF-8.
  *
- *    0x04 INT   payload = exactly 8 bytes, signed two's-complement int64,
- *               big-endian.
+ *    0x04 INT   NO length. payload = one zig-zag varint of a signed int64.
+ *               Zig-zag maps n -> (n << 1) ^ (n >> 63) so small-magnitude
+ *               values of either sign stay short (e.g. 0,-1,1,-2 -> 0,1,2,3).
  *
- *    0x05 DOUBLE payload = exactly 8 bytes, the IEEE-754 binary64 bit pattern,
- *               big-endian. Non-finite values (NaN/Inf) are rejected.
+ *    0x05 DOUBLE NO length. payload = exactly 8 bytes, the IEEE-754 binary64
+ *               bit pattern, big-endian. Non-finite (NaN/Inf) is rejected.
  *
- *    0x06 BOOL  payload = exactly 1 byte: 0x00 false, 0x01 true.
+ *    0x06 BOOL  NO length. payload = exactly 1 byte: 0x00 false, 0x01 true.
  *
- *    0x07 NULL  payload length must be 0.
+ *    0x07 NULL  NO length, NO payload.
  *
- *    0x08 DATA  payload = raw bytes (TLV-native; JSON would have to base64 this).
+ *    0x08 DATA  length = byte count.
+ *               payload = raw bytes (TLV-native; JSON would have to base64 this).
  *
- *  The top-level VALUE MUST be a MAP. Container payload lengths must frame
- *  their children exactly — a child that would read past the container's
- *  declared length, or leftover bytes inside it, is a hard error.
+ *  The top-level VALUE MUST be a MAP. Container lengths must frame their
+ *  children exactly — a child that would read past the container's declared
+ *  length, or leftover bytes inside it, is a hard error.
  */
 
 #define SG_STLV_T_MAP     0x01

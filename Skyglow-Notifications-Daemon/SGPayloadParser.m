@@ -2,6 +2,7 @@
 #import "SGJSONParser.h"
 #import "SGStructuredTLV.h"
 #import <string.h>
+#import <zlib.h>
 
 NSDictionary *SG_PayloadParseBinaryData(const uint8_t *buffer, uint32_t length) {
     if (!buffer || length == 0) return @{};
@@ -150,6 +151,40 @@ static NSDictionary *SG_DecodePlist(const uint8_t *buffer, uint32_t length) {
 static NSDictionary *SG_DecodeJSON(const uint8_t *buffer, uint32_t length) {
     id obj = SG_JSONParse(buffer, length);
     return SG_CanonicalizeAPNSDict(obj);
+}
+
+#pragma mark - Decompression
+
+NSData *SG_PayloadInflate(const uint8_t *buffer, uint32_t length, uint32_t maxOut) {
+    if (!buffer || length == 0) return nil;
+
+    z_stream strm;
+    memset(&strm, 0, sizeof(strm));
+
+    if (inflateInit2(&strm, -15) != Z_OK) return nil;
+
+    strm.next_in  = (Bytef *)buffer;
+    strm.avail_in = length;
+
+    NSMutableData *out = [NSMutableData data];
+    uint8_t chunk[4096];
+    int ret;
+    do {
+        strm.next_out  = chunk;
+        strm.avail_out = sizeof(chunk);
+        ret = inflate(&strm, Z_NO_FLUSH);
+        if (ret != Z_OK && ret != Z_STREAM_END) { inflateEnd(&strm); return nil; }
+
+        size_t produced = sizeof(chunk) - strm.avail_out;
+        if ((uint64_t)out.length + produced > (uint64_t)maxOut) { /* bomb guard */
+            inflateEnd(&strm);
+            return nil;
+        }
+        if (produced > 0) [out appendBytes:chunk length:produced];
+    } while (ret != Z_STREAM_END);
+
+    inflateEnd(&strm);
+    return out.length > 0 ? out : nil;
 }
 
 #pragma mark - Unified decode
