@@ -663,11 +663,23 @@ static void SGN_DeliverSuccess(NSString *bundleId, id application, id environmen
         int settingsPresentedTypes = [client settingsPresentedTypes];
         if (notificationTypes & ~settingsPresentedTypes & 0xF) {
             int alertTypes = (notificationTypes & 0x8) ? 0xF : 0x7;
-            SBRemoteNotificationPermissionAlert *alert =
-                [[%c(SBRemoteNotificationPermissionAlert) alloc] initWithApplication:application notificationTypes:alertTypes];
+            /* The permission alert's initializer is version-specific.  iOS 5/6
+             * use -initWithApplication:notificationTypes:; iOS 4.3.x's
+             * SBRemoteNotificationPermissionAlert does not implement it and
+             * raised an unrecognized-selector that crashed SpringBoard.  Probe
+             * for the modern two-arg form, fall back to the legacy one-arg
+             * -initWithApplication:, and if neither exists skip the prompt
+             * entirely — token delivery below still proceeds regardless. */
+            Class alertCls = %c(SBRemoteNotificationPermissionAlert);
+            SBRemoteNotificationPermissionAlert *alert = nil;
+            if ([alertCls instancesRespondToSelector:@selector(initWithApplication:notificationTypes:)]) {
+                alert = [[alertCls alloc] initWithApplication:application notificationTypes:alertTypes];
+            } else if ([alertCls instancesRespondToSelector:@selector(initWithApplication:)]) {
+                alert = [[alertCls alloc] performSelector:@selector(initWithApplication:) withObject:application];
+            }
             if (alert) {
                 SBAlertItemsController *ctrl = [%c(SBAlertItemsController) sharedInstance];
-                [ctrl deactivateAlertItemsOfClass:[%c(SBRemoteNotificationPermissionAlert) class]];
+                [ctrl deactivateAlertItemsOfClass:alertCls];
                 [ctrl activateAlertItem:alert];
                 [client setSettingsPresentedTypes:settingsPresentedTypes | requestedTypes];
             }

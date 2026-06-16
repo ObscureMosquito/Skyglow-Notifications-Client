@@ -5,20 +5,12 @@
 
 #pragma mark - Decode
 
-/*
- * Single cursor over the byte range. Containers are decoded by temporarily
- * pulling `end` in to the container's payload boundary, parsing children until
- * the cursor reaches it, then restoring `end`. `depth` bounds recursion
- * independently of input size.
- */
 typedef struct {
     const uint8_t *p;
     const uint8_t *end;
     int depth;
 } SGSTLVCtx;
 
-/* Unsigned LEB128 varint. Reads at most 10 bytes (a full 64-bit value),
- * advancing c->p on success. Returns NO on truncation or 64-bit overflow. */
 static BOOL SGSTLVReadVarint(SGSTLVCtx *c, uint64_t *out) {
     uint64_t v = 0;
     int shift = 0;
@@ -30,7 +22,7 @@ static BOOL SGSTLVReadVarint(SGSTLVCtx *c, uint64_t *out) {
         if (!(b & 0x80)) { *out = v; return YES; }
         shift += 7;
     }
-    return NO; /* > 10 bytes, or a continuation bit on the 10th: malformed */
+    return NO;
 }
 
 static int64_t SGSTLVZigZagDecode(uint64_t u) {

@@ -27,8 +27,17 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/SGDaemon.m \
     Skyglow-Notifications-Daemon/SGAvailability.m \
     Skyglow-Notifications-Daemon/SGControlChannel.m \
-    Skyglow-Notifications-Daemon/SGCompatibilityShim.m
-SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result -I$(THEOS_PROJECT_DIR)/libraries/openssl/include
+    Skyglow-Notifications-Daemon/SGCompatibilityShim.m \
+    libraries/sqlite/sqlite3.c
+SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result \
+  -I$(THEOS_PROJECT_DIR)/libraries/openssl/include \
+  -I$(THEOS_PROJECT_DIR)/libraries/sqlite/include \
+  -DSQLITE_THREADSAFE=1 \
+  -DSQLITE_OMIT_LOAD_EXTENSION \
+  -DSQLITE_DEFAULT_MEMSTATUS=0 \
+  -DSQLITE_ENABLE_LOCKING_STYLE=0 \
+  -DHAVE_GETHOSTUUID=0 \
+  -Wno-unused-but-set-variable
 SkyglowNotificationsDaemon_LDFLAGS = \
   -Wl,-sectcreate,__RESTRICT,__restrict,/dev/null \
   $(THEOS_PROJECT_DIR)/libraries/openssl/lib/libssl.a \
@@ -36,7 +45,7 @@ SkyglowNotificationsDaemon_LDFLAGS = \
 SkyglowNotificationsDaemon_CODESIGN_FLAGS = -Sentitlements.plist
 SkyglowNotificationsDaemon_INSTALL_PATH = /usr/local/bin
 SkyglowNotificationsDaemon_FRAMEWORKS = UIKit SystemConfiguration CFNetwork Security IOKit
-SkyglowNotificationsDaemon_LIBRARIES += sqlite3 z
+SkyglowNotificationsDaemon_LIBRARIES += z
 
 
 include $(THEOS_MAKE_PATH)/tool.mk

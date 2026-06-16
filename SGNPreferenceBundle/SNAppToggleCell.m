@@ -165,6 +165,18 @@
 - (void)setControl:(id)control {}
 - (id)control { return nil; }
 
+/* iOS 4's PSTableCell hierarchy doesn't implement -controlChanged:, yet the
+ * PSSwitchCell spec still wires its framework-installed switch's action to it,
+ * so flipping the toggle raised an unrecognized-selector on iOS 4 (CoreAnimation
+ * swallowed it, leaving the switch inert).  iOS 5+ never reaches here — our own
+ * _toggleSwitch (-> toggleChanged:) is the live accessory — so routing the
+ * framework switch into the same handler fixes iOS 4 without affecting newer. */
+- (void)controlChanged:(id)control {
+    if ([control isKindOfClass:[UISwitch class]]) {
+        [self toggleChanged:(UISwitch *)control];
+    }
+}
+
 - (void)refreshCellContentsWithSpecifier:(PSSpecifier *)specifier {
     [super refreshCellContentsWithSpecifier:specifier];
     if (_sgnSpecifier != specifier) {
