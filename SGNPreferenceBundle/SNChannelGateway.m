@@ -261,14 +261,18 @@ static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
         } completion:nil];
     };
 
-    /* Subscribe now (whether connected or not, channel will queue). */
     doSubscribe();
 
-    /* Re-subscribe on every reconnect.  SGControlChannel clears event
-     * handlers when the connection drops; without this, a daemon restart
-     * leaves the subscription stranded. */
+    __block BOOL sawFirstConnect = NO;
     [client setConnectionHandler:^(BOOL connected) {
-        if (connected) doSubscribe();
+        if (!connected) return;
+        doSubscribe();
+        if (sawFirstConnect) {
+            [self queryStatusWithCompletion:^(SGStatusPayload payload) {
+                handlerCopy(payload);
+            }];
+        }
+        sawFirstConnect = YES;
     }];
 }
 
