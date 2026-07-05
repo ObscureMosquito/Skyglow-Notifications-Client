@@ -60,11 +60,6 @@ typedef NS_ENUM(NSInteger, SGCapability) {
 
 @property (nonatomic, readonly) BOOL scheduledWakeAvailable;
 
-/**
- * Whether we want to use NIC TCP-keepalive offload on this OS
- */
-@property (nonatomic, readonly) BOOL keepAliveOffloadAvailable;
-
 #pragma mark - PCPersistentTimer
 
 /**

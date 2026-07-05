@@ -1,6 +1,7 @@
 #import "SGProtocolHandler.h"
 #import "SGDatabaseManager.h"
 #import "SGConfiguration.h"
+#import "SGKeepAliveOffload.h"
 #import "SGLog.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -64,7 +65,6 @@ typedef enum {
 
 static SGPProtoPhase _phase = SGPProtoPreHello;
 static BOOL _v1HelloConsumed = NO;
-static BOOL _keepAliveOffloadActive = NO;
 
 
 static double SG_GetMonotonicSeconds(void) {
@@ -369,6 +369,8 @@ void SGP_ZeroAndFreeKeyMaterial(char *pemBuf, size_t len) {
 
 void SGP_SetDelegate(id<SGProtocolDelegate> delegate) { _delegate = delegate; }
 BOOL SGP_IsConnected(void) { return (_ssl != NULL && _sock >= 0); }
+
+int SGP_GetSocketFD(void) { return _sock; }
 uint32_t SGP_GetLastDisconnectRetryAfter(void) { return _lastRetryHint; }
 double SGP_GetLastFrameReceivedAt(void) { return _lastFrameReceivedAt; }
 
@@ -438,18 +440,7 @@ void SGP_DisconnectFromServer(void) {
     _lastFrameReceivedAt = 0.0;
     _phase = SGPProtoPreHello;
     _v1HelloConsumed = NO;
-    _keepAliveOffloadActive = NO;
-}
-
-int SGP_TryEnableKeepAliveOffload(const void *kaPayload, uint32_t kaLen, double intervalSec) {
-    (void)kaPayload; (void)kaLen; (void)intervalSec;
-    if (!SGP_IsConnected()) return SGP_OFFLOAD_NO_SOCKET;
-
-    return SGP_OFFLOAD_UNIMPLEMENTED;
-}
-
-BOOL SGP_IsKeepAliveOffloadActive(void) {
-    return _keepAliveOffloadActive;
+    SGKAOffload_Reset();
 }
 
 int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {

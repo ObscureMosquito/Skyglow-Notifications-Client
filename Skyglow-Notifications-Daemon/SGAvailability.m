@@ -47,8 +47,6 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
     [SGCapabilityKeepAliveOffload] = { NULL,                         99.0, 0.0  },
 };
 
-#define SG_KEEPALIVE_OFFLOAD_PLACEHOLDER 1
-
 @interface NSObject (PCPrivateTimerAPI)
 - (id)initWithTimeInterval:(NSTimeInterval)interval serviceIdentifier:(NSString *)sid target:(id)target selector:(SEL)sel userInfo:(id)userInfo;
 - (void)setMinimumEarlyFireProportion:(double)proportion;
@@ -215,14 +213,6 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
 
 - (BOOL)scheduledWakeAvailable {
     return [self isCapabilityAvailable:SGCapabilityScheduledWake];
-}
-
-- (BOOL)keepAliveOffloadAvailable {
-#if SG_KEEPALIVE_OFFLOAD_PLACEHOLDER
-    return YES;
-#else
-    return [self isCapabilityAvailable:SGCapabilityKeepAliveOffload];
-#endif
 }
 
 #pragma mark - PCPersistentTimer

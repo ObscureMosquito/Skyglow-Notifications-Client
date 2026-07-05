@@ -3,6 +3,7 @@
 #import "SGDatabaseManager.h"
 #import "SGTokenManager.h"
 #import "SGProtocolHandler.h"
+#import "SGKeepAliveOffload.h"
 #import "SGServerLocator.h"
 #import "SGPayloadParser.h"
 #import "SGCryptoEngine.h"
@@ -881,20 +882,10 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 }
 
 - (void)_attemptKeepAliveOffload {
-    if (![SGAvailability shared].keepAliveOffloadAvailable) {
-        SGLOGD(SGDaemon, "code=%s result=unavailable", SGND_KEEPALIVE_OFFLOAD_UNAVAILABLE);
-        return;
-    }
     [_stateLock lock];
     double interval = [self _currentKeepAliveInterval];
     [_stateLock unlock];
-
-    int rc = SGP_TryEnableKeepAliveOffload(NULL, 0, interval);
-    SGLOGI(SGDaemon, "code=%s interval=%.0fs rc=%d result=%s", SGND_KEEPALIVE_OFFLOAD_ATTEMPT,
-           interval, rc, SGP_IsKeepAliveOffloadActive() ? "active" : "inactive");
-    if (SGP_IsKeepAliveOffloadActive()) {
-        SGLOGI(SGDaemon, "code=%s action=cpu_may_sleep", SGND_KEEPALIVE_OFFLOAD_ACTIVE);
-    }
+    SGKAOffload_TryEnable(interval);
 }
 
 - (void)protocolDidReceiveNotification:(NSDictionary *)messageDict {
@@ -1186,7 +1177,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     SGAvailability *avail = [SGAvailability shared];
     if (!avail.scheduledWakeAvailable) return;
 
-    if (SGP_IsKeepAliveOffloadActive()) {
+    if (SGKAOffload_IsActive()) {
         SGLOGI(SGDaemon, "code=%s action=skip_rtc_wake_offload_active", SGND_KEEPALIVE_OFFLOAD_SUPPRESS_WAKE);
         [avail cancelPendingScheduledWake];
         return;
@@ -1669,7 +1660,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         return;
     }
 
-    if (SGP_IsKeepAliveOffloadActive()) {
+    if (SGKAOffload_IsActive()) {
         SGLOGD(SGDaemon, "code=%s action=skip_ping_offload_active", SGND_KEEPALIVE_OFFLOAD_SUPPRESS_WAKE);
         [self _scheduleKeepAliveTimer];
         return;

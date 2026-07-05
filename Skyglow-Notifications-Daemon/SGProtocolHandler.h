@@ -292,23 +292,7 @@ double SGP_GetLastFrameReceivedAt(void);
  */
 double SGP_GetPendingPingAgeWallSeconds(void);
 
-/* Return codes for SGP_TryEnableKeepAliveOffload. */
-#define SGP_OFFLOAD_OK              0 // firmware accepted the offload
-#define SGP_OFFLOAD_UNIMPLEMENTED  -1 // per-version kernel-socket
-#define SGP_OFFLOAD_NO_SOCKET      -2 // not connected
-#define SGP_OFFLOAD_REJECTED       -3 // OS/firmware refused it
-
-/**
- * Attempts to hand this connection's keep-alive to the NIC firmware so the CPU
- * can stay asleep for the whole interval.
- */
-int  SGP_TryEnableKeepAliveOffload(const void *kaPayload, uint32_t kaLen, double intervalSec);
-
-/**
- * Returns YES only when a prior SGP_TryEnableKeepAliveOffload actually
- * succeeded on the current connection.  The daemon suppresses its RTC/interval
- * wakes while this is YES.  Reset to NO on every disconnect.
- */
-BOOL SGP_IsKeepAliveOffloadActive(void);
+/* Underlying TCP socket fd, or -1 when not connected. */
+int SGP_GetSocketFD(void);
 
 #endif
