@@ -5,10 +5,7 @@
 
 /*
  * NIC keep-alive offload: hand the connection's keep-alive to the Wi-Fi
- * firmware so the CPU can stay asleep across the whole interval (goal: beat the
- * RTC-wake path entirely). Gated by a master switch (off by default): off means
- * RTC-wake on every version; on means each version attempts its own kernel
- * backend, best-effort, falling back to RTC when a backend is missing or fails.
+ * firmware so the CPU can stay asleep across the whole interval.
  */
 
 typedef enum {

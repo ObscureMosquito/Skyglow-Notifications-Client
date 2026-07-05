@@ -1,26 +1,17 @@
 #import "SGKeepAliveOffload.h"
 #import "SGProtocolHandler.h"
+#import "SGAvailability.h"
 #import "SGLog.h"
 #import "SGLogDiagnostics.h"
 #import <UIKit/UIKit.h>
 
-/*
- * MASTER NIC OFFLOAD SWITCH.
- *   0 = off (default): RTC-wake keep-alive on every version — guaranteed.
- *   1 = on:  attempt a per-version kernel offload. Each version's backend is
- *            best-effort; with no backend, or on failure, _active stays false
- *            and the RTC-wake path continues. Turning it on can never regress
- *            below the RTC baseline.
- */
-#define SG_NIC_OFFLOAD_MASTER 0
-
 static bool _active = false;
 
-#if SG_NIC_OFFLOAD_MASTER
 /*
  * Per-version kernel backends. Each is filled in as its kernel path is RE'd and
  * validated on-device, and returns SGKAOffloadOK only when the firmware actually
- * took the keep-alive. Wire each into sg_offload_dispatch as it lands.
+ * took the keep-alive. Reached only when SGCapabilityKeepAliveOffload is enabled
+ * (off by default), so it stays dormant in release until a version is turned on.
  */
 static int sg_offload_ios6(int fd, double interval) {   /* Broadcom keep_alive iovar */
     (void)fd; (void)interval;
@@ -32,17 +23,13 @@ static int sg_offload_dispatch(int fd, double interval) {
     if (v >= 6.0 && v < 7.0) return sg_offload_ios6(fd, interval);
     return SGKAOffloadUnimplemented;
 }
-#endif
 
 bool SGKAOffload_Available(void) {
-    return SG_NIC_OFFLOAD_MASTER != 0;
+    return [[SGAvailability shared] keepAliveOffloadAvailable];
 }
 
 int SGKAOffload_TryEnable(double intervalSec) {
-#if !SG_NIC_OFFLOAD_MASTER
-    (void)intervalSec;
-    return SGKAOffloadUnimplemented;
-#else
+    if (!SGKAOffload_Available()) return SGKAOffloadUnimplemented;
     if (!SGP_IsConnected() || SGP_GetSocketFD() < 0) return SGKAOffloadNoSocket;
 
     int rc = sg_offload_dispatch(SGP_GetSocketFD(), intervalSec);
@@ -53,7 +40,6 @@ int SGKAOffload_TryEnable(double intervalSec) {
         SGLOGI(SGKAOffload, "code=%s action=cpu_may_sleep", SGND_KEEPALIVE_OFFLOAD_ACTIVE);
     }
     return rc;
-#endif
 }
 
 bool SGKAOffload_IsActive(void) {

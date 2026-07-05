@@ -21,6 +21,7 @@ typedef NS_ENUM(NSInteger, SGCapability) {
     SGCapabilityGrowthAlgorithm,
     SGCapabilityPowerAssertion,
     SGCapabilityScheduledWake,
+    SGCapabilityKeepAliveOffload,
     SGCapabilityCount  /* sentinel — must be last */
 };
 
@@ -58,6 +59,8 @@ typedef NS_ENUM(NSInteger, SGCapability) {
 @property (nonatomic, readonly) BOOL powerAssertionAvailable;
 
 @property (nonatomic, readonly) BOOL scheduledWakeAvailable;
+
+@property (nonatomic, readonly) BOOL keepAliveOffloadAvailable;
 
 #pragma mark - PCPersistentTimer
 
