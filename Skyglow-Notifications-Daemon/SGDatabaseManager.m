@@ -6,9 +6,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define SG_SCHEMA_LATEST_VERSION 4
+#define SG_DATABASE_APPLICATION_ID 0x53474E44
+#define SG_SCHEMA_VERSION 1
 
 #define SG_DEDUP_DEFAULT_RETENTION_SEC ((int64_t)86400)
+
+static sqlite3_int64 SGActiveProfileID(void) {
+    NSInteger profile = [[SGConfiguration sharedConfiguration] activeProfileIndex];
+    return (sqlite3_int64)((profile >= 1 && profile <= 5) ? profile : 1);
+}
 
 @implementation SGDatabaseManager {
     sqlite3 *_database;
@@ -56,96 +62,141 @@
         chown([[dbPath stringByAppendingString:@"-wal"] UTF8String], 501, 501);
         chown([[dbPath stringByAppendingString:@"-shm"] UTF8String], 501, 501);
 
-        char *errorMsg = NULL;
-        const char *notifTable = "CREATE TABLE IF NOT EXISTS notifications "
-                                 "(routing_key BLOB PRIMARY KEY, e2ee_key BLOB, bundle_id TEXT, token BLOB)";
-        if (sqlite3_exec(_database, notifTable, NULL, NULL, &errorMsg) != SQLITE_OK) {
-            SGLOGE(SGDatabaseManager, "code=%s result=failed reason=%s", SGND_DATABASE_SCHEMA_FAILED, errorMsg ? errorMsg : "(null)");
-            sqlite3_free(errorMsg);
+        if (![self _initializeSchema]) {
+            [self release];
+            return nil;
         }
-        const char *dnsTable = "CREATE TABLE IF NOT EXISTS dns_cache "
-                               "(domain TEXT PRIMARY KEY, ip TEXT NOT NULL, port TEXT NOT NULL, updated_at REAL NOT NULL)";
-        sqlite3_exec(_database, dnsTable, NULL, NULL, NULL);
 
-        const char *ackTable = "CREATE TABLE IF NOT EXISTS pending_acks "
-                               "(msg_id BLOB PRIMARY KEY, status INTEGER NOT NULL)";
-        sqlite3_exec(_database, ackTable, NULL, NULL, NULL);
-
-        const char *settingsTable = "CREATE TABLE IF NOT EXISTS settings "
-                                    "(key TEXT PRIMARY KEY, value REAL NOT NULL)";
-        sqlite3_exec(_database, settingsTable, NULL, NULL, NULL);
-
-        sqlite3_exec(_database,
-            "INSERT OR IGNORE INTO settings (key, value) VALUES ('last_delivered_seq', 0)",
-            NULL, NULL, NULL);
-
-        [self _migrateSchema];
+        sqlite3_stmt *defaultSeq = NULL;
+        BOOL defaultSeqReady = (sqlite3_prepare_v2(_database,
+                "INSERT OR IGNORE INTO settings (profile_id, key, value) "
+                "VALUES (?, 'last_delivered_seq', 0)",
+                -1, &defaultSeq, NULL) == SQLITE_OK);
+        if (defaultSeqReady) {
+            sqlite3_bind_int64(defaultSeq, 1, SGActiveProfileID());
+            defaultSeqReady = (sqlite3_step(defaultSeq) == SQLITE_DONE);
+            sqlite3_finalize(defaultSeq);
+        }
+        if (!defaultSeqReady) {
+            SGLOGE(SGDatabaseManager,
+                   "code=%s result=failed reason=default_sequence",
+                   SGND_DATABASE_SCHEMA_FAILED);
+            [self release];
+            return nil;
+        }
     }
     return self;
 }
 
-- (void)_migrateSchema {
-    int currentVersion = 0;
-    sqlite3_stmt *probe = NULL;
-    if (sqlite3_prepare_v2(_database, "PRAGMA user_version", -1, &probe, NULL) == SQLITE_OK) {
-        if (sqlite3_step(probe) == SQLITE_ROW) currentVersion = sqlite3_column_int(probe, 0);
-        sqlite3_finalize(probe);
+- (BOOL)_readPragmaInteger:(const char *)pragmaSQL value:(int *)outValue {
+    if (!pragmaSQL || !outValue) return NO;
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_database, pragmaSQL, -1, &stmt, NULL) != SQLITE_OK) {
+        return NO;
+    }
+    BOOL ok = (sqlite3_step(stmt) == SQLITE_ROW);
+    if (ok) *outValue = sqlite3_column_int(stmt, 0);
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+- (BOOL)_initializeSchema {
+    int applicationID = 0;
+    int schemaVersion = 0;
+    if (![self _readPragmaInteger:"PRAGMA application_id" value:&applicationID] ||
+        ![self _readPragmaInteger:"PRAGMA user_version" value:&schemaVersion]) {
+        SGLOGE(SGDatabaseManager,
+               "code=%s result=failed reason=version_probe",
+               SGND_DATABASE_SCHEMA_FAILED);
+        return NO;
     }
 
-    while (currentVersion < SG_SCHEMA_LATEST_VERSION) {
-        int targetVersion = currentVersion + 1;
-        const char *migration = NULL;
-
-        switch (targetVersion) {
-            case 1:
-                migration = NULL;
-                break;
-            case 2:
-                migration =
-                    "CREATE TABLE IF NOT EXISTS seen_messages "
-                    "(msg_id BLOB PRIMARY KEY, expires_at INTEGER NOT NULL)";
-                break;
-            case 3:
-                migration =
-                    "CREATE TABLE IF NOT EXISTS local_pending_deliveries "
-                    "(msg_id BLOB PRIMARY KEY, bundle_id TEXT NOT NULL, "
-                    "payload BLOB NOT NULL, device_seq INTEGER NOT NULL DEFAULT 0, "
-                    "expires_at INTEGER NOT NULL)";
-                break;
-            case 4:
-                migration =
-                    "ALTER TABLE notifications ADD COLUMN is_muted INTEGER NOT NULL DEFAULT 0";
-                break;
-        }
-
-        sqlite3_exec(_database, "BEGIN IMMEDIATE", NULL, NULL, NULL);
-        int rc = SQLITE_OK;
-        if (migration) {
-            char *err = NULL;
-            rc = sqlite3_exec(_database, migration, NULL, NULL, &err);
-            if (rc != SQLITE_OK) {
-                SGLOGE(SGDatabaseManager, "code=%s from=%d to=%d result=failed reason=%s", SGND_DATABASE_MIGRATION_FAILED,
-                            currentVersion, targetVersion, err ? err : "(null)");
-                sqlite3_free(err);
-                sqlite3_exec(_database, "ROLLBACK", NULL, NULL, NULL);
-                return;
-            }
-        }
-
-        char stamp[64];
-        snprintf(stamp, sizeof(stamp), "PRAGMA user_version = %d", targetVersion);
-
-        if (sqlite3_exec(_database, stamp, NULL, NULL, NULL) != SQLITE_OK ||
-            sqlite3_exec(_database, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
-            SGLOGE(SGDatabaseManager, "code=%s from=%d to=%d result=failed reason=commit", SGND_DATABASE_MIGRATION_FAILED,
-                        currentVersion, targetVersion);
-            sqlite3_exec(_database, "ROLLBACK", NULL, NULL, NULL);
-            return;
-        }
-
-        SGLOGI(SGDatabaseManager, "code=%s from=%d to=%d result=ok", SGND_DATABASE_MIGRATED, currentVersion, targetVersion);
-        currentVersion = targetVersion;
+    if (applicationID == SG_DATABASE_APPLICATION_ID &&
+        schemaVersion == SG_SCHEMA_VERSION) {
+        return YES;
     }
+
+    /*
+     * This is the first public schema.  Development databases from older
+     * builds are deliberately rejected instead of being silently rewritten;
+     * remove the unpublished test database once when installing this build.
+     */
+    if (applicationID != 0 || schemaVersion != 0) {
+        SGLOGE(SGDatabaseManager,
+               "code=%s result=failed reason=incompatible_unpublished_schema app_id=%d version=%d",
+               SGND_DATABASE_SCHEMA_FAILED, applicationID, schemaVersion);
+        return NO;
+    }
+
+    const char *schema =
+        "CREATE TABLE notifications ("
+        " profile_id INTEGER NOT NULL,"
+        " routing_key BLOB NOT NULL,"
+        " e2ee_key BLOB NOT NULL,"
+        " bundle_id TEXT NOT NULL,"
+        " token BLOB NOT NULL,"
+        " is_muted INTEGER NOT NULL DEFAULT 0,"
+        " PRIMARY KEY(profile_id, routing_key),"
+        " UNIQUE(profile_id, bundle_id));"
+        "CREATE TABLE dns_cache ("
+        " profile_id INTEGER NOT NULL,"
+        " domain TEXT NOT NULL,"
+        " ip TEXT NOT NULL,"
+        " port TEXT NOT NULL,"
+        " updated_at REAL NOT NULL,"
+        " PRIMARY KEY(profile_id, domain));"
+        "CREATE TABLE pending_acks ("
+        " profile_id INTEGER NOT NULL,"
+        " msg_id BLOB NOT NULL,"
+        " status INTEGER NOT NULL,"
+        " PRIMARY KEY(profile_id, msg_id));"
+        "CREATE TABLE settings ("
+        " profile_id INTEGER NOT NULL,"
+        " key TEXT NOT NULL,"
+        " value NUMERIC NOT NULL,"
+        " PRIMARY KEY(profile_id, key));"
+        "CREATE TABLE seen_messages ("
+        " profile_id INTEGER NOT NULL,"
+        " msg_id BLOB NOT NULL,"
+        " expires_at INTEGER NOT NULL,"
+        " PRIMARY KEY(profile_id, msg_id));"
+        "CREATE TABLE local_pending_deliveries ("
+        " profile_id INTEGER NOT NULL,"
+        " msg_id BLOB NOT NULL,"
+        " bundle_id TEXT NOT NULL,"
+        " payload BLOB NOT NULL,"
+        " device_seq INTEGER NOT NULL DEFAULT 0,"
+        " expires_at INTEGER NOT NULL,"
+        " PRIMARY KEY(profile_id, msg_id));"
+        "PRAGMA application_id = 1397182020;"
+        "PRAGMA user_version = 1;";
+
+    if (sqlite3_exec(_database, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+        SGLOGE(SGDatabaseManager,
+               "code=%s result=failed reason=begin",
+               SGND_DATABASE_SCHEMA_FAILED);
+        return NO;
+    }
+
+    char *errorMessage = NULL;
+    if (sqlite3_exec(_database, schema, NULL, NULL, &errorMessage) != SQLITE_OK) {
+        SGLOGE(SGDatabaseManager,
+               "code=%s result=failed reason=%s",
+               SGND_DATABASE_SCHEMA_FAILED,
+               errorMessage ? errorMessage : "(unknown)");
+        sqlite3_free(errorMessage);
+        sqlite3_exec(_database, "ROLLBACK", NULL, NULL, NULL);
+        return NO;
+    }
+
+    if (sqlite3_exec(_database, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+        SGLOGE(SGDatabaseManager,
+               "code=%s result=failed reason=commit",
+               SGND_DATABASE_SCHEMA_FAILED);
+        sqlite3_exec(_database, "ROLLBACK", NULL, NULL, NULL);
+        return NO;
+    }
+    return YES;
 }
 
 - (void)dealloc {
@@ -168,13 +219,17 @@
 
     __block BOOL success = NO;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "INSERT OR REPLACE INTO notifications (routing_key, e2ee_key, bundle_id, token) VALUES (?, ?, ?, ?)";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "INSERT OR REPLACE INTO notifications "
+                          "(profile_id, routing_key, e2ee_key, bundle_id, token) "
+                          "VALUES (?, ?, ?, ?, ?)";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, [routingKey bytes], (int)[routingKey length], SQLITE_TRANSIENT);
-            sqlite3_bind_blob(stmt, 2, [e2eeKey bytes], (int)[e2eeKey length], SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 3, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
-            sqlite3_bind_blob(stmt, 4, [token bytes], (int)[token length], SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_blob(stmt, 2, [routingKey bytes], (int)[routingKey length], SQLITE_TRANSIENT);
+            sqlite3_bind_blob(stmt, 3, [e2eeKey bytes], (int)[e2eeKey length], SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 4, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_blob(stmt, 5, [token bytes], (int)[token length], SQLITE_TRANSIENT);
             success = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
         }
@@ -185,10 +240,13 @@
 - (NSArray *)tokenEntriesForBundleIdentifier:(NSString *)bundleID {
     __block NSMutableArray *results = [NSMutableArray array];
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT routing_key, e2ee_key, bundle_id, token FROM notifications WHERE bundle_id = ?";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "SELECT routing_key, e2ee_key, bundle_id, token "
+                          "FROM notifications WHERE profile_id = ? AND bundle_id = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_text(stmt, 2, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 [results addObject:@{
                     @"routingKey": [NSData dataWithBytes:sqlite3_column_blob(stmt, 0) length:sqlite3_column_bytes(stmt, 0)],
@@ -206,10 +264,12 @@
 - (BOOL)removeTokenForBundleIdentifier:(NSString *)bundleID {
     __block BOOL ok = NO;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "DELETE FROM notifications WHERE bundle_id = ?";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "DELETE FROM notifications WHERE profile_id = ? AND bundle_id = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_text(stmt, 2, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
             ok = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
         }
@@ -220,7 +280,13 @@
 - (BOOL)clearAllTokens {
     __block BOOL ok = NO;
     dispatch_sync(_databaseQueue, ^{
-        ok = (sqlite3_exec(_database, "DELETE FROM notifications;", NULL, NULL, NULL) == SQLITE_OK);
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(_database,
+                "DELETE FROM notifications WHERE profile_id = ?", -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, SGActiveProfileID());
+            ok = (sqlite3_step(stmt) == SQLITE_DONE);
+            sqlite3_finalize(stmt);
+        }
     });
     return ok;
 }
@@ -228,7 +294,39 @@
 - (BOOL)clearAllDNSCache {
     __block BOOL ok = NO;
     dispatch_sync(_databaseQueue, ^{
-        ok = (sqlite3_exec(_database, "DELETE FROM dns_cache;", NULL, NULL, NULL) == SQLITE_OK);
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(_database,
+                "DELETE FROM dns_cache WHERE profile_id = ?", -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, SGActiveProfileID());
+            ok = (sqlite3_step(stmt) == SQLITE_DONE);
+            sqlite3_finalize(stmt);
+        }
+    });
+    return ok;
+}
+
+- (BOOL)clearOperationalStateForProfile:(NSInteger)profileIndex {
+    if (profileIndex < 1 || profileIndex > 5) return NO;
+    __block BOOL ok = NO;
+    dispatch_sync(_databaseQueue, ^{
+        const char *tables[] = {
+            "notifications", "dns_cache", "pending_acks", "settings",
+            "seen_messages", "local_pending_deliveries"
+        };
+        ok = (sqlite3_exec(_database, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK);
+        for (size_t i = 0; ok && i < sizeof(tables) / sizeof(tables[0]); i++) {
+            char sql[128];
+            snprintf(sql, sizeof(sql), "DELETE FROM %s WHERE profile_id = ?", tables[i]);
+            sqlite3_stmt *stmt = NULL;
+            if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) != SQLITE_OK) {
+                ok = NO;
+                break;
+            }
+            sqlite3_bind_int64(stmt, 1, (sqlite3_int64)profileIndex);
+            ok = (sqlite3_step(stmt) == SQLITE_DONE);
+            sqlite3_finalize(stmt);
+        }
+        sqlite3_exec(_database, ok ? "COMMIT" : "ROLLBACK", NULL, NULL, NULL);
     });
     return ok;
 }
@@ -236,9 +334,12 @@
 - (NSArray *)allBundleRegistrations {
     __block NSMutableArray *results = [NSMutableArray array];
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT routing_key, bundle_id, is_muted FROM notifications";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "SELECT routing_key, bundle_id, is_muted "
+                          "FROM notifications WHERE profile_id = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, profileID);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 const char *bID = (const char *)sqlite3_column_text(stmt, 1);
                 if (!bID) continue;
@@ -258,11 +359,14 @@
     if (!bundleID) return NO;
     __block BOOL ok = NO;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "UPDATE notifications SET is_muted = ? WHERE bundle_id = ?";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "UPDATE notifications SET is_muted = ? "
+                          "WHERE profile_id = ? AND bundle_id = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
             sqlite3_bind_int(stmt, 1, muted ? 1 : 0);
-            sqlite3_bind_text(stmt, 2, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 2, profileID);
+            sqlite3_bind_text(stmt, 3, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
             ok = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
         }
@@ -274,10 +378,13 @@
     if (!routingKey) return NO;
     __block BOOL muted = NO;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT is_muted FROM notifications WHERE routing_key = ?";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "SELECT is_muted FROM notifications "
+                          "WHERE profile_id = ? AND routing_key = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, [routingKey bytes], (int)[routingKey length], SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_blob(stmt, 2, [routingKey bytes], (int)[routingKey length], SQLITE_TRANSIENT);
             if (sqlite3_step(stmt) == SQLITE_ROW) {
                 muted = (sqlite3_column_int(stmt, 0) != 0);
             }
@@ -290,9 +397,11 @@
 - (NSSet *)registeredBundleIdentifiers {
     __block NSMutableSet *ids = [NSMutableSet set];
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT DISTINCT bundle_id FROM notifications";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "SELECT DISTINCT bundle_id FROM notifications WHERE profile_id = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, profileID);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 const char *bID = (const char *)sqlite3_column_text(stmt, 0);
                 if (bID) [ids addObject:[NSString stringWithUTF8String:bID]];
@@ -306,10 +415,13 @@
 - (NSDictionary *)cachedDNSForDomain:(NSString *)domain maxAge:(NSTimeInterval)maxAge {
     __block NSDictionary *result = nil;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT ip, port, updated_at FROM dns_cache WHERE domain = ?";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "SELECT ip, port, updated_at FROM dns_cache "
+                          "WHERE profile_id = ? AND domain = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, [domain UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_text(stmt, 2, [domain UTF8String], -1, SQLITE_TRANSIENT);
             if (sqlite3_step(stmt) == SQLITE_ROW) {
                 double updated = sqlite3_column_double(stmt, 2);
                 if ([[NSDate date] timeIntervalSince1970] - updated < maxAge) {
@@ -326,13 +438,16 @@
 }
 
 - (BOOL)enqueueAcknowledgementForMessageID:(NSData *)msgID status:(int)status {
+    sqlite3_int64 profileID = SGActiveProfileID();
     __block BOOL ok = NO;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "INSERT OR REPLACE INTO pending_acks (msg_id, status) VALUES (?, ?)";
+        const char *sql = "INSERT OR REPLACE INTO pending_acks "
+                          "(profile_id, msg_id, status) VALUES (?, ?, ?)";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
-            sqlite3_bind_int(stmt, 2, status);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_blob(stmt, 2, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, 3, status);
             ok = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
         }
@@ -343,9 +458,11 @@
 - (NSArray *)pendingAcknowledgements {
     __block NSMutableArray *results = [NSMutableArray array];
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT msg_id, status FROM pending_acks";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "SELECT msg_id, status FROM pending_acks WHERE profile_id = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, profileID);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 [results addObject:@{
                     @"msgID": [NSData dataWithBytes:sqlite3_column_blob(stmt, 0) length:sqlite3_column_bytes(stmt, 0)],
@@ -359,12 +476,14 @@
 }
 
 - (BOOL)removeAcknowledgementForMessageID:(NSData *)msgID {
+    sqlite3_int64 profileID = SGActiveProfileID();
     __block BOOL ok = NO;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "DELETE FROM pending_acks WHERE msg_id = ?";
+        const char *sql = "DELETE FROM pending_acks WHERE profile_id = ? AND msg_id = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_blob(stmt, 2, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
             ok = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
         }
@@ -376,10 +495,13 @@
     if (!routingKey) return nil;
     __block NSDictionary *result = nil;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT e2ee_key, bundle_id FROM notifications WHERE routing_key = ?";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "SELECT e2ee_key, bundle_id FROM notifications "
+                          "WHERE profile_id = ? AND routing_key = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, [routingKey bytes], (int)[routingKey length], SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_blob(stmt, 2, [routingKey bytes], (int)[routingKey length], SQLITE_TRANSIENT);
             if (sqlite3_step(stmt) == SQLITE_ROW) {
                 result = [@{
                     @"e2eeKey": [NSData dataWithBytes:sqlite3_column_blob(stmt, 0) length:sqlite3_column_bytes(stmt, 0)],
@@ -396,13 +518,16 @@
     if (!domain || !ip || !port) return NO;
     __block BOOL ok = NO;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "INSERT OR REPLACE INTO dns_cache (domain, ip, port, updated_at) VALUES (?, ?, ?, ?)";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "INSERT OR REPLACE INTO dns_cache "
+                          "(profile_id, domain, ip, port, updated_at) VALUES (?, ?, ?, ?, ?)";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, [domain UTF8String], -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 2, [ip UTF8String], -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 3, [port UTF8String], -1, SQLITE_TRANSIENT);
-            sqlite3_bind_double(stmt, 4, [[NSDate date] timeIntervalSince1970]);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_text(stmt, 2, [domain UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 3, [ip UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 4, [port UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 5, [[NSDate date] timeIntervalSince1970]);
             ok = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
         }
@@ -411,12 +536,15 @@
 }
 
 - (void)saveKeepAliveInterval:(double)interval forWiFi:(BOOL)isWiFi {
+    sqlite3_int64 profileID = SGActiveProfileID();
     dispatch_async(_databaseQueue, ^{
-        const char *sql = "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)";
+        const char *sql = "INSERT OR REPLACE INTO settings "
+                          "(profile_id, key, value) VALUES (?, ?, ?)";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, isWiFi ? "keepalive_wifi" : "keepalive_wwan", -1, SQLITE_TRANSIENT);
-            sqlite3_bind_double(stmt, 2, interval);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_text(stmt, 2, isWiFi ? "keepalive_wifi" : "keepalive_wwan", -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 3, interval);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
@@ -426,10 +554,12 @@
 - (double)loadKeepAliveIntervalForWiFi:(BOOL)isWiFi {
     __block double result = 0.0;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT value FROM settings WHERE key = ?";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "SELECT value FROM settings WHERE profile_id = ? AND key = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, isWiFi ? "keepalive_wifi" : "keepalive_wwan", -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_text(stmt, 2, isWiFi ? "keepalive_wifi" : "keepalive_wwan", -1, SQLITE_TRANSIENT);
             if (sqlite3_step(stmt) == SQLITE_ROW) {
                 result = sqlite3_column_double(stmt, 0);
             }
@@ -442,11 +572,14 @@
 - (int64_t)lastDeliveredSeq {
     __block int64_t seq = 0;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT value FROM settings WHERE key = 'last_delivered_seq'";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "SELECT value FROM settings "
+                          "WHERE profile_id = ? AND key = 'last_delivered_seq'";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, profileID);
             if (sqlite3_step(stmt) == SQLITE_ROW) {
-                seq = (int64_t)sqlite3_column_double(stmt, 0);
+                seq = sqlite3_column_int64(stmt, 0);
             }
             sqlite3_finalize(stmt);
         }
@@ -455,11 +588,14 @@
 }
 
 - (void)updateLastDeliveredSeq:(int64_t)seq {
+    sqlite3_int64 profileID = SGActiveProfileID();
     dispatch_async(_databaseQueue, ^{
-        const char *sql = "INSERT OR REPLACE INTO settings (key, value) VALUES ('last_delivered_seq', ?)";
+        const char *sql = "INSERT OR REPLACE INTO settings "
+                          "(profile_id, key, value) VALUES (?, 'last_delivered_seq', ?)";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_double(stmt, 1, (double)seq);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_int64(stmt, 2, seq);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
@@ -478,10 +614,13 @@
     if (!msgID || [msgID length] == 0) return NO;
     __block BOOL seen = NO;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT 1 FROM seen_messages WHERE msg_id = ? LIMIT 1";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "SELECT 1 FROM seen_messages "
+                          "WHERE profile_id = ? AND msg_id = ? LIMIT 1";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_blob(stmt, 2, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
             seen = (sqlite3_step(stmt) == SQLITE_ROW);
             sqlite3_finalize(stmt);
         }
@@ -493,12 +632,15 @@
     if (!msgID || [msgID length] == 0) return;
     int64_t now = (int64_t)time(NULL);
     int64_t effective = (expiresAt > now) ? expiresAt : (now + SG_DEDUP_DEFAULT_RETENTION_SEC);
+    sqlite3_int64 profileID = SGActiveProfileID();
     dispatch_async(_databaseQueue, ^{
-        const char *sql = "INSERT OR REPLACE INTO seen_messages (msg_id, expires_at) VALUES (?, ?)";
+        const char *sql = "INSERT OR REPLACE INTO seen_messages "
+                          "(profile_id, msg_id, expires_at) VALUES (?, ?, ?)";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
-            sqlite3_bind_int64(stmt, 2, effective);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_blob(stmt, 2, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 3, effective);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
@@ -506,11 +648,14 @@
 }
 
 - (void)pruneExpiredSeenMessagesAsOf:(int64_t)nowEpoch {
+    sqlite3_int64 profileID = SGActiveProfileID();
     dispatch_async(_databaseQueue, ^{
-        const char *sql = "DELETE FROM seen_messages WHERE expires_at < ?";
+        const char *sql = "DELETE FROM seen_messages "
+                          "WHERE profile_id = ? AND expires_at < ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, nowEpoch);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_int64(stmt, 2, nowEpoch);
             sqlite3_step(stmt);
             sqlite3_finalize(stmt);
         }
@@ -523,18 +668,20 @@
                                       deviceSeq:(int64_t)deviceSeq
                                       expiresAt:(int64_t)expiresAt {
     if (!msgID || [msgID length] == 0 || !bundleID || !serializedPayload) return NO;
+    sqlite3_int64 profileID = SGActiveProfileID();
     __block BOOL ok = NO;
     dispatch_sync(_databaseQueue, ^{
         const char *sql = "INSERT OR REPLACE INTO local_pending_deliveries "
-                          "(msg_id, bundle_id, payload, device_seq, expires_at) "
-                          "VALUES (?, ?, ?, ?, ?)";
+                          "(profile_id, msg_id, bundle_id, payload, device_seq, expires_at) "
+                          "VALUES (?, ?, ?, ?, ?, ?)";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 2, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
-            sqlite3_bind_blob(stmt, 3, [serializedPayload bytes], (int)[serializedPayload length], SQLITE_TRANSIENT);
-            sqlite3_bind_int64(stmt, 4, deviceSeq);
-            sqlite3_bind_int64(stmt, 5, expiresAt);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_blob(stmt, 2, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 3, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_blob(stmt, 4, [serializedPayload bytes], (int)[serializedPayload length], SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 5, deviceSeq);
+            sqlite3_bind_int64(stmt, 6, expiresAt);
             ok = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
         }
@@ -545,9 +692,12 @@
 - (NSArray *)allLocalPendingDeliveries {
     __block NSMutableArray *results = [NSMutableArray array];
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT msg_id, bundle_id, payload, device_seq, expires_at FROM local_pending_deliveries";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "SELECT msg_id, bundle_id, payload, device_seq, expires_at "
+                          "FROM local_pending_deliveries WHERE profile_id = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, profileID);
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 const char *bID = (const char *)sqlite3_column_text(stmt, 1);
                 [results addObject:@{
@@ -568,10 +718,13 @@
     if (!msgID || [msgID length] == 0) return NO;
     __block BOOL ok = NO;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "DELETE FROM local_pending_deliveries WHERE msg_id = ?";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "DELETE FROM local_pending_deliveries "
+                          "WHERE profile_id = ? AND msg_id = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_blob(stmt, 2, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
             ok = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
         }
@@ -583,10 +736,13 @@
     if (!bundleID || [bundleID length] == 0) return NO;
     __block BOOL ok = NO;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "DELETE FROM local_pending_deliveries WHERE bundle_id = ?";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "DELETE FROM local_pending_deliveries "
+                          "WHERE profile_id = ? AND bundle_id = ?";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_text(stmt, 2, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
             ok = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
         }
@@ -598,10 +754,13 @@
     if (!msgID || [msgID length] == 0) return NO;
     __block BOOL present = NO;
     dispatch_sync(_databaseQueue, ^{
-        const char *sql = "SELECT 1 FROM local_pending_deliveries WHERE msg_id = ? LIMIT 1";
+        sqlite3_int64 profileID = SGActiveProfileID();
+        const char *sql = "SELECT 1 FROM local_pending_deliveries "
+                          "WHERE profile_id = ? AND msg_id = ? LIMIT 1";
         sqlite3_stmt *stmt;
         if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
+            sqlite3_bind_int64(stmt, 1, profileID);
+            sqlite3_bind_blob(stmt, 2, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
             present = (sqlite3_step(stmt) == SQLITE_ROW);
             sqlite3_finalize(stmt);
         }

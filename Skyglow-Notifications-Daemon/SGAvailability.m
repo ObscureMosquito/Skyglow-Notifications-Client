@@ -44,7 +44,6 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
     [SGCapabilityGrowthAlgorithm]  = { "PCMultiStageGrowthAlgorithm", 6.0, 6.99 },
     [SGCapabilityPowerAssertion]   = { NULL,                          2.0, 0.0  },
     [SGCapabilityScheduledWake]    = { NULL,                          2.0, 5.99 },
-    [SGCapabilityKeepAliveOffload] = { NULL,                         99.0, 0.0  },
 };
 
 @interface NSObject (PCPrivateTimerAPI)

@@ -9,6 +9,7 @@
 #define SGP_VERSION             ((uint8_t)0x02)
 #define SGP_HEADER_SIZE         8
 #define SGP_MAX_PAYLOAD_LEN     4096
+#define SGP_SERVER_ADDRESS_MAX_BYTES 16
 
 /** Timing (seconds) */
 #define SGP_PONG_TIMEOUT_SEC       15

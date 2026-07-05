@@ -20,8 +20,7 @@ typedef NS_ENUM(NSInteger, SGCapability) {
     SGCapabilityPersistentTimer,
     SGCapabilityGrowthAlgorithm,
     SGCapabilityPowerAssertion,
-    SGCapabilityScheduledWake,   /* pre-iOS-6 RTC-wake keepalive fallback */
-    SGCapabilityKeepAliveOffload,/* NIC keepalive offload */
+    SGCapabilityScheduledWake,
     SGCapabilityCount  /* sentinel — must be last */
 };
 

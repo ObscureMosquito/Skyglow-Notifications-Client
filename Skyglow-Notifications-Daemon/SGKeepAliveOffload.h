@@ -6,9 +6,9 @@
 /*
  * NIC keep-alive offload: hand the connection's keep-alive to the Wi-Fi
  * firmware so the CPU can stay asleep across the whole interval (goal: beat the
- * RTC-wake path entirely). The per-device kernel programming lives in
- * SGKAOffload_TryEnable; until a backend exists it reports Unimplemented and
- * never activates, so the RTC-wake path stays fully in effect.
+ * RTC-wake path entirely). Gated by a master switch (off by default): off means
+ * RTC-wake on every version; on means each version attempts its own kernel
+ * backend, best-effort, falling back to RTC when a backend is missing or fails.
  */
 
 typedef enum {

@@ -1,10 +1,6 @@
 TARGET := iphone:clang:7.0:4.0
 ARCHS = armv7 armv7s arm64
 
-export ADDITIONAL_CFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -fno-builtin -fno-stack-protector
-export ADDITIONAL_OBJCFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -fno-builtin -fno-stack-protector
-export ADDITIONAL_CCFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -fno-builtin -fno-stack-protector
-
 include $(THEOS)/makefiles/common.mk
  
 TOOL_NAME = SkyglowNotificationsDaemon
@@ -31,6 +27,7 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/SGCompatibilityShim.m \
     libraries/sqlite/sqlite3.c
 SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result \
+  -fstack-protector-all -D_FORTIFY_SOURCE=2 \
   -I$(THEOS_PROJECT_DIR)/libraries/openssl/include \
   -I$(THEOS_PROJECT_DIR)/libraries/sqlite/include \
   -DSQLITE_THREADSAFE=1 \

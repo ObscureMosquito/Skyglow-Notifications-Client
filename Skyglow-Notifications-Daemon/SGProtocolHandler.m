@@ -795,7 +795,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         case SGP_S_NOTIFY:
         case SGP_S_AUTH_OK:
         case SGP_S_POLL_DONE:
-        case SGP_S_PONG:
             pthread_mutex_lock(&_pingLock);
             _pingPendingSince = 0.0;
             _pingPendingWallSince = 0;
@@ -978,13 +977,19 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         case SGP_S_PONG: {
             pthread_mutex_lock(&_pingLock);
             uint64_t seq = _pingSeq;
-            pthread_mutex_unlock(&_pingLock);
-            if (SG_DecodeBE64(raw) == (int64_t)seq) {
-                pthread_mutex_lock(&_pingLock);
+            BOOL pingWasPending = (_pingPendingSince > 0.0);
+            BOOL sequenceMatches = (SG_DecodeBE64(raw) == (int64_t)seq);
+            if (pingWasPending && sequenceMatches) {
                 _pingPendingSince = 0.0;
                 _pingPendingWallSince = 0;
-                pthread_mutex_unlock(&_pingLock);
+            }
+            pthread_mutex_unlock(&_pingLock);
+            if (pingWasPending && sequenceMatches) {
                 [_delegate protocolDidReceiveKeepAlivePong];
+            } else {
+                SGLOGW(SGP, "code=%s received=%lld expected=%llu pending=%s action=ignore",
+                       SGND_KEEPALIVE_PONG_STALE, SG_DecodeBE64(raw),
+                       (unsigned long long)seq, pingWasPending ? "yes" : "no");
             }
             break;
         }
@@ -1037,6 +1042,8 @@ cleanup:
 
 void SGP_RequestOfflineMessages(void) {
     if (!SGP_IsConnected()) return;
-    uint8_t seqBE[8] = {0};
+    int64_t lastDeliveredSeq = [[SGDatabaseManager sharedManager] lastDeliveredSeq];
+    uint8_t seqBE[8];
+    SG_EncodeBE64(lastDeliveredSeq, seqBE);
     SGP_LowLevelSend(SGP_C_POLL, seqBE, 8);
 }

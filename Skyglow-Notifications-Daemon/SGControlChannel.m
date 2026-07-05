@@ -582,7 +582,13 @@ static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, 
 #pragma mark - Server-Side Dispatch
 
 
-static const char * const kSGCAllowedSenderNames[] = { "SpringBoard", "Preferences", "Settings" };
+static const char * const kSGCAllowedSenderPaths[] = {
+    "/System/Library/CoreServices/SpringBoard.app/SpringBoard",
+    "/Applications/Preferences.app/Preferences",
+    "/System/Applications/Preferences.app/Preferences",
+    "/Applications/Settings.app/Settings",
+    "/System/Applications/Settings.app/Settings",
+};
 
 static BOOL SGCResolveSenderName(pid_t pid, char *out, size_t outLen) {
     if (!out || outLen == 0) return NO;
@@ -596,11 +602,41 @@ static BOOL SGCResolveSenderName(pid_t pid, char *out, size_t outLen) {
     return (out[0] != '\0');
 }
 
-static BOOL SGCSenderAuthorized(uid_t euid, const char *senderName) {
-    if (euid == 0) return YES;                 /* our own root command-line tools */
-    if (!senderName || senderName[0] == '\0') return NO;
-    for (size_t i = 0; i < sizeof(kSGCAllowedSenderNames) / sizeof(kSGCAllowedSenderNames[0]); i++) {
-        if (strcmp(senderName, kSGCAllowedSenderNames[i]) == 0) return YES;
+static BOOL SGCResolveSenderPath(pid_t pid, char *out, size_t outLen) {
+    if (!out || outLen == 0 || pid <= 0) return NO;
+    out[0] = '\0';
+
+    int mib[3] = { CTL_KERN, KERN_PROCARGS2, pid };
+    size_t size = 0;
+    if (sysctl(mib, 3, NULL, &size, NULL, 0) != 0 ||
+        size <= sizeof(int) || size > 65536) {
+        return NO;
+    }
+
+    char *args = (char *)malloc(size);
+    if (!args) return NO;
+    BOOL ok = NO;
+    if (sysctl(mib, 3, args, &size, NULL, 0) == 0 && size > sizeof(int)) {
+        const char *execPath = args + sizeof(int);
+        size_t available = size - sizeof(int);
+        size_t pathLen = strnlen(execPath, available);
+        if (pathLen > 0 && pathLen < available && pathLen < outLen) {
+            memcpy(out, execPath, pathLen);
+            out[pathLen] = '\0';
+            ok = YES;
+        }
+    }
+    free(args);
+    return ok;
+}
+
+static BOOL SGCSenderAuthorized(uid_t euid, const char *senderPath) {
+    if (euid == 0) return YES; /* Explicitly trusted administrative tools. */
+    if (euid != 501 || !senderPath || senderPath[0] == '\0') return NO;
+    for (size_t i = 0;
+         i < sizeof(kSGCAllowedSenderPaths) / sizeof(kSGCAllowedSenderPaths[0]);
+         i++) {
+        if (strcmp(senderPath, kSGCAllowedSenderPaths[i]) == 0) return YES;
     }
     return NO;
 }
@@ -617,19 +653,32 @@ static BOOL SGCSenderAuthorized(uid_t euid, const char *senderName) {
         BOOL haveToken = (trailer->msgh_trailer_size >= sizeof(mach_msg_audit_trailer_t));
 
         if (!haveToken) {
-            SGLOGW(SGControlChannel, "code=%s type=0x%02x result=allowed_unenforced",
+            SGLOGW(SGControlChannel, "code=%s type=0x%02x result=denied_no_audit_token",
                    SGND_CONTROL_AUTH_UNENFORCED, type);
+            SGCErrorResponsePayload err;
+            memset(&err, 0, sizeof(err));
+            SGCCopyCString(err.message, sizeof(err.message), "missing sender credentials");
+            SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
+                           SGCMSG_ERROR_RESPONSE, 0, SGCERR_UNAUTHORIZED,
+                           requestId, 0, &err, sizeof(err));
+            if (MACH_PORT_VALID(replyPort)) {
+                mach_port_deallocate(mach_task_self(), replyPort);
+            }
+            return;
         } else {
             uid_t senderEuid = (uid_t)trailer->msgh_audit.val[1];
             pid_t senderPid  = (pid_t)trailer->msgh_audit.val[5];
             char  senderName[32];
+            char  senderPath[1024];
             SGCResolveSenderName(senderPid, senderName, sizeof(senderName));
+            SGCResolveSenderPath(senderPid, senderPath, sizeof(senderPath));
 
-            if (!SGCSenderAuthorized(senderEuid, senderName)) {
+            if (!SGCSenderAuthorized(senderEuid, senderPath)) {
                 SGLOGW(SGControlChannel,
-                       "code=%s type=0x%02x pid=%d euid=%d sender=%s result=denied",
+                       "code=%s type=0x%02x pid=%d euid=%d sender=%s path=%s result=denied",
                        SGND_CONTROL_UNAUTHORIZED, type, (int)senderPid, (int)senderEuid,
-                       senderName[0] ? senderName : "(unknown)");
+                       senderName[0] ? senderName : "(unknown)",
+                       senderPath[0] ? senderPath : "(unknown)");
                 SGCErrorResponsePayload err;
                 memset(&err, 0, sizeof(err));
                 SGCCopyCString(err.message, sizeof(err.message), "unauthorized sender");
@@ -639,9 +688,11 @@ static BOOL SGCSenderAuthorized(uid_t euid, const char *senderName) {
                 if (MACH_PORT_VALID(replyPort)) mach_port_deallocate(mach_task_self(), replyPort);
                 return;
             }
-            SGLOGD(SGControlChannel, "code=%s type=0x%02x pid=%d sender=%s result=allowed",
+            SGLOGD(SGControlChannel,
+                   "code=%s type=0x%02x pid=%d sender=%s path=%s result=allowed",
                    SGND_CONTROL_AUTH_UNENFORCED, type, (int)senderPid,
-                   senderName[0] ? senderName : "(root)");
+                   senderName[0] ? senderName : "(root)",
+                   senderPath[0] ? senderPath : "(root)");
         }
     }
 

@@ -10,6 +10,6 @@ SGNSettings_FILES = Tweak.x
 SGNSettings_CFLAGS = -fobjc-arc
 SGNSettings_FRAMEWORKS = UIKit
 SGNSettings_PRIVATE_FRAMEWORKS = Preferences
-ADDITIONAL_CFLAGS += -D"API_AVAILABLE(...)= " -D"API_DEPRECATED(...)= " -D"API_UNAVAILABLE(...)= " -D"instancetype=id"
+ADDITIONAL_CFLAGS += -DAPI_AVAILABLE\(...\)= -DAPI_DEPRECATED\(...\)= -DAPI_UNAVAILABLE\(...\)= -Dinstancetype=id
 
 include $(THEOS_MAKE_PATH)/tweak.mk

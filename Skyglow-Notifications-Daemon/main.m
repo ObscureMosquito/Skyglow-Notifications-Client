@@ -97,18 +97,9 @@ int main(int argc, char *argv[]) {
                 return;
             }
 
-            NSData *token = nil;
             NSError *err = nil;
-            NSArray *existing = [[SGDatabaseManager sharedManager] tokenEntriesForBundleIdentifier:bundleID];
-            if ([existing count] > 0) {
-                NSData *t = existing[0][@"token"];
-                if ([t length] > 0) token = t;
-            }
-            SGTokenManager *tm = nil;
-            if (!token) {
-                tm = [[SGTokenManager alloc] init];
-                token = [tm generateTokenLocallyForBundleIdentifier:bundleID error:&err];
-            }
+            SGTokenManager *tm = [[SGTokenManager alloc] init];
+            NSData *token = [tm synchronizedTokenForBundleIdentifier:bundleID error:&err];
 
             if (!token) {
                 NSString *detail = err ? [err localizedDescription] : @"Token generation failed";
@@ -295,6 +286,10 @@ int main(int argc, char *argv[]) {
             if (!tok) {
                 SGLOGE(Skyglow, "code=%s bundle=%s result=failed reason=%s", SGND_TOKEN_GENERATE_FAILED,
                             [bundleID UTF8String], [[err description] UTF8String]);
+                NSString *detail = err ? [err localizedDescription] : @"Token generation failed";
+                [bundleID release];
+                replyError(SGCERR_INTERNAL, detail);
+                return;
             }
             [db setMuted:NO forBundleIdentifier:bundleID];
             SGP_FlushActiveTopicFilter();

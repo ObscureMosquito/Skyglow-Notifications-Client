@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <libkern/OSAtomic.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <IOKit/IOMessage.h>
 
@@ -1270,7 +1271,10 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
     NSString *address = [serverAddress stringByTrimmingCharactersInSet:
                          [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (!SG_IsIdentifierStringSafe(address)) return NO;
+    if (!SG_IsIdentifierStringSafe(address) ||
+        [address lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > SGP_SERVER_ADDRESS_MAX_BYTES) {
+        return NO;
+    }
 
     BOOL hasNewCertificate = ([certificatePEM length] > 0);
     if (hasNewCertificate && !SGCertificatePEMLooksValid(certificatePEM)) return NO;
@@ -1379,13 +1383,10 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         }
     }
 
-    if (wasActive) {
-        /* Active profile gone: clear the DB tables that were tied to it,
-         * disable the daemon, and disconnect cleanly.  Subsequent connects
-         * will fall through to the unregistered state until the user picks
-         * (or registers) another profile. */
-        [[SGDatabaseManager sharedManager] clearAllTokens];
-        [[SGDatabaseManager sharedManager] clearAllDNSCache];
+    if (![[SGDatabaseManager sharedManager] clearOperationalStateForProfile:profileIdx]) {
+        SGLOGE(SGDaemon, "profile-delete: database cleanup failed idx=%ld",
+               (long)profileIdx);
+        return NO;
     }
 
     [[SGConfiguration sharedConfiguration] reloadFromDisk];
@@ -1417,7 +1418,12 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
     [[SGConfiguration sharedConfiguration] reloadFromDisk];
 
+    @synchronized(_seenMessageIDs) {
+        [_seenMessageIDs removeAllObjects];
+    }
+    [self reconcileTokensWithPlist];
     [self handleEvent:SGEventConfigReloaded payload:nil];
+    [self _kickLocalDeliveryDrain];
 
     return YES;
 }
@@ -1457,14 +1463,23 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     NSUInteger sendLen = offsetof(SGCPushDeliveryPayload, userInfoData) + pd.userInfoLength;
     NSData *requestPayload = [NSData dataWithBytes:&pd length:sendLen];
 
-    __block kern_return_t result = KERN_FAILURE;
+    __block int32_t result = (int32_t)KERN_FAILURE;
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    /* The completion may be scheduled after our bounded wait expires.  Give it
+     * an independent semaphore ownership reference so a late signal cannot
+     * touch the caller's released reference. */
+    dispatch_retain(sema);
     [_springBoardClient sendRequest:SGCMSG_PUSH_DELIVERY
                             payload:requestPayload
                             timeout:0
                          completion:^(SGControlError err, const SGControlChannelMessage *response) {
-        result = (err == SGCERR_OK) ? KERN_SUCCESS : KERN_FAILURE;
+        if (err == SGCERR_OK) {
+            OSAtomicCompareAndSwap32Barrier((int32_t)KERN_FAILURE,
+                                            (int32_t)KERN_SUCCESS,
+                                            &result);
+        }
         dispatch_semaphore_signal(sema);
+        dispatch_release(sema);
     }];
     /* Bounded wait — channel default is 5s, give it +1s grace for
      * dispatch + completion handler scheduling.  If we time out the
@@ -1473,10 +1488,14 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
      * the caller's local-pending-deliveries retry path will pick the
      * notification up on the next drain. */
     int64_t waitNs = (int64_t)((SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC + 1.0) * NSEC_PER_SEC);
-    dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, waitNs));
+    long waitResult = dispatch_semaphore_wait(
+        sema, dispatch_time(DISPATCH_TIME_NOW, waitNs));
+    kern_return_t finalResult = (waitResult == 0)
+        ? (kern_return_t)OSAtomicAdd32Barrier(0, &result)
+        : KERN_FAILURE;
     dispatch_release(sema);
 
-    return result;
+    return finalResult;
 }
 
 #pragma mark - Notification Disposition Helpers

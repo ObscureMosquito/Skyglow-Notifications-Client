@@ -77,6 +77,12 @@
  */
 - (BOOL)clearAllDNSCache;
 
+/**
+ * Drops every server-bound operational row for one profile.  Used when a
+ * profile is deleted; other profiles remain untouched.
+ */
+- (BOOL)clearOperationalStateForProfile:(NSInteger)profileIndex;
+
 /** Connectivity & Synchronization */
 
 /**
