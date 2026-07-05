@@ -1,8 +1,17 @@
 #import "SGAvailability.h"
 #import "SGKeepAliveStrategy.h"
 #import "SGLog.h"
+#import "SGLogDiagnostics.h"
 #import <UIKit/UIKit.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
+
+extern IOReturn   IOPMSchedulePowerEvent(CFDateRef time_to_wake, CFStringRef my_id, CFStringRef type) __attribute__((weak_import));
+extern IOReturn   IOPMCancelScheduledPowerEvent(CFDateRef time_to_wake, CFStringRef my_id, CFStringRef type) __attribute__((weak_import));
+extern CFArrayRef IOPMCopyScheduledPowerEvents(void) __attribute__((weak_import));
+
+#define SG_WAKE_EVENT_ID        CFSTR("com.skyglow.sgn")
+#define SG_WAKE_EVENT_TYPE      CFSTR("wake")
+#define SG_WAKE_MIN_INTERVAL_SEC 300.0
 
 /**
  * All private framework class names, version gating, and fallback logic
@@ -34,7 +43,11 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
     [SGCapabilityPersistentTimer]  = { "PCPersistentTimer",           6.0, 0.0  },
     [SGCapabilityGrowthAlgorithm]  = { "PCMultiStageGrowthAlgorithm", 6.0, 6.99 },
     [SGCapabilityPowerAssertion]   = { NULL,                          2.0, 0.0  },
+    [SGCapabilityScheduledWake]    = { NULL,                          2.0, 5.99 },
+    [SGCapabilityKeepAliveOffload] = { NULL,                         99.0, 0.0  },
 };
+
+#define SG_KEEPALIVE_OFFLOAD_PLACEHOLDER 1
 
 @interface NSObject (PCPrivateTimerAPI)
 - (id)initWithTimeInterval:(NSTimeInterval)interval serviceIdentifier:(NSString *)sid target:(id)target selector:(SEL)sel userInfo:(id)userInfo;
@@ -111,6 +124,8 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
     Class         _capabilityClasses[SGCapabilityCount];
     NSMutableSet *_activeAssertionIDs;
     NSLock       *_assertionLock;
+    CFDateRef     _pendingWakeDate;
+    NSLock       *_wakeLock;
 }
 
 + (SGAvailability *)shared {
@@ -126,6 +141,8 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
     if ((self = [super init])) {
         _activeAssertionIDs = [[NSMutableSet alloc] init];
         _assertionLock      = [[NSLock alloc] init];
+        _wakeLock           = [[NSLock alloc] init];
+        _pendingWakeDate    = NULL;
 
         /**
          * Walk the capability table, probing each class and gating on
@@ -154,18 +171,26 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
             }
         }
 
-        SGLOGI(SGAvailability, "code=%s ios=%.1f persistent_timer=%s growth_algorithm=%s power_assertion=%s", SGND_AVAILABILITY_CAPABILITIES,
+        if (_capabilityClasses[SGCapabilityScheduledWake] != Nil &&
+            (IOPMSchedulePowerEvent == NULL || IOPMCancelScheduledPowerEvent == NULL)) {
+            _capabilityClasses[SGCapabilityScheduledWake] = Nil;
+        }
+
+        SGLOGI(SGAvailability, "code=%s ios=%.1f persistent_timer=%s growth_algorithm=%s power_assertion=%s scheduled_wake=%s", SGND_AVAILABILITY_CAPABILITIES,
                     sysVer,
                     [self isCapabilityAvailable:SGCapabilityPersistentTimer] ? "available" : "unavailable",
                     [self isCapabilityAvailable:SGCapabilityGrowthAlgorithm] ? "available" : "unavailable",
-                    [self isCapabilityAvailable:SGCapabilityPowerAssertion]  ? "available" : "unavailable");
+                    [self isCapabilityAvailable:SGCapabilityPowerAssertion]  ? "available" : "unavailable",
+                    [self isCapabilityAvailable:SGCapabilityScheduledWake]   ? "available" : "unavailable");
     }
     return self;
 }
 
 - (void)dealloc {
+    [self cancelPendingScheduledWake];
     [_activeAssertionIDs release];
     [_assertionLock release];
+    [_wakeLock release];
     [super dealloc];
 }
 
@@ -186,6 +211,18 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
 
 - (BOOL)powerAssertionAvailable {
     return [self isCapabilityAvailable:SGCapabilityPowerAssertion];
+}
+
+- (BOOL)scheduledWakeAvailable {
+    return [self isCapabilityAvailable:SGCapabilityScheduledWake];
+}
+
+- (BOOL)keepAliveOffloadAvailable {
+#if SG_KEEPALIVE_OFFLOAD_PLACEHOLDER
+    return YES;
+#else
+    return [self isCapabilityAvailable:SGCapabilityKeepAliveOffload];
+#endif
 }
 
 #pragma mark - PCPersistentTimer
@@ -331,6 +368,57 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
     if (wasActive) {
         IOPMAssertionRelease((IOPMAssertionID)assertionID);
     }
+}
+
+#pragma mark - Scheduled Wake
+
+- (BOOL)scheduleWakeAfterInterval:(NSTimeInterval)seconds {
+    if (![self isCapabilityAvailable:SGCapabilityScheduledWake]) return NO;
+    if (seconds < SG_WAKE_MIN_INTERVAL_SEC) seconds = SG_WAKE_MIN_INTERVAL_SEC;
+
+    /* Replace any prior wake under the lock so two schedulers can't leak a
+     * CFDate or strand an uncancellable OS event. */
+    [_wakeLock lock];
+    if (_pendingWakeDate) {
+        IOPMCancelScheduledPowerEvent(_pendingWakeDate, SG_WAKE_EVENT_ID, SG_WAKE_EVENT_TYPE);
+        CFRelease(_pendingWakeDate);
+        _pendingWakeDate = NULL;
+    }
+
+    CFDateRef when = CFDateCreate(NULL, CFAbsoluteTimeGetCurrent() + seconds);
+    if (!when) {
+        [_wakeLock unlock];
+        return NO;
+    }
+
+    IOReturn r = IOPMSchedulePowerEvent(when, SG_WAKE_EVENT_ID, SG_WAKE_EVENT_TYPE);
+    if (r != kIOReturnSuccess) {
+        CFRelease(when);
+        [_wakeLock unlock];
+        SGLOGW(SGAvailability, "code=%s seconds=%.0f ioreturn=0x%08x result=rejected",
+               SGND_SCHEDULED_WAKE_FAILED, seconds, r);
+        return NO;
+    }
+    _pendingWakeDate = when;   /* retained; released on cancel */
+    [_wakeLock unlock];
+
+    SGLOGI(SGAvailability, "code=%s seconds=%.0f result=armed", SGND_SCHEDULED_WAKE_ARMED, seconds);
+    return YES;
+}
+
+- (void)cancelPendingScheduledWake {
+    [_wakeLock lock];
+    if (!_pendingWakeDate) {
+        [_wakeLock unlock];
+        return;
+    }
+    if (IOPMCancelScheduledPowerEvent) {
+        IOPMCancelScheduledPowerEvent(_pendingWakeDate, SG_WAKE_EVENT_ID, SG_WAKE_EVENT_TYPE);
+    }
+    CFRelease(_pendingWakeDate);
+    _pendingWakeDate = NULL;
+    [_wakeLock unlock];
+    SGLOGI(SGAvailability, "code=%s result=cancelled", SGND_SCHEDULED_WAKE_CANCELLED);
 }
 
 @end

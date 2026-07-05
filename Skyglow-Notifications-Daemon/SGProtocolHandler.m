@@ -38,6 +38,7 @@ static BOOL      _hasPendingNonce = NO;
 
 static uint64_t  _pingSeq = 0;
 static double    _pingPendingSince = 0.0;
+static int64_t   _pingPendingWallSince = 0;
 static double    _lastFrameReceivedAt = 0.0;
 static uint32_t  _lastRetryHint = 0;
 
@@ -62,6 +63,8 @@ typedef enum {
 } SGPProtoPhase;
 
 static SGPProtoPhase _phase = SGPProtoPreHello;
+static BOOL _v1HelloConsumed = NO;
+static BOOL _keepAliveOffloadActive = NO;
 
 
 static double SG_GetMonotonicSeconds(void) {
@@ -379,6 +382,7 @@ BOOL SGP_SendKeepAlivePing(void) {
     }
     _pingSeq++;
     _pingPendingSince = SG_GetMonotonicSeconds();
+    _pingPendingWallSince = (int64_t)time(NULL);
     uint8_t seq[8];
     SG_EncodeBE64((int64_t)_pingSeq, seq);
     pthread_mutex_unlock(&_pingLock);
@@ -386,10 +390,20 @@ BOOL SGP_SendKeepAlivePing(void) {
     if (SGP_LowLevelSend(SGP_C_PING, seq, 8) != 0) {
         pthread_mutex_lock(&_pingLock);
         _pingPendingSince = 0.0;
+        _pingPendingWallSince = 0;
         pthread_mutex_unlock(&_pingLock);
         return NO;
     }
     return YES;
+}
+
+double SGP_GetPendingPingAgeWallSeconds(void) {
+    pthread_mutex_lock(&_pingLock);
+    int64_t since = _pingPendingWallSince;
+    pthread_mutex_unlock(&_pingLock);
+    if (since <= 0) return 0.0;
+    double age = difftime(time(NULL), (time_t)since);
+    return (age > 0.0) ? age : 0.0;
 }
 
 void SGP_AbortConnection(void) {
@@ -420,8 +434,22 @@ void SGP_DisconnectFromServer(void) {
     }
     pthread_mutex_unlock(&_regKeyLock);
     _pingPendingSince = 0.0;
+    _pingPendingWallSince = 0;
     _lastFrameReceivedAt = 0.0;
     _phase = SGPProtoPreHello;
+    _v1HelloConsumed = NO;
+    _keepAliveOffloadActive = NO;
+}
+
+int SGP_TryEnableKeepAliveOffload(const void *kaPayload, uint32_t kaLen, double intervalSec) {
+    (void)kaPayload; (void)kaLen; (void)intervalSec;
+    if (!SGP_IsConnected()) return SGP_OFFLOAD_NO_SOCKET;
+
+    return SGP_OFFLOAD_UNIMPLEMENTED;
+}
+
+BOOL SGP_IsKeepAliveOffloadActive(void) {
+    return _keepAliveOffloadActive;
 }
 
 int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
@@ -664,15 +692,25 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         if (sel < 0) return (errno == EINTR) ? SGP_OK : SGP_ERR_IO;
     
         if (sel == 0) {
+            pthread_mutex_lock(&_pingLock);
+            double pendingAtTimeout = _pingPendingSince;
+            pthread_mutex_unlock(&_pingLock);
+
+            if (pendingAtTimeout > 0.0) {
+                double elapsed = SG_GetMonotonicSeconds() - pendingAtTimeout;
+                return (elapsed >= (double)SGP_PONG_TIMEOUT_SEC) ? SGP_ERR_TIMEOUT : SGP_OK;
+            }
+
             if (pingIntervalSec <= 0.0) return SGP_OK;
 
             pthread_mutex_lock(&_pingLock);
             if (_pingPendingSince > 0.0) {
                 pthread_mutex_unlock(&_pingLock);
-                return SGP_ERR_TIMEOUT;
+                return SGP_OK;
             }
             _pingSeq++;
             _pingPendingSince = SG_GetMonotonicSeconds();
+            _pingPendingWallSince = (int64_t)time(NULL);
             uint8_t seq[8];
             SG_EncodeBE64((int64_t)_pingSeq, seq);
             pthread_mutex_unlock(&_pingLock);
@@ -684,6 +722,26 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
     uint8_t hdr[8];
     if (SG_SSLReadExact(hdr, 8) != 0) return SGP_ERR_IO;
     _lastFrameReceivedAt = SG_GetMonotonicSeconds();
+
+    if (_phase == SGPProtoPreHello && !_v1HelloConsumed && hdr[0] != SGP_MAGIC) {
+        uint32_t v1Len = SG_DecodeBE32(hdr);
+        if (v1Len >= 12 && v1Len <= SGP_MAX_PAYLOAD_LEN && memcmp(hdr + 4, "bpli", 4) == 0) {
+            uint32_t remaining = v1Len - 4;
+            uint8_t *v1Body = malloc(remaining);
+            if (!v1Body) return SGP_ERR_IO;
+            if (SG_SSLReadExact(v1Body, (int)remaining) != 0) { free(v1Body); return SGP_ERR_IO; }
+            BOOL plistMagicOK = (memcmp(v1Body, "st00", 4) == 0);
+            free(v1Body);
+            if (!plistMagicOK) {
+                SGLOGW(SGP, "code=%s bytes=%u result=reject reason=plist_magic", SGND_PROTOCOL_V1_COMPAT_HELLO, v1Len);
+                return SGP_ERR_PROTO;
+            }
+            _v1HelloConsumed = YES;
+            SGLOGI(SGP, "code=%s bytes=%u action=upgrade_to_v2", SGND_PROTOCOL_V1_COMPAT_HELLO, v1Len);
+            if (SGP_LowLevelSend(SGP_C_UPGRADE, NULL, 0) != 0) return SGP_ERR_IO;
+            return SGP_OK;
+        }
+    }
 
     if (hdr[0] != SGP_MAGIC || hdr[1] != SGP_VERSION) {
         SGLOGW(SGP, "code=%s magic=0x%02X version=0x%02X expected_magic=0x%02X expected_version=0x%02X result=reject", SGND_PROTOCOL_FRAME_MAGIC_INVALID,
@@ -749,6 +807,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         case SGP_S_PONG:
             pthread_mutex_lock(&_pingLock);
             _pingPendingSince = 0.0;
+            _pingPendingWallSince = 0;
             pthread_mutex_unlock(&_pingLock);
             break;
         default:
@@ -932,6 +991,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             if (SG_DecodeBE64(raw) == (int64_t)seq) {
                 pthread_mutex_lock(&_pingLock);
                 _pingPendingSince = 0.0;
+                _pingPendingWallSince = 0;
                 pthread_mutex_unlock(&_pingLock);
                 [_delegate protocolDidReceiveKeepAlivePong];
             }
@@ -986,8 +1046,6 @@ cleanup:
 
 void SGP_RequestOfflineMessages(void) {
     if (!SGP_IsConnected()) return;
-    int64_t lastSeq = [[SGDatabaseManager sharedManager] lastDeliveredSeq];
-    uint8_t seqBE[8];
-    SG_EncodeBE64(lastSeq, seqBE);
+    uint8_t seqBE[8] = {0};
     SGP_LowLevelSend(SGP_C_POLL, seqBE, 8);
 }

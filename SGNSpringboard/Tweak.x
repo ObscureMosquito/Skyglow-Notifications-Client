@@ -266,38 +266,59 @@ static NSDictionary *WrapInAPNSFormat(NSDictionary *flat) {
 
     NSMutableDictionary *aps = [NSMutableDictionary dictionary];
     if (alert.count > 0) [aps setObject:alert forKey:@"alert"];
-    if (flat[@"sound"])   [aps setObject:flat[@"sound"] forKey:@"sound"];
+    if (flat[@"sound"])    [aps setObject:flat[@"sound"] forKey:@"sound"];
+    if (flat[@"badge"])    [aps setObject:flat[@"badge"] forKey:@"badge"];
+    if (flat[@"category"]) [aps setObject:flat[@"category"] forKey:@"category"];
+    id contentAvailable = flat[@"content-available"] ?: flat[@"content_available"];
+    if (contentAvailable) [aps setObject:contentAvailable forKey:@"content-available"];
 
     NSMutableDictionary *result = [NSMutableDictionary dictionaryWithObject:aps forKey:@"aps"];
-    if (flat[@"custom_data"]) [result setObject:flat[@"custom_data"] forKey:@"custom_data"];
+    for (id key in flat) {
+        if (![key isKindOfClass:[NSString class]]) continue;
+        if ([key isEqualToString:@"title"] || [key isEqualToString:@"body"] ||
+            [key isEqualToString:@"sound"] || [key isEqualToString:@"badge"] ||
+            [key isEqualToString:@"category"] || [key isEqualToString:@"aps"] ||
+            [key isEqualToString:@"content-available"] ||
+            [key isEqualToString:@"content_available"]) continue;
+        [result setObject:flat[key] forKey:key];
+    }
     return result;
 }
 
-static void DeliverNotification(NSString *topic, NSDictionary *userInfo) {
-    if (!topic.length) return;
+// Returns YES only when a delivery target existed and the message was handed, NO means nowhere to deliver right now
+static BOOL DeliverNotification(NSString *topic, NSDictionary *userInfo) {
+    if (!topic.length) return NO;
     NSDictionary *apnsPayload = WrapInAPNSFormat(userInfo ?: @{});
 
     if (SGN_IS_PRE_IOS_6) {
         id server = [NSClassFromString(@"SBRemoteNotificationServer") performSelector:@selector(sharedInstance)];
-        if (server) {
-            SEL sel = @selector(connection:didReceiveMessageForTopic:userInfo:);
-            void (*send)(id, SEL, id, id, id) = (void (*)(id, SEL, id, id, id))objc_msgSend;
-            send(server, sel, nil, topic, apnsPayload);
-        }
+        if (!server) return NO;
+        SEL sel = @selector(connection:didReceiveMessageForTopic:userInfo:);
+        void (*send)(id, SEL, id, id, id) = (void (*)(id, SEL, id, id, id))objc_msgSend;
+        send(server, sel, nil, topic, apnsPayload);
+        return YES;
     } else if (SGN_IS_PRE_IOS_9) {
+        id server = [NSClassFromString(@"SBRemoteNotificationServer") performSelector:@selector(sharedInstance)];
         APSIncomingMessage *msg = [[NSClassFromString(@"APSIncomingMessage") alloc] initWithTopic:topic userInfo:apnsPayload];
-        [[NSClassFromString(@"SBRemoteNotificationServer") performSelector:@selector(sharedInstance)]
-            performSelector:@selector(connection:didReceiveIncomingMessage:) withObject:nil withObject:msg];
+        if (!server || !msg) {
+            [msg release];
+            return NO;
+        }
+        [server performSelector:@selector(connection:didReceiveIncomingMessage:) withObject:nil withObject:msg];
         [msg release];
+        return YES;
     } else {
         APSIncomingMessage *msg = [[NSClassFromString(@"APSIncomingMessage") alloc] initWithTopic:topic userInfo:apnsPayload];
         id userNS = [NSClassFromString(@"UNUserNotificationServer") performSelector:@selector(sharedInstance)];
         id registrar = GetIvar(userNS, "_registrarConnectionListener");
         id remoteSrv = GetIvar(registrar, "_remoteNotificationServer") ?: GetIvar(registrar, "_removeNotificationServer");
-        if ([remoteSrv respondsToSelector:@selector(connection:didReceiveIncomingMessage:)]) {
+        BOOL delivered = NO;
+        if (msg && [remoteSrv respondsToSelector:@selector(connection:didReceiveIncomingMessage:)]) {
             [remoteSrv performSelector:@selector(connection:didReceiveIncomingMessage:) withObject:nil withObject:msg];
+            delivered = YES;
         }
         [msg release];
+        return delivered;
     }
 }
 
@@ -323,7 +344,12 @@ static void StartSpringBoardControlChannel(void) {
             return;
         }
         NSDictionary *userInfo = nil;
-        if (pd->userInfoLength > 0 && pd->userInfoLength <= SG_CONTROL_MAX_USERINFO_SIZE) {
+        if (pd->userInfoLength > SG_CONTROL_MAX_USERINFO_SIZE) {
+            [topic release];
+            replyError(SGCERR_INVALID_REQUEST, @"push delivery userInfo too large");
+            return;
+        }
+        if (pd->userInfoLength > 0) {
             /* Inner length must fit within the outer payload — defense in
              * depth (the channel parser now also validates payloadLength
              * against msgh_size, so a peer can't claim more than was
@@ -338,6 +364,12 @@ static void StartSpringBoardControlChannel(void) {
             userInfo = [NSPropertyListSerialization propertyListWithData:data
                                                                  options:NSPropertyListImmutable
                                                                   format:NULL error:NULL];
+            // Parse failure or a non-dictionary root means the payload was damaged in transit
+            if (![userInfo isKindOfClass:[NSDictionary class]]) {
+                [topic release];
+                replyError(SGCERR_INVALID_REQUEST, @"push delivery userInfo not a plist dictionary");
+                return;
+            }
         }
 
         SGControlReplyBlock      replyCopy      = [reply copy];
@@ -349,7 +381,8 @@ static void StartSpringBoardControlChannel(void) {
             NSString *failReason = nil;
             @try {
                 NSLog(@"[SGN] Delivering push for topic: %@", topic);
-                DeliverNotification(topic, userInfoRet);
+                ok = DeliverNotification(topic, userInfoRet);
+                if (!ok) failReason = @"no delivery target (push server not available yet)";
             } @catch (NSException *e) {
                 NSLog(@"[SGN] Push delivery threw: %@", e);
                 ok = NO;
@@ -418,30 +451,34 @@ static void StartSpringBoardControlChannel(void) {
     [gSGCSBServer registerHandler:^(const SGControlChannelMessage *req,
                                     SGControlReplyBlock reply,
                                     SGControlReplyErrorBlock replyError) {
-        NSArray *bundles = SGN_AllNativelyRegisteredBundles();
+        SGControlReplyBlock replyCopy = [reply copy];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSArray *bundles = SGN_AllNativelyRegisteredBundles();
 
-        NSMutableData *body = [NSMutableData data];
-        uint16_t count = 0;
-        for (NSString *bid in bundles) {
-            const char *bidC = [bid UTF8String];
-            if (!bidC) continue;
-            NSUInteger len = strlen(bidC);
-            if (len == 0 || len > 0xFFFF) continue;
-            NSUInteger projected = offsetof(SGCBundleIdListPayload, data)
-                                  + [body length] + 2 + len;
-            if (projected > SG_CONTROL_MAX_PAYLOAD) break;
-            uint16_t l = (uint16_t)len;
-            [body appendBytes:&l length:sizeof(l)];
-            [body appendBytes:bidC length:len];
-            count++;
-        }
+            NSMutableData *body = [NSMutableData data];
+            uint16_t count = 0;
+            for (NSString *bid in bundles) {
+                const char *bidC = [bid UTF8String];
+                if (!bidC) continue;
+                NSUInteger len = strlen(bidC);
+                if (len == 0 || len > 0xFFFF) continue;
+                NSUInteger projected = offsetof(SGCBundleIdListPayload, data)
+                                      + [body length] + 2 + len;
+                if (projected > SG_CONTROL_MAX_PAYLOAD) break;
+                uint16_t l = (uint16_t)len;
+                [body appendBytes:&l length:sizeof(l)];
+                [body appendBytes:bidC length:len];
+                count++;
+            }
 
-        NSMutableData *out = [NSMutableData dataWithCapacity:
-            offsetof(SGCBundleIdListPayload, data) + [body length]];
-        [out appendBytes:&count length:sizeof(count)];
-        [out appendData:body];
+            NSMutableData *out = [NSMutableData dataWithCapacity:
+                offsetof(SGCBundleIdListPayload, data) + [body length]];
+            [out appendBytes:&count length:sizeof(count)];
+            [out appendData:body];
 
-        reply(SGCMSG_BUNDLE_ID_LIST, out);
+            replyCopy(SGCMSG_BUNDLE_ID_LIST, out);
+            [replyCopy release];
+        });
     } forMessageType:SGCMSG_LIST_PUSH_REGISTERED_APPS];
 
     [gSGCSBServer registerHandler:^(const SGControlChannelMessage *req,
@@ -486,7 +523,13 @@ static void StartDaemonControlChannelClient(void) {
 %group HookUninstall_Classic
 %hook SBApplicationUninstallationOperation
 - (void)main {
-    NSString *bundleId = [(id)self valueForKey:@"_bundleIdentifier"];
+    NSString *bundleId = nil;
+    if ([(id)self respondsToSelector:@selector(bundleIdentifier)]) {
+        bundleId = [(id)self performSelector:@selector(bundleIdentifier)];
+    } else {
+        @try { bundleId = [(id)self valueForKey:@"_bundleIdentifier"]; }
+        @catch (NSException *e) { bundleId = nil; }
+    }
     if (bundleId.length) {
         ScheduleAppDeletion(bundleId);
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -589,11 +632,14 @@ static BOOL SGN_IsCascadeReEntry(NSString *bundleId) {
         && [sActiveDeregisterBundle isEqualToString:bundleId];
 }
 
+static NSUInteger sDeregisterGeneration = 0;
+
 static void SGN_DeregisterAppNatively(NSString *bundleId) {
     if (!bundleId.length) return;
 
-    NSString *previousActive = sActiveDeregisterBundle;
-    sActiveDeregisterBundle  = [bundleId copy];
+    [sActiveDeregisterBundle release];
+    sActiveDeregisterBundle = [bundleId copy];
+    NSUInteger gen = ++sDeregisterGeneration;
 
     if (SGN_IS_PRE_IOS_9) {
         id app = SBApp_LookupByIdentifier(bundleId);
@@ -622,11 +668,10 @@ static void SGN_DeregisterAppNatively(NSString *bundleId) {
         }
     }
 
-    NSString *snapshot = sActiveDeregisterBundle;
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (sActiveDeregisterBundle == snapshot) {
+        if (sDeregisterGeneration == gen) {
             [sActiveDeregisterBundle release];
-            sActiveDeregisterBundle = previousActive;
+            sActiveDeregisterBundle = nil;
         }
     });
 }
@@ -646,7 +691,7 @@ static void SGN_DeliverSuccess(NSString *bundleId, id application, id environmen
         SBRemoteNotificationClient *client = clientsDict[bundleId];
         BOOL needsPersist = NO;
         if (!client) {
-            client = [[%c(SBRemoteNotificationClient) alloc] initWithBundleIdentifier:bundleId];
+            client = [[[%c(SBRemoteNotificationClient) alloc] initWithBundleIdentifier:bundleId] autorelease];
             clientsDict[bundleId] = client;
             needsPersist = YES;
         }
@@ -682,6 +727,7 @@ static void SGN_DeliverSuccess(NSString *bundleId, id application, id environmen
                 [ctrl deactivateAlertItemsOfClass:alertCls];
                 [ctrl activateAlertItem:alert];
                 [client setSettingsPresentedTypes:settingsPresentedTypes | requestedTypes];
+                [alert release];
             }
         }
 
@@ -718,6 +764,8 @@ static BOOL sPassThrough      = NO;
 @implementation SGRegistrationAlertDelegate
 
 - (void)alertView:(id)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
+    if (!sPendingBundleId) return;
+
     if (buttonIndex == 1) {
         NSMutableDictionary *prefs     = SGN_OwnedPlistAt(kPrefsPlistPath);
         NSMutableDictionary *appStatus = SGN_OwnedMutableDictForKey(prefs, @"appStatus");
@@ -812,6 +860,11 @@ static void ShowRegistrationChoiceAlert(NSString *bundleId) {
         return %orig;
     }
 
+    if (sPendingBundleId) {
+        NSLog(@"[SGN] Choice alert already pending for %@; deferring %@", sPendingBundleId, bundleId);
+        return 0;
+    }
+
     NSLog(@"[SGN] Classic hook: showing choice alert for %@", bundleId);
     [sPendingServer release];   sPendingServer = [self retain];
     [sPendingApp release];      sPendingApp = [application retain];
@@ -856,12 +909,21 @@ static void ShowRegistrationChoiceAlert(NSString *bundleId) {
         return;
     }
 
-    [sPendingServer release];      sPendingServer = [self retain];
-    [sPendingBundleId release];    sPendingBundleId = [bundleIdentifier copy];
-    [sPendingResultBlock release]; sPendingResultBlock = [resultBlock copy];
-    sPendingIsModern = YES;
-
-    ShowRegistrationChoiceAlert(bundleIdentifier);
+    NSString *bidCopy = [bundleIdentifier copy];
+    id resultCopy = [resultBlock copy];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (sPendingBundleId) {
+            NSLog(@"[SGN] Choice alert already pending for %@; deferring %@", sPendingBundleId, bidCopy);
+        } else {
+            [sPendingServer release];      sPendingServer = [self retain];
+            [sPendingBundleId release];    sPendingBundleId = [bidCopy copy];
+            [sPendingResultBlock release]; sPendingResultBlock = [resultCopy copy];
+            sPendingIsModern = YES;
+            ShowRegistrationChoiceAlert(bidCopy);
+        }
+        [bidCopy release];
+        [resultCopy release];
+    });
 }
 %end
 %end

@@ -1,67 +1,142 @@
 #include "SGKeepAliveStrategy.h"
 #include <stdlib.h>
 
-#define MIN_WWAN 600.0
-#define MAX_WWAN 1680.0
-#define MIN_WIFI 900.0
-#define MAX_WIFI 3600.0
-#define INCREMENT 180.0
-#define BACKOFF   0.75
+#define SG_KA_MIN_INTERVAL        600.0
+#define SG_KA_MAX_INTERVAL_WIFI  3600.0
+#define SG_KA_MAX_INTERVAL_WWAN  1680.0
+#define SG_KA_INITIAL_INTERVAL    900.0
+#define SG_KA_INITIAL_INCREMENT   300.0
+#define SG_KA_REFINED_INCREMENT   120.0
+#define SG_KA_VARIANCE             20.0
+#define SG_KA_BACKOFF_MULTIPLE      0.5
+#define SG_KA_HIGH_WATERMARK      330.0
+#define SG_KA_STEADY_TIMEOUT_MIN 3600.0
+
+static double sg_growth_step(double increment) {
+    double r = (double)arc4random() / 4294967296.0;
+    return increment + (2.0 * r - 1.0) * SG_KA_VARIANCE;
+}
+
+static void sg_set_interval(SGKeepAliveAlgorithm *a, double v) {
+    if (v <= 0.0) v = SG_KA_INITIAL_INTERVAL;
+    if (v < a->minInterval) v = a->minInterval;
+    if (v > a->maxInterval) v = a->maxInterval;
+    if (v != a->currentInterval) {
+        a->lastInterval    = a->currentInterval;
+        a->currentInterval = v;
+    }
+}
+
+static void sg_reset(SGKeepAliveAlgorithm *a, double interval) {
+    a->stage             = (interval > 0.0) ? SGKeepAliveStageSteadyState
+                                            : SGKeepAliveStageInitialGrowth;
+    a->highWatermark     = 0.0;
+    a->lastGrowthAttempt = 0.0;
+    a->lastInterval      = 0.0;
+    a->currentInterval   = 0.0;
+    sg_set_interval(a, interval);
+}
 
 void SGKeepAlive_Initialize(SGKeepAliveAlgorithm *algo, bool isWiFi, double initialInterval) {
     if (!algo) return;
-    algo->isWiFi = isWiFi;
-    algo->stage = SGKeepAliveStageGrowth;
-    
-    double minLimit = isWiFi ? MIN_WIFI : MIN_WWAN;
-    double maxLimit = isWiFi ? MAX_WIFI : MAX_WWAN;
-    
-    if (initialInterval >= minLimit && initialInterval <= maxLimit) {
-        algo->currentInterval = initialInterval;
-    } else {
-        algo->currentInterval = minLimit;
+    algo->minInterval = SG_KA_MIN_INTERVAL;
+    algo->maxInterval = isWiFi ? SG_KA_MAX_INTERVAL_WIFI : SG_KA_MAX_INTERVAL_WWAN;
+    if (initialInterval > 0.0 &&
+        (initialInterval < algo->minInterval || initialInterval > algo->maxInterval))
+        initialInterval = SG_KA_INITIAL_INTERVAL;
+    sg_reset(algo, initialInterval);
+}
+
+static void sg_initial_growth(SGKeepAliveAlgorithm *a, SGKeepAliveAction action) {
+    if (action == SGKeepAliveActionFailure) {
+        sg_set_interval(a, a->lastInterval);
+        a->stage = SGKeepAliveStageRefinedGrowth;
+        SGKeepAlive_ProcessAction(a, SGKeepAliveActionSuccess);
+    } else if (action == SGKeepAliveActionSuccess || action == SGKeepAliveActionProbe) {
+        if (a->currentInterval >= a->maxInterval)
+            a->stage = SGKeepAliveStageSteadyState;
+        if (a->currentInterval > a->highWatermark)
+            a->highWatermark = a->currentInterval;
+        double next = a->currentInterval + sg_growth_step(SG_KA_INITIAL_INCREMENT);
+        a->lastGrowthAttempt = next;
+        sg_set_interval(a, next);
     }
-    
-    algo->maximumReachedInterval = 0.0;
-    algo->consecutiveSuccesses = 0;
+}
+
+static void sg_refined_growth(SGKeepAliveAlgorithm *a, SGKeepAliveAction action) {
+    if (action == SGKeepAliveActionFailure) {
+        sg_set_interval(a, a->lastInterval);
+        a->stage = SGKeepAliveStageSteadyState;
+        SGKeepAlive_ProcessAction(a, SGKeepAliveActionSuccess);
+    } else if (action == SGKeepAliveActionSuccess || action == SGKeepAliveActionProbe) {
+        if (a->lastGrowthAttempt > 0.0 && a->currentInterval >= a->lastGrowthAttempt) {
+            a->stage = SGKeepAliveStageInitialGrowth;
+            SGKeepAlive_ProcessAction(a, SGKeepAliveActionSuccess);
+        } else {
+            if (a->currentInterval > a->highWatermark)
+                a->highWatermark = a->currentInterval;
+            sg_set_interval(a, a->currentInterval + sg_growth_step(SG_KA_REFINED_INCREMENT));
+        }
+    }
+}
+
+static void sg_steady_state(SGKeepAliveAlgorithm *a, SGKeepAliveAction action) {
+    if (action == SGKeepAliveActionFailure) {
+        a->stage = SGKeepAliveStageBackoff;
+        SGKeepAlive_ProcessAction(a, SGKeepAliveActionFailure);
+        return;
+    }
+    if (a->highWatermark > 0.0 &&
+        a->currentInterval >= a->highWatermark - SG_KA_HIGH_WATERMARK) {
+        /* settled */
+    } else {
+        a->highWatermark = 0.0;
+        a->stage = SGKeepAliveStageInitialGrowth;
+        SGKeepAlive_ProcessAction(a, SGKeepAliveActionSuccess);
+    }
+}
+
+static void sg_backoff(SGKeepAliveAlgorithm *a, SGKeepAliveAction action) {
+    if (action == SGKeepAliveActionFailure) {
+        sg_set_interval(a, a->currentInterval * SG_KA_BACKOFF_MULTIPLE);
+    } else if (action == SGKeepAliveActionSuccess || action == SGKeepAliveActionProbe) {
+        a->stage = SGKeepAliveStageInitialGrowth;
+        SGKeepAlive_ProcessAction(a, SGKeepAliveActionSuccess);
+    }
+}
+
+void SGKeepAlive_ProcessAction(SGKeepAliveAlgorithm *a, SGKeepAliveAction action) {
+    if (!a) return;
+
+    if (action == SGKeepAliveActionReset) {
+        sg_reset(a, a->minInterval);
+        return;
+    }
+
+    if (a->maxInterval - a->minInterval <= SG_KA_REFINED_INCREMENT) {
+        a->stage = SGKeepAliveStageSteadyState;
+        return;
+    }
+
+    switch (a->stage) {
+        case SGKeepAliveStageInitialGrowth: sg_initial_growth(a, action); break;
+        case SGKeepAliveStageRefinedGrowth: sg_refined_growth(a, action); break;
+        case SGKeepAliveStageSteadyState:   sg_steady_state(a, action);   break;
+        case SGKeepAliveStageBackoff:       sg_backoff(a, action);        break;
+    }
 }
 
 void SGKeepAlive_ProcessHeartbeatResult(SGKeepAliveAlgorithm *algo, bool wasSuccessful) {
-    if (!algo) return;
-    double maxLimit = algo->isWiFi ? MAX_WIFI : MAX_WWAN;
-
-    if (wasSuccessful) {
-        if (algo->stage == SGKeepAliveStageBackoff) {
-            algo->consecutiveSuccesses++;
-            if (algo->consecutiveSuccesses >= 3) {
-                algo->stage = SGKeepAliveStageGrowth;
-                algo->consecutiveSuccesses = 0;
-            }
-        } else {
-            algo->consecutiveSuccesses++;
-        }
-
-        if (algo->stage == SGKeepAliveStageGrowth) {
-            double jitter = ((double)(arc4random_uniform(100)) / 100.0 * 10.0) - 5.0;
-            algo->currentInterval += (INCREMENT + jitter);
-            if (algo->currentInterval >= maxLimit) {
-                algo->currentInterval = maxLimit;
-                algo->stage = SGKeepAliveStageSteady;
-            }
-        }
-    } else {
-        algo->consecutiveSuccesses = 0;
-        if (algo->stage != SGKeepAliveStageBackoff) {
-            algo->stage = SGKeepAliveStageBackoff;
-            algo->currentInterval *= BACKOFF;
-            double minLimit = algo->isWiFi ? MIN_WIFI : MIN_WWAN;
-            if (algo->currentInterval < minLimit) {
-                algo->currentInterval = minLimit;
-            }
-        }
-    }
+    SGKeepAlive_ProcessAction(algo,
+        wasSuccessful ? SGKeepAliveActionSuccess : SGKeepAliveActionFailure);
 }
 
 double SGKeepAlive_GetCurrentInterval(SGKeepAliveAlgorithm *algo) {
-    return algo ? algo->currentInterval : 900.0;
+    return algo ? algo->currentInterval : SG_KA_INITIAL_INTERVAL;
+}
+
+double SGKeepAlive_SteadyStateReprobeDelay(SGKeepAliveAlgorithm *algo) {
+    if (!algo || algo->stage != SGKeepAliveStageSteadyState) return 0.0;
+    double t = algo->currentInterval * 24.0;
+    return (t > SG_KA_STEADY_TIMEOUT_MIN) ? t : SG_KA_STEADY_TIMEOUT_MIN;
 }

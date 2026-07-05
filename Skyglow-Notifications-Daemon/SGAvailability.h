@@ -20,6 +20,8 @@ typedef NS_ENUM(NSInteger, SGCapability) {
     SGCapabilityPersistentTimer,
     SGCapabilityGrowthAlgorithm,
     SGCapabilityPowerAssertion,
+    SGCapabilityScheduledWake,   /* pre-iOS-6 RTC-wake keepalive fallback */
+    SGCapabilityKeepAliveOffload,/* NIC keepalive offload */
     SGCapabilityCount  /* sentinel — must be last */
 };
 
@@ -44,17 +46,24 @@ typedef NS_ENUM(NSInteger, SGCapability) {
 
 + (SGAvailability *)shared;
 
-/** Version-aware capability check — the single source of truth. */
+/** Version-aware capability check, the single source of truth. */
 - (BOOL)isCapabilityAvailable:(SGCapability)cap;
 
-/** Convenience — equivalent to [self isCapabilityAvailable:SGCapabilityPersistentTimer]. */
+/** Convenience, equivalent to [self isCapabilityAvailable:SGCapabilityPersistentTimer]. */
 @property (nonatomic, readonly) BOOL persistentTimerAvailable;
 
-/** Convenience — equivalent to [self isCapabilityAvailable:SGCapabilityGrowthAlgorithm]. */
+/** Convenience, equivalent to [self isCapabilityAvailable:SGCapabilityGrowthAlgorithm]. */
 @property (nonatomic, readonly) BOOL growthAlgorithmAvailable;
 
-/** Convenience — equivalent to [self isCapabilityAvailable:SGCapabilityPowerAssertion]. */
+/** Convenience, equivalent to [self isCapabilityAvailable:SGCapabilityPowerAssertion]. */
 @property (nonatomic, readonly) BOOL powerAssertionAvailable;
+
+@property (nonatomic, readonly) BOOL scheduledWakeAvailable;
+
+/**
+ * Whether we want to use NIC TCP-keepalive offload on this OS
+ */
+@property (nonatomic, readonly) BOOL keepAliveOffloadAvailable;
 
 #pragma mark - PCPersistentTimer
 
@@ -125,6 +134,23 @@ typedef NS_ENUM(NSInteger, SGCapability) {
  * createTimedPowerAssertionWithName:timeout:.
  */
 - (void)releasePowerAssertion:(uint32_t)assertionID;
+
+#pragma mark - Scheduled Wake (pre-iOS-6 keepalive fallback)
+
+/**
+ * Schedules a hardware RTC wake `seconds` from now (clamped to a sane floor)
+ * via IOPMSchedulePowerEvent, replacing any previously-scheduled wake.  Used
+ * only pre-iOS-6 (iOS 6+ uses PCPersistentTimer) to send a keepalive ping
+ * during uninterrupted deep sleep.  Returns YES if the OS accepted the
+ * schedule request.  No-op returning NO when the capability does not apply.
+ */
+- (BOOL)scheduleWakeAfterInterval:(NSTimeInterval)seconds;
+
+/**
+ * Cancels any wake previously armed by scheduleWakeAfterInterval:.  Safe to
+ * call when nothing is scheduled.
+ */
+- (void)cancelPendingScheduledWake;
 
 @end
 

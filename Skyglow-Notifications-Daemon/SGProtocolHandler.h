@@ -73,6 +73,10 @@
 #define SGP_ACK_EXPIRED          3
 
 typedef enum : uint8_t {
+    /* First client frame when the server opened the connection with the
+     * legacy (protocol-v1) compatibility hello.
+    */
+    SGP_C_UPGRADE        = 0x00,
     SGP_S_HELLO          = 0x10,
     SGP_S_CHALLENGE      = 0x11,
     SGP_S_AUTH_OK        = 0x12,
@@ -280,5 +284,31 @@ BOOL SGP_SendKeepAlivePing(void);
  * or 0.0 if no frames have been received this connection.
  */
 double SGP_GetLastFrameReceivedAt(void);
+
+/**
+ * Returns how many WALL-CLOCK seconds the current keep-alive ping has gone
+ * unanswered, or 0.0 if no ping is pending.  Wall clock (not monotonic) so
+ * time spent in deep sleep counts.
+ */
+double SGP_GetPendingPingAgeWallSeconds(void);
+
+/* Return codes for SGP_TryEnableKeepAliveOffload. */
+#define SGP_OFFLOAD_OK              0 // firmware accepted the offload
+#define SGP_OFFLOAD_UNIMPLEMENTED  -1 // per-version kernel-socket
+#define SGP_OFFLOAD_NO_SOCKET      -2 // not connected
+#define SGP_OFFLOAD_REJECTED       -3 // OS/firmware refused it
+
+/**
+ * Attempts to hand this connection's keep-alive to the NIC firmware so the CPU
+ * can stay asleep for the whole interval.
+ */
+int  SGP_TryEnableKeepAliveOffload(const void *kaPayload, uint32_t kaLen, double intervalSec);
+
+/**
+ * Returns YES only when a prior SGP_TryEnableKeepAliveOffload actually
+ * succeeded on the current connection.  The daemon suppresses its RTC/interval
+ * wakes while this is YES.  Reset to NO on every disconnect.
+ */
+BOOL SGP_IsKeepAliveOffloadActive(void);
 
 #endif
