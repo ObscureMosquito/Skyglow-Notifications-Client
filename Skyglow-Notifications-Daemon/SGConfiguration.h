@@ -3,17 +3,32 @@
 
 #import <Foundation/Foundation.h>
 #import "SGSharedConstants.h"
+#include <TargetConditionals.h>
 
 /**
- * Resolves the root-relative path for rootless jailbreaks.
+ * Base directory the whole runtime tree lives under on macOS.
+ */
+#define SG_MACOS_ROOT @"/usr/local/var/skyglow"
+
+/**
+ * Resolves a system-root-relative constant to its real on-disk path.
  */
 static inline NSString * SGPath(NSString *path) {
+#if TARGET_OS_OSX
+    return [SG_MACOS_ROOT stringByAppendingString:path];
+#else
     static int _sgPathIsRootless = -1;
     if (__builtin_expect(_sgPathIsRootless < 0, 0)) {
         _sgPathIsRootless = [[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"] ? 1 : 0;
     }
     return _sgPathIsRootless ? [@"/var/jb" stringByAppendingString:path] : path;
+#endif
 }
+
+/**
+ * Creates the runtime directory tree (log, pid, database parents) if missing.
+ */
+void SGEnsureRuntimeDirectories(void);
 
 
 @interface SGConfiguration : NSObject

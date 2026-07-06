@@ -33,6 +33,7 @@ int main(int argc, char *argv[]) {
         signal(SIGPIPE, SIG_IGN);
 
         SGNInstallCompatibilityShim();
+        SGEnsureRuntimeDirectories();
 
         SGLog_SetProcessName("SkyglowNotificationsDaemon");
         if (SGLog_OpenFile([SGPath(SG_LOG_PATH) UTF8String],

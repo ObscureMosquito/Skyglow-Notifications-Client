@@ -33,6 +33,11 @@ void SGLog_SetProcessName(const char *name);
  * via prefs if the user wants their system log kept clean. */
 void SGLog_SetSyslogEnabled(int enabled);
 
+/* Echo every emitted line to stdout in addition to the file/syslog sinks.
+ * Pass 1 to force on, 0 to force off, -1 to auto-detect
+ */
+void SGLog_SetStdoutEnabled(int enabled);
+
 #define SGLOGE(tag, fmt, ...) SGLog_Write(SGLogLevelError, #tag, fmt, ##__VA_ARGS__)
 #define SGLOGW(tag, fmt, ...) SGLog_Write(SGLogLevelWarn,  #tag, fmt, ##__VA_ARGS__)
 #define SGLOGI(tag, fmt, ...) SGLog_Write(SGLogLevelInfo,  #tag, fmt, ##__VA_ARGS__)

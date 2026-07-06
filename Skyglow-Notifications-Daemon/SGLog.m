@@ -21,6 +21,7 @@ static size_t     _bytesWritten    = 0;
 static char       _procName[32]    = {0};
 static aslclient  _aslClient       = NULL;
 static volatile int _syslogEnabled = 1;
+static volatile int _stdoutEnabled = -1;   /* -1 = auto (decide via isatty on first write) */
 
 static const char _levelChars[] = { 'E', 'W', 'I', 'D', 'T' };
 
@@ -79,6 +80,10 @@ SGLogLevel SGLog_GetMinLevel(void) {
 
 void SGLog_SetSyslogEnabled(int enabled) {
     _syslogEnabled = enabled ? 1 : 0;
+}
+
+void SGLog_SetStdoutEnabled(int enabled) {
+    _stdoutEnabled = (enabled < 0) ? -1 : (enabled ? 1 : 0);
 }
 
 void SGLog_SetProcessName(const char *name) {
@@ -187,6 +192,14 @@ void SGLog_Write(SGLogLevel level, const char *tag, const char *fmt, ...) {
         if (_rotateBytes > 0 && _bytesWritten >= _rotateBytes) {
             SG_RotateLocked();
         }
+    }
+
+    if (_stdoutEnabled < 0) {
+        _stdoutEnabled = isatty(STDOUT_FILENO) ? 1 : 0;
+    }
+    if (_stdoutEnabled > 0) {
+        fwrite(line, 1, (size_t)lineLen, stdout);
+        fflush(stdout);
     }
 
     aslclient aslSnapshot = _aslClient;

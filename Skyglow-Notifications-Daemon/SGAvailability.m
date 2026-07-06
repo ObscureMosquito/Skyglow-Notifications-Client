@@ -2,8 +2,19 @@
 #import "SGKeepAliveStrategy.h"
 #import "SGLog.h"
 #import "SGLogDiagnostics.h"
-#import <UIKit/UIKit.h>
+#include <TargetConditionals.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
+
+static double SGSystemVersionRead(void) {
+#if TARGET_OS_IPHONE
+    NSDictionary *sv = [NSDictionary dictionaryWithContentsOfFile:
+        @"/System/Library/CoreServices/SystemVersion.plist"];
+    NSString *ver = [sv objectForKey:@"ProductVersion"];
+    return ver ? [ver doubleValue] : 0.0;   /* 0.0 = gate everything off */
+#else
+    return 5.0;
+#endif
+}
 
 extern IOReturn   IOPMSchedulePowerEvent(CFDateRef time_to_wake, CFStringRef my_id, CFStringRef type) __attribute__((weak_import));
 extern IOReturn   IOPMCancelScheduledPowerEvent(CFDateRef time_to_wake, CFStringRef my_id, CFStringRef type) __attribute__((weak_import));
@@ -124,6 +135,7 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
     NSLock       *_assertionLock;
     CFDateRef     _pendingWakeDate;
     NSLock       *_wakeLock;
+    double        _systemVersion;
 }
 
 + (SGAvailability *)shared {
@@ -148,7 +160,8 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
          * Entries with className == NULL are function-based APIs that
          * don't need class probing — only the version range matters.
          */
-        double sysVer = [[[UIDevice currentDevice] systemVersion] doubleValue];
+        _systemVersion = SGSystemVersionRead();
+        double sysVer = _systemVersion;
 
         for (NSInteger i = 0; i < SGCapabilityCount; i++) {
             SGCapabilityEntry e = kCapabilityTable[i];
@@ -193,6 +206,10 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
 }
 
 #pragma mark - Capability Queries
+
+- (double)systemVersion {
+    return _systemVersion;
+}
 
 - (BOOL)isCapabilityAvailable:(SGCapability)cap {
     if (cap < 0 || cap >= SGCapabilityCount) return NO;

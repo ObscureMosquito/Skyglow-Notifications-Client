@@ -2,6 +2,21 @@
 #import "SGKeychainStore.h"
 #import "SGLog.h"
 
+void SGEnsureRuntimeDirectories(void) {
+    NSArray *dirs = [NSArray arrayWithObjects:
+        [SGPath(SG_LOG_PATH) stringByDeletingLastPathComponent],
+        [SGPath(SG_PID_PATH) stringByDeletingLastPathComponent],
+        [SGPath(SG_DB_PATH)  stringByDeletingLastPathComponent],
+        nil];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *dir in dirs) {
+        [fm createDirectoryAtPath:dir
+      withIntermediateDirectories:YES
+                       attributes:nil
+                            error:NULL];
+    }
+}
+
 /* Scrubs a private-key buffer before releasing it so the PEM never lingers in
  * freed heap memory. */
 static void SG_ZeroAndReleaseData(NSMutableData *data) {

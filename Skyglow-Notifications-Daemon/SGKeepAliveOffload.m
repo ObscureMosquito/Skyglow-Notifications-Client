@@ -3,7 +3,6 @@
 #import "SGAvailability.h"
 #import "SGLog.h"
 #import "SGLogDiagnostics.h"
-#import <UIKit/UIKit.h>
 
 static bool _active = false;
 
@@ -19,7 +18,7 @@ static int sg_offload_ios6(int fd, double interval) {   /* Broadcom keep_alive i
 }
 
 static int sg_offload_dispatch(int fd, double interval) {
-    double v = [[UIDevice currentDevice] systemVersion].doubleValue;
+    double v = [[SGAvailability shared] systemVersion];
     if (v >= 6.0 && v < 7.0) return sg_offload_ios6(fd, interval);
     return SGKAOffloadUnimplemented;
 }

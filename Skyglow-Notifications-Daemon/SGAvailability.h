@@ -49,6 +49,14 @@ typedef NS_ENUM(NSInteger, SGCapability) {
 /** Version-aware capability check, the single source of truth. */
 - (BOOL)isCapabilityAvailable:(SGCapability)cap;
 
+/**
+ * Marketing OS version as a double ("6.1.3" → 6.1), read once at startup.
+ * Synthetic on non-iOS platforms (see SGSystemVersionRead).  Modules that
+ * must select between version-specific backends consult this instead of
+ * UIKit/UIDevice so version knowledge never originates outside this class.
+ */
+@property (nonatomic, readonly) double systemVersion;
+
 /** Convenience, equivalent to [self isCapabilityAvailable:SGCapabilityPersistentTimer]. */
 @property (nonatomic, readonly) BOOL persistentTimerAvailable;
 

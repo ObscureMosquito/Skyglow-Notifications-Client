@@ -1,6 +1,7 @@
 #import "SGReachabilityMonitor.h"
 #import <SystemConfiguration/SystemConfiguration.h>
 #include <netinet/in.h>
+#include <TargetConditionals.h>
 
 @implementation SGReachabilityMonitor {
     SCNetworkReachabilityRef _reachabilityRef;
@@ -17,8 +18,12 @@ static void SGReachabilityRelease(const void *info) {
 static void SGReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) {
     SGReachabilityMonitor *monitor = (SGReachabilityMonitor *)info;
     BOOL reachable = (flags & kSCNetworkFlagsReachable) && !(flags & kSCNetworkFlagsConnectionRequired);
+#if TARGET_OS_IPHONE
     BOOL isWWAN = (flags & kSCNetworkReachabilityFlagsIsWWAN);
-    
+#else
+    BOOL isWWAN = NO;   /* no cellular radio on macOS */
+#endif
+
     if (monitor->_handler) monitor->_handler(reachable, isWWAN);
 }
 
@@ -81,10 +86,14 @@ static void SGReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkRea
 }
 
 - (BOOL)isWWAN {
+#if TARGET_OS_IPHONE
     SCNetworkReachabilityFlags flags = 0;
     if (_reachabilityRef) SCNetworkReachabilityGetFlags(_reachabilityRef, &flags);
     /* kSCNetworkReachabilityFlagsIsWWAN is never set on WiFi-only devices (e.g. iPod touch). */
     return (flags & kSCNetworkReachabilityFlagsIsWWAN);
+#else
+    return NO;   /* macOS has no WWAN interface */
+#endif
 }
 
 @end

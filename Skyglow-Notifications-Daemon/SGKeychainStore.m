@@ -1,5 +1,6 @@
 #import "SGKeychainStore.h"
 #import <Security/Security.h>
+#include <TargetConditionals.h>
 
 static NSString * const kSGKeychainService = @"com.skyglow.daemon.privatekey";
 
@@ -28,11 +29,15 @@ BOOL SGKeychain_StorePrivateKeyPEM(NSString *pem, NSInteger profileIndex) {
 
     NSMutableDictionary *addQuery = SGKeychain_BaseQuery(profileIndex);
     [addQuery setObject:pemData forKey:(__bridge id)kSecValueData];
+#if TARGET_OS_IPHONE
     /* AfterFirstUnlock so the headless daemon can read the key after a reboot
      * once the device has been unlocked once; ThisDeviceOnly so the private key
-     * is never carried off-device in an encrypted backup or device migration. */
+     * is never carried off-device in an encrypted backup or device migration,
+     * this data-protection accessibility class only applies to the iOS keychain
+    */
     [addQuery setObject:(__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
                  forKey:(__bridge id)kSecAttrAccessible];
+#endif
 
     OSStatus status = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
     return (status == errSecSuccess);

@@ -1,0 +1,117 @@
+# Standalone macOS build for the Skyglow Notifications daemon core.
+#
+# This is intentionally separate from the Theos `Makefile` (which builds the
+# real iOS daemon + tweak + prefs and must stay untouched). It compiles ONLY
+# the daemon, natively for macOS, from the exact same source tree — the port is
+# a handful of TARGET_OS_* conditionals in the shared sources, nothing forked.
+#
+#   make -f Makefile.macos            # build build/macos/SkyglowNotificationsDaemon
+#   make -f Makefile.macos run        # build + run (needs sudo for /var paths)
+#   make -f Makefile.macos clean
+#
+# OpenSSL: the vendored libraries/openssl/*.a are iOS slices (armv7/arm64), so
+# macOS links Homebrew's openssl@3 instead. Override with OPENSSL_PREFIX=... .
+
+DAEMON_DIR := Skyglow-Notifications-Daemon
+BUILD_DIR  := build/macos
+BIN        := $(BUILD_DIR)/SkyglowNotificationsDaemon
+
+CC  := xcrun clang
+OBJC_SRCS := \
+	$(DAEMON_DIR)/main.m \
+	$(DAEMON_DIR)/SGLog.m \
+	$(DAEMON_DIR)/SGProtocolHandler.m \
+	$(DAEMON_DIR)/SGServerLocator.m \
+	$(DAEMON_DIR)/SGDatabaseManager.m \
+	$(DAEMON_DIR)/SGCryptoEngine.m \
+	$(DAEMON_DIR)/SGTokenManager.m \
+	$(DAEMON_DIR)/SGPayloadParser.m \
+	$(DAEMON_DIR)/SGJSONParser.m \
+	$(DAEMON_DIR)/SGStructuredTLV.m \
+	$(DAEMON_DIR)/SGConfiguration.m \
+	$(DAEMON_DIR)/SGKeychainStore.m \
+	$(DAEMON_DIR)/SGKeepAliveOffload.m \
+	$(DAEMON_DIR)/SGReachabilityMonitor.m \
+	$(DAEMON_DIR)/SGDaemon.m \
+	$(DAEMON_DIR)/SGAvailability.m \
+	$(DAEMON_DIR)/SGControlChannel.m \
+	$(DAEMON_DIR)/SGCompatibilityShim.m
+
+C_SRCS := \
+	$(DAEMON_DIR)/SGStatusServer.c \
+	$(DAEMON_DIR)/SGKeepAliveStrategy.c \
+	libraries/sqlite/sqlite3.c
+
+OBJS := $(patsubst %,$(BUILD_DIR)/%.o,$(OBJC_SRCS) $(C_SRCS))
+
+# --- OpenSSL (Homebrew) ---------------------------------------------------
+OPENSSL_PREFIX ?= $(shell brew --prefix openssl@3 2>/dev/null)
+ifeq ($(OPENSSL_PREFIX),)
+$(error Could not locate OpenSSL. Install with 'brew install openssl@3' or pass OPENSSL_PREFIX=/path)
+endif
+OPENSSL_INC := $(OPENSSL_PREFIX)/include
+OPENSSL_LIB := $(OPENSSL_PREFIX)/lib
+
+# --- Flags ----------------------------------------------------------------
+SQLITE_DEFS := \
+	-DSQLITE_THREADSAFE=1 \
+	-DSQLITE_OMIT_LOAD_EXTENSION \
+	-DSQLITE_DEFAULT_MEMSTATUS=0 \
+	-DSQLITE_ENABLE_LOCKING_STYLE=0 \
+	-DHAVE_GETHOSTUUID=0
+
+# OPENSSL_API_COMPAT keeps the 1.1.x API surface the code was written against
+# available under Homebrew's OpenSSL 3; the deprecation warnings for the few
+# low-level RSA calls are silenced rather than churned.
+COMMON_FLAGS := \
+	-arch $(shell uname -m) \
+	-fno-objc-arc \
+	-fstack-protector-all -D_FORTIFY_SOURCE=2 \
+	-I$(DAEMON_DIR) \
+	-Ilibraries/sqlite/include \
+	-I$(OPENSSL_INC) \
+	-DOPENSSL_API_COMPAT=0x10100000L \
+	$(SQLITE_DEFS) \
+	-Wno-unused-result -Wno-unused-but-set-variable -Wno-deprecated-declarations \
+	-O2 -g
+
+OBJCFLAGS := $(COMMON_FLAGS)
+CFLAGS_C  := $(COMMON_FLAGS)
+
+FRAMEWORKS := \
+	-framework Foundation \
+	-framework CoreFoundation \
+	-framework Security \
+	-framework SystemConfiguration \
+	-framework CFNetwork \
+	-framework IOKit
+
+LDFLAGS := \
+	$(FRAMEWORKS) \
+	$(OPENSSL_LIB)/libssl.a \
+	$(OPENSSL_LIB)/libcrypto.a \
+	-lz
+
+# --- Rules ----------------------------------------------------------------
+.PHONY: all clean run dirs
+all: $(BIN)
+
+$(BIN): $(OBJS)
+	@mkdir -p $(@D)
+	$(CC) $(OBJS) $(LDFLAGS) -o $@
+	@echo "built $@"
+	@codesign -s - --entitlements /dev/null $@ 2>/dev/null || true
+
+$(BUILD_DIR)/%.m.o: %.m
+	@mkdir -p $(@D)
+	$(CC) $(OBJCFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/%.c.o: %.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS_C) -c $< -o $@
+
+run: $(BIN)
+	sudo $(BIN)
+
+clean:
+	rm -rf $(BUILD_DIR)
