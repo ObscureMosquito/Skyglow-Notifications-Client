@@ -12,6 +12,7 @@
 #import "SGReachabilityMonitor.h"
 #import "SGKeychainStore.h"
 #import "SGStorage.h"
+#import "SGStateStore.h"
 #import "SGLog.h"
 #include <openssl/pem.h>
 #include <stdio.h>
@@ -222,7 +223,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     char                   _lastErrorDetail[128];
     dispatch_source_t      _localDeliveryRetryTimer;
     dispatch_queue_t       _localDeliveryDrainQueue;
-    dispatch_queue_t       _storageQueue;
+    SGStateStore          *_stateStore;
     SGControlChannel      *_controlChannel;
     SGControlChannel      *_springBoardClient;
     SGReachabilityMonitor *_reachability;
@@ -239,7 +240,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
         _seenMessageIDs      = [[NSMutableOrderedSet alloc] initWithCapacity:kSGSeenMessageIDCap];
         _entryActionQueue    = dispatch_queue_create("com.skyglow.daemon.entry", DISPATCH_QUEUE_SERIAL);
         _localDeliveryDrainQueue = dispatch_queue_create("com.skyglow.daemon.drain", DISPATCH_QUEUE_SERIAL);
-        _storageQueue = dispatch_queue_create("com.skyglow.daemon.storage", DISPATCH_QUEUE_SERIAL);
+        _stateStore = [[SGStateStore alloc] init];
         _powerRootPort       = MACH_PORT_NULL;
         _powerNotifier       = MACH_PORT_NULL;
         _powerNotifyPort     = NULL;
@@ -260,8 +261,12 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     [self _stopLocalDeliveryRetryTimer];
     dispatch_release(_entryActionQueue);
     if (_localDeliveryDrainQueue) dispatch_release(_localDeliveryDrainQueue);
-    if (_storageQueue) dispatch_release(_storageQueue);
+    [_stateStore release];
     [super dealloc];
+}
+
+- (SGStateStore *)stateStore {
+    return _stateStore;
 }
 
 - (void)attachControlChannel:(SGControlChannel *)channel {
@@ -415,12 +420,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     }
 }
 
-- (BOOL)_runDeletionCascadeForBundle:(NSString *)bundleID {
-    if (![bundleID length]) return NO;
-    return [[SGDatabaseManager sharedManager]
-        removeAllStateForBundleIdentifier:bundleID];
-}
-
 - (void)reconcileTokensWithPlist {
     NSString *plistPath = SGPath(SG_PREFS_PLIST_PATH);
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
@@ -431,7 +430,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     if ([pending count] > 0) {
         NSMutableArray *completed = [NSMutableArray array];
         for (NSString *bundleID in pending) {
-            if ([self _runDeletionCascadeForBundle:bundleID]) {
+            if ([_stateStore runDeletionCascadeForBundleIdentifier:bundleID]) {
                 [completed addObject:bundleID];
                 SGLOGI(SGDaemon,
                        "code=%s bundle=%s action=recover_pending_deletion",
@@ -445,7 +444,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             }
         }
         if ([completed count] > 0) {
-            [self _clearPendingDeletionsInPlistForBundles:completed];
+            [_stateStore clearPendingDeletionsForBundleIdentifiers:completed];
         }
     }
 
@@ -503,7 +502,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     }
     if (mutated) {
         SGP_FlushActiveTopicFilter();
-        [self schedulePublicStateSnapshot];
+        [_stateStore schedulePublicStateSnapshot];
     }
 }
 
@@ -734,7 +733,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     uint32_t activeProfile = [config hasProfile] ? (uint32_t)[config activeProfileIndex] : 0;
     SGStatusServer_Post(newState, (uint32_t)_consecutiveFailures, backoff,
                         resolvedIP, _lastErrorDetail, activeProfile);
-    [self schedulePublicStateSnapshot];
+    [_stateStore schedulePublicStateSnapshot];
     SGLOGD(SGDaemon, "code=%s to=%s generation=%u", SGND_FSM_TRANSITION, SGState_GetName(newState), capturedGen);
 
     if (_controlChannel) {
@@ -1186,8 +1185,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     [[SGConfiguration sharedConfiguration] reloadFromDisk];
     [self reconcileTokensWithPlist];
     [self handleEvent:SGEventConfigReloaded payload:nil];
-    [self drainDurableEventInbox];
-    [self schedulePublicStateSnapshot];
+    [_stateStore drainDurableEventInbox];
+    [_stateStore schedulePublicStateSnapshot];
 
     if (_controlChannel) [_controlChannel postEvent:SGCEVT_CONFIG_RELOADED payload:nil];
 }
@@ -1246,37 +1245,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     }];
 }
 
-- (BOOL)_updateMainPreferences:
-    (void (^)(NSMutableDictionary *preferences))mutation {
-    if (!mutation) return NO;
-    @synchronized(self) {
-        NSString *plistPath = SGPath(SG_PREFS_PLIST_PATH);
-        NSMutableDictionary *preferences =
-            [NSMutableDictionary dictionaryWithContentsOfFile:plistPath]
-            ?: [NSMutableDictionary dictionary];
-        mutation(preferences);
-        return SGPersistSharedPlist(preferences, plistPath);
-    }
-}
-
-- (BOOL)clearPendingDeletionForBundleIdentifier:(NSString *)bundleID {
-    if (![bundleID length]) return NO;
-    return [self _clearPendingDeletionsInPlistForBundles:@[bundleID]];
-}
-
-- (BOOL)_clearPendingDeletionsInPlistForBundles:(NSArray *)bundles {
-    if ([bundles count] == 0) return YES;
-    return [self _updateMainPreferences:^(NSMutableDictionary *preferences) {
-        NSArray *current = [preferences objectForKey:@"pendingDeletions"];
-        if ([current count] == 0) return;
-        NSMutableArray *next = [NSMutableArray arrayWithArray:current];
-        [next removeObjectsInArray:bundles];
-        [preferences setObject:next forKey:@"pendingDeletions"];
-    }];
-}
-
 - (BOOL)performSetEnabled:(BOOL)enabled {
-    BOOL persisted = [self _updateMainPreferences:^(NSMutableDictionary *preferences) {
+    BOOL persisted = [_stateStore updateMainPreferences:^(NSMutableDictionary *preferences) {
         [preferences setObject:[NSNumber numberWithBool:enabled]
                         forKey:@"enabled"];
     }];
@@ -1285,265 +1255,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     /* Same reload path RELOAD_CONFIG uses: re-read config and drive the FSM so
      * the enable/disable takes effect immediately (connect or tear down). */
     [self handleConfigurationReloadRequest];
-    [self schedulePublicStateSnapshot];
+    [_stateStore schedulePublicStateSnapshot];
     return YES;
-}
-
-- (BOOL)persistAppEnabled:(BOOL)enabled forBundleIdentifier:(NSString *)bundleID {
-    if (![bundleID length]) return NO;
-    return [self _updateMainPreferences:^(NSMutableDictionary *preferences) {
-        NSMutableDictionary *appStatus =
-            [NSMutableDictionary dictionaryWithDictionary:
-                [preferences objectForKey:@"appStatus"] ?: @{}];
-        [appStatus setObject:[NSNumber numberWithBool:enabled] forKey:bundleID];
-        [preferences setObject:appStatus forKey:@"appStatus"];
-    }];
-}
-
-- (BOOL)removeAppStatusForBundleIdentifier:(NSString *)bundleID {
-    if (![bundleID length]) return NO;
-    return [self _updateMainPreferences:^(NSMutableDictionary *preferences) {
-        NSMutableDictionary *appStatus =
-            [NSMutableDictionary dictionaryWithDictionary:
-                [preferences objectForKey:@"appStatus"] ?: @{}];
-        [appStatus removeObjectForKey:bundleID];
-        [preferences setObject:appStatus forKey:@"appStatus"];
-    }];
-}
-
-- (BOOL)performSetAppEnabled:(BOOL)enabled
-         forBundleIdentifier:(NSString *)bundleID {
-    if (!SG_IsIdentifierStringSafe(bundleID)) return NO;
-
-    @synchronized(self) {
-        SGDatabaseManager *database = [SGDatabaseManager sharedManager];
-        if (!database) return NO;
-
-        NSDictionary *preferences = [NSDictionary dictionaryWithContentsOfFile:
-            SGPath(SG_PREFS_PLIST_PATH)] ?: @{};
-        id previousIntent =
-            [[preferences objectForKey:@"appStatus"] objectForKey:bundleID];
-        /* No persisted provider choice is fail-closed. Otherwise appStatus's
-         * boolean is the durable source for the pre-request mute state. */
-        BOOL rollbackMuted =
-            previousIntent ? ![previousIntent boolValue] : YES;
-
-        if (enabled) {
-            SGTokenManager *tokenManager = [[SGTokenManager alloc] init];
-            NSError *tokenError = nil;
-            NSData *token = [tokenManager
-                synchronizedTokenForBundleIdentifier:bundleID
-                                               error:&tokenError];
-            [tokenManager release];
-            if (!token) {
-                SGLOGE(SGDaemon,
-                       "code=%s bundle=%s result=failed reason=%s",
-                       SGND_TOKEN_GENERATE_FAILED, [bundleID UTF8String],
-                       [[tokenError description] UTF8String]);
-                return NO;
-            }
-        }
-
-        BOOL databaseUpdated =
-            [database setMuted:!enabled forBundleIdentifier:bundleID];
-        BOOL intentUpdated =
-            databaseUpdated &&
-            [self persistAppEnabled:enabled forBundleIdentifier:bundleID];
-        if (!intentUpdated) {
-            [database setMuted:rollbackMuted forBundleIdentifier:bundleID];
-            return NO;
-        }
-
-        SGP_FlushActiveTopicFilter();
-        [self schedulePublicStateSnapshot];
-        return YES;
-    }
-}
-
-- (BOOL)performClearAppIntentForBundleIdentifier:(NSString *)bundleID {
-    if (!SG_IsIdentifierStringSafe(bundleID)) return NO;
-    BOOL removed = [self removeAppStatusForBundleIdentifier:bundleID];
-    if (removed) [self schedulePublicStateSnapshot];
-    return removed;
-}
-
-- (BOOL)performDeleteAppStateForBundleIdentifier:(NSString *)bundleID {
-    if (!SG_IsIdentifierStringSafe(bundleID)) return NO;
-    @synchronized(self) {
-        BOOL databaseClean = [self _runDeletionCascadeForBundle:bundleID];
-        BOOL pendingCleared =
-            [self clearPendingDeletionForBundleIdentifier:bundleID];
-        BOOL intentRemoved =
-            [self removeAppStatusForBundleIdentifier:bundleID];
-        if (!(databaseClean && pendingCleared && intentRemoved)) return NO;
-
-        SGP_FlushActiveTopicFilter();
-        [self schedulePublicStateSnapshot];
-        return YES;
-    }
-}
-
-- (BOOL)performSetStatusBarIndicatorEnabled:(BOOL)enabled {
-    BOOL persisted = [self _updateMainPreferences:
-        ^(NSMutableDictionary *preferences) {
-            [preferences setObject:[NSNumber numberWithBool:enabled]
-                            forKey:@"statusBarIndicatorEnabled"];
-        }];
-    if (!persisted) return NO;
-    if (_controlChannel) {
-        [_controlChannel postEvent:SGCEVT_CONFIG_RELOADED payload:nil];
-    }
-    [self schedulePublicStateSnapshot];
-    return YES;
-}
-
-- (BOOL)_writePublicStateSnapshot {
-    NSDictionary *preferences = [NSDictionary dictionaryWithContentsOfFile:
-        SGPath(SG_PREFS_PLIST_PATH)] ?: @{};
-    NSDictionary *previous = [NSDictionary dictionaryWithContentsOfFile:
-        SGPath(SG_PUBLIC_STATE_PATH)];
-    unsigned long long generation =
-        [[previous objectForKey:@"generation"] unsignedLongLongValue] + 1;
-
-    NSMutableDictionary *snapshot = [NSMutableDictionary dictionary];
-    [snapshot setObject:[NSNumber numberWithInteger:1] forKey:@"formatVersion"];
-    [snapshot setObject:[NSNumber numberWithUnsignedLongLong:generation]
-                 forKey:@"generation"];
-    [snapshot setObject:[NSNumber numberWithDouble:
-        ([[NSDate date] timeIntervalSince1970])] forKey:@"updatedAt"];
-
-    for (NSString *key in @[
-            @"enabled", @"activeProfile", @"logLevel",
-            @"statusBarIndicatorEnabled", @"appStatus"]) {
-        id value = [preferences objectForKey:key];
-        if (value) [snapshot setObject:value forKey:key];
-    }
-
-    NSArray *registered = [[[[SGDatabaseManager sharedManager]
-        registeredBundleIdentifiers] allObjects]
-        sortedArrayUsingSelector:@selector(compare:)];
-    [snapshot setObject:registered ?: @[] forKey:@"registeredBundleIDs"];
-
-    SGStatusPayload status;
-    memset(&status, 0, sizeof(status));
-    SGStatusServer_Current(&status);
-    NSString *serverIP = [NSString stringWithUTF8String:status.serverIP] ?: @"";
-    NSString *errorDetail =
-        [NSString stringWithUTF8String:status.errorDetail] ?: @"";
-    NSDictionary *statusDictionary = @{
-        @"state": [NSNumber numberWithUnsignedInt:status.state],
-        @"consecutiveFailures":
-            [NSNumber numberWithUnsignedInt:status.consecutiveFailures],
-        @"currentBackoffSec":
-            [NSNumber numberWithUnsignedInt:status.currentBackoffSec],
-        @"serverIP": serverIP,
-        @"daemonStartTime":
-            [NSNumber numberWithLongLong:status.daemonStartTime],
-        @"lastStateTransitionTime":
-            [NSNumber numberWithLongLong:status.lastStateTransitionTime],
-        @"errorDetail": errorDetail,
-        @"activeProfileIndex":
-            [NSNumber numberWithUnsignedInt:status.activeProfileIndex],
-    };
-    [snapshot setObject:statusDictionary forKey:@"status"];
-
-    NSError *error = nil;
-    BOOL written = SGAtomicWritePropertyList(snapshot,
-        SGPath(SG_PUBLIC_STATE_PATH), 0644, &error);
-    if (!written) {
-        SGLOGE(SGDaemon, "code=%s reason=%s",
-               SGND_PUBLIC_STATE_WRITE_FAILED,
-               [[error description] UTF8String]);
-    }
-    return written;
-}
-
-- (void)schedulePublicStateSnapshot {
-    dispatch_async(_storageQueue, ^{
-        @autoreleasepool {
-            [self _writePublicStateSnapshot];
-        }
-    });
-}
-
-- (BOOL)_applyDurableEvent:(NSDictionary *)event {
-    if ([[event objectForKey:SGDurableEventFormatVersionKey] integerValue] != 1) {
-        return NO;
-    }
-    NSString *type = [event objectForKey:SGDurableEventTypeKey];
-    NSString *bundleID = [event objectForKey:SGDurableEventBundleIdentifierKey];
-    if (![type isKindOfClass:[NSString class]] ||
-        !SG_IsIdentifierStringSafe(bundleID)) {
-        return NO;
-    }
-
-    if ([type isEqualToString:SGDurableEventSetAppEnabled]) {
-        NSNumber *enabled = [event objectForKey:SGDurableEventEnabledKey];
-        if (![enabled isKindOfClass:[NSNumber class]]) return NO;
-        return [self performSetAppEnabled:[enabled boolValue]
-                      forBundleIdentifier:bundleID];
-    }
-    if ([type isEqualToString:SGDurableEventClearAppIntent]) {
-        return [self performClearAppIntentForBundleIdentifier:bundleID];
-    }
-    if ([type isEqualToString:SGDurableEventDeleteApp]) {
-        return [self performDeleteAppStateForBundleIdentifier:bundleID];
-    }
-    return NO;
-}
-
-- (void)drainDurableEventInbox {
-    dispatch_async(_storageQueue, ^{
-        @autoreleasepool {
-            NSArray *events = SGDurableEventPendingEvents(
-                SGPath(SG_DURABLE_EVENT_INBOX_PATH));
-            NSMutableSet *blockedBundles = [NSMutableSet set];
-            for (NSDictionary *event in events) {
-                NSString *type = [event objectForKey:SGDurableEventTypeKey];
-                NSString *bundleID =
-                    [event objectForKey:SGDurableEventBundleIdentifierKey];
-                BOOL knownType =
-                    [type isEqualToString:SGDurableEventSetAppEnabled] ||
-                    [type isEqualToString:SGDurableEventClearAppIntent] ||
-                    [type isEqualToString:SGDurableEventDeleteApp];
-                BOOL payloadValid =
-                    ![type isEqualToString:SGDurableEventSetAppEnabled] ||
-                    [[event objectForKey:SGDurableEventEnabledKey]
-                        isKindOfClass:[NSNumber class]];
-                BOOL structurallyValid =
-                    [[event objectForKey:SGDurableEventFormatVersionKey]
-                        integerValue] == 1 &&
-                    [type isKindOfClass:[NSString class]] &&
-                    SG_IsIdentifierStringSafe(bundleID) &&
-                    knownType && payloadValid;
-                if (!structurallyValid) {
-                    SGLOGE(SGDaemon, "code=%s file=%s action=quarantine",
-                           SGND_DURABLE_EVENT_INVALID,
-                           [[[event objectForKey:SGDurableEventFilePathKey]
-                               lastPathComponent] UTF8String]);
-                    SGDurableEventQuarantine(event);
-                    continue;
-                }
-
-                /* Preserve ordering for repeated choices concerning one app,
-                 * without allowing a temporarily uncommittable registration
-                 * to block an unrelated app's uninstall cleanup. */
-                if ([blockedBundles containsObject:bundleID]) continue;
-
-                if ([self _applyDurableEvent:event]) {
-                    SGDurableEventRemove(event);
-                    SGLOGI(SGDaemon, "code=%s type=%s bundle=%s",
-                           SGND_DURABLE_EVENT_APPLIED, [type UTF8String],
-                           [bundleID UTF8String]);
-                } else {
-                    SGLOGW(SGDaemon, "code=%s type=%s bundle=%s action=retry_later",
-                           SGND_DURABLE_EVENT_DEFERRED, [type UTF8String],
-                           [bundleID UTF8String]);
-                    [blockedBundles addObject:bundleID];
-                }
-            }
-        }
-    });
 }
 
 - (void)performProfileWipeInline {
@@ -1651,8 +1364,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         [self handleEvent:SGEventConfigReloaded payload:nil];
     }
 
-    [self drainDurableEventInbox];
-    [self schedulePublicStateSnapshot];
+    [_stateStore drainDurableEventInbox];
+    [_stateStore schedulePublicStateSnapshot];
     return YES;
 }
 
@@ -1699,7 +1412,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         [self handleEvent:SGEventConfigReloaded payload:nil];
     }
 
-    [self schedulePublicStateSnapshot];
+    [_stateStore schedulePublicStateSnapshot];
     return YES;
 }
 
@@ -1712,7 +1425,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
     if ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx) return YES;
 
-    BOOL persisted = [self _updateMainPreferences:^(NSMutableDictionary *preferences) {
+    BOOL persisted = [_stateStore updateMainPreferences:^(NSMutableDictionary *preferences) {
         [preferences setObject:[NSNumber numberWithInteger:profileIdx]
                         forKey:@"activeProfile"];
     }];
@@ -1726,8 +1439,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     [self reconcileTokensWithPlist];
     [self handleEvent:SGEventConfigReloaded payload:nil];
     [self _kickLocalDeliveryDrain];
-    [self drainDurableEventInbox];
-    [self schedulePublicStateSnapshot];
+    [_stateStore drainDurableEventInbox];
+    [_stateStore schedulePublicStateSnapshot];
 
     return YES;
 }

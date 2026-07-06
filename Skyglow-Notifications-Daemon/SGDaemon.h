@@ -38,8 +38,17 @@ typedef NS_ENUM(NSInteger, SGEvent) {
 };
 
 @class SGControlChannel;
+@class SGStateStore;
 
 @interface SGDaemon : NSObject <SGProtocolDelegate>
+
+/**
+ * The daemon's single-writer authority over persistent app/event state and the
+ * publisher of the read-only public-state snapshot.  IPC handlers route every
+ * state mutation (per-app intents, status-bar preference, inbox drain) through
+ * this; the daemon itself uses it for the writes behind its config commands.
+ */
+@property (nonatomic, readonly) SGStateStore *stateStore;
 
 /**
  * Attaches the process-wide control channel.  The daemon uses it to publish
@@ -103,22 +112,6 @@ typedef NS_ENUM(NSInteger, SGEvent) {
                                           completion:(void (^)(SGControlError err))completion;
 
 /**
- * Atomically removes the given bundle from the plist's pendingDeletions
- * field.  Called at the end of the DELETE_APP cascade once the operational
- * cleanup has completed, so the persistent intent record is cleared in
- * lockstep with the cleanup it represents.  No-op if the field is missing
- * or the bundle isn't in the list.
- */
-- (BOOL)clearPendingDeletionForBundleIdentifier:(NSString *)bundleID;
-
-/**
- * Per-bundle operational cleanup: drops the DB row and scrubs queued
- * local pending deliveries.  Idempotent.  Does NOT flush the server filter
- * or clear pendingDeletions.
- */
-- (BOOL)_runDeletionCascadeForBundle:(NSString *)bundleID;
-
-/**
  * Atomically deletes a profile slot: keychain entry + plist file + any
  * database rows tied to that profile.  If the deleted slot was active,
  * the daemon also disables itself and disconnects.  Returns YES on full
@@ -151,44 +144,6 @@ typedef NS_ENUM(NSInteger, SGEvent) {
  * cascade.  Returns YES if the plist was written.
  */
 - (BOOL)performSetEnabled:(BOOL)enabled;
-
-/**
- * Applies one platform-neutral per-app intent. This is shared by IPC and the
- * durable inbox so retries are idempotent and use exactly the same DB/plist
- * transaction semantics.
- */
-- (BOOL)performSetAppEnabled:(BOOL)enabled
-         forBundleIdentifier:(NSString *)bundleID;
-
-/** Removes only the persisted provider choice; no platform APIs are invoked. */
-- (BOOL)performClearAppIntentForBundleIdentifier:(NSString *)bundleID;
-
-/** Clears daemon-owned operational and intent state after an app disappears. */
-- (BOOL)performDeleteAppStateForBundleIdentifier:(NSString *)bundleID;
-
-/** Persists the presentation-only status-indicator preference. */
-- (BOOL)performSetStatusBarIndicatorEnabled:(BOOL)enabled;
-
-/** Schedules idempotent processing of generic write-ahead event files. */
-- (void)drainDurableEventInbox;
-
-/** Schedules publication of the sanitized, read-only state snapshot. */
-- (void)schedulePublicStateSnapshot;
-
-/**
- * Persists a per-app on/off choice into the plist's `appStatus` dictionary,
- * so the daemon owns that write instead of the prefs bundle. Called by the
- * ENABLE_APP / DISABLE_APP handlers alongside the DB mute sync.  No-op for an
- * empty bundle id.
- */
-- (BOOL)persistAppEnabled:(BOOL)enabled forBundleIdentifier:(NSString *)bundleID;
-
-/**
- * Removes a bundle's entry from the plist's `appStatus` dictionary.  Called at
- * the end of the DELETE_APP cascade so the user-intent record is cleared in
- * lockstep with the operational cleanup.  No-op if the entry is absent.
- */
-- (BOOL)removeAppStatusForBundleIdentifier:(NSString *)bundleID;
 
 @end
 

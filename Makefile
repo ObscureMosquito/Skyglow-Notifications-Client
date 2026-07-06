@@ -24,6 +24,7 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/SGDaemon.m \
     Skyglow-Notifications-Daemon/SGAvailability.m \
     Skyglow-Notifications-Daemon/SGStorage.m \
+    Skyglow-Notifications-Daemon/SGStateStore.m \
     Skyglow-Notifications-Daemon/SGControlChannel.m \
     Skyglow-Notifications-Daemon/SGCompatibilityShim.m \
     libraries/sqlite/sqlite3.c

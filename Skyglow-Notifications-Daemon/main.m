@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import "SGDaemon.h"
+#import "SGStateStore.h"
 #import "SGCompatibilityShim.h"
 #import "SGServerLocator.h"
 #import "SGConfiguration.h"
@@ -298,7 +299,7 @@ int main(int argc, char *argv[]) {
                 replyError(SGCERR_INVALID_REQUEST, @"enable bundle id invalid");
                 return;
             }
-            BOOL ok = [daemon performSetAppEnabled:YES
+            BOOL ok = [daemon.stateStore performSetAppEnabled:YES
                                forBundleIdentifier:bundleID];
             [bundleID release];
             if (ok) reply(SGCMSG_GENERIC_ACK, nil);
@@ -321,7 +322,7 @@ int main(int argc, char *argv[]) {
                 replyError(SGCERR_INVALID_REQUEST, @"disable bundle id invalid");
                 return;
             }
-            BOOL ok = [daemon performSetAppEnabled:NO
+            BOOL ok = [daemon.stateStore performSetAppEnabled:NO
                                forBundleIdentifier:bundleID];
             [bundleID release];
             if (ok) reply(SGCMSG_GENERIC_ACK, nil);
@@ -344,7 +345,7 @@ int main(int argc, char *argv[]) {
                 replyError(SGCERR_INVALID_REQUEST, @"clear-app-intent bundle id invalid");
                 return;
             }
-            BOOL ok = [daemon performClearAppIntentForBundleIdentifier:bundleID];
+            BOOL ok = [daemon.stateStore performClearAppIntentForBundleIdentifier:bundleID];
             [bundleID release];
             if (ok) reply(SGCMSG_GENERIC_ACK, nil);
             else    replyError(SGCERR_INTERNAL, @"could not clear application intent");
@@ -362,9 +363,15 @@ int main(int argc, char *argv[]) {
                 replyError(SGCERR_INVALID_REQUEST, @"status-bar value invalid");
                 return;
             }
-            BOOL ok = [daemon performSetStatusBarIndicatorEnabled:(ep->enabled != 0)];
-            if (ok) reply(SGCMSG_GENERIC_ACK, nil);
-            else    replyError(SGCERR_INTERNAL, @"could not persist status-bar setting");
+            BOOL ok = [daemon.stateStore performSetStatusBarIndicatorEnabled:(ep->enabled != 0)];
+            if (ok) {
+                /* The store owns the write; broadcasting "config changed" so the
+                 * SB tweak re-reads the preference is the daemon side's job. */
+                [controlChannel postEvent:SGCEVT_CONFIG_RELOADED payload:nil];
+                reply(SGCMSG_GENERIC_ACK, nil);
+            } else {
+                replyError(SGCERR_INTERNAL, @"could not persist status-bar setting");
+            }
         } forMessageType:SGCMSG_SET_STATUS_BAR_ENABLED];
 
         [controlChannel registerHandler:^(const SGControlChannelMessage *req,
@@ -391,7 +398,7 @@ int main(int argc, char *argv[]) {
             [daemon dispatchResetRegistrationForBundleIdentifier:bundleRet
                                                       completion:^(SGControlError err) {
                 if (err == SGCERR_OK) {
-                    if ([daemon performDeleteAppStateForBundleIdentifier:bundleRet]) {
+                    if ([daemon.stateStore performDeleteAppStateForBundleIdentifier:bundleRet]) {
                         replyCopy(SGCMSG_GENERIC_ACK, nil);
                     } else {
                         replyErrorCopy(SGCERR_INTERNAL,
@@ -486,8 +493,8 @@ int main(int argc, char *argv[]) {
         [springBoardClient start];
         [daemon attachSpringBoardClient:springBoardClient];
 
-        [daemon drainDurableEventInbox];
-        [daemon schedulePublicStateSnapshot];
+        [daemon.stateStore drainDurableEventInbox];
+        [daemon.stateStore schedulePublicStateSnapshot];
         [daemon start];
 
         CFRunLoopRun();
