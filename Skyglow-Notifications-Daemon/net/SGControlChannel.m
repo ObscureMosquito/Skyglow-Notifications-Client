@@ -1,10 +1,10 @@
 #import "SGControlChannel.h"
+#import "SGControlAuthorization.h"
 #import "SGLog.h"
 #include <bootstrap.h>
 #include <pthread.h>
 #include <string.h>
 #include <stddef.h>
-#include <sys/sysctl.h>
 #include <unistd.h>
 
 #if __has_feature(objc_arc)
@@ -582,65 +582,6 @@ static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, 
 #pragma mark - Server-Side Dispatch
 
 
-static const char * const kSGCAllowedSenderPaths[] = {
-    "/System/Library/CoreServices/SpringBoard.app/SpringBoard",
-    "/Applications/Preferences.app/Preferences",
-    "/System/Applications/Preferences.app/Preferences",
-    "/Applications/Settings.app/Settings",
-    "/System/Applications/Settings.app/Settings",
-};
-
-static BOOL SGCResolveSenderName(pid_t pid, char *out, size_t outLen) {
-    if (!out || outLen == 0) return NO;
-    out[0] = '\0';
-    if (pid <= 0) return NO;
-    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, pid };
-    struct kinfo_proc kp;
-    size_t len = sizeof(kp);
-    if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0 || len == 0) return NO;
-    strlcpy(out, kp.kp_proc.p_comm, outLen);
-    return (out[0] != '\0');
-}
-
-static BOOL SGCResolveSenderPath(pid_t pid, char *out, size_t outLen) {
-    if (!out || outLen == 0 || pid <= 0) return NO;
-    out[0] = '\0';
-
-    int mib[3] = { CTL_KERN, KERN_PROCARGS2, pid };
-    size_t size = 0;
-    if (sysctl(mib, 3, NULL, &size, NULL, 0) != 0 ||
-        size <= sizeof(int) || size > 65536) {
-        return NO;
-    }
-
-    char *args = (char *)malloc(size);
-    if (!args) return NO;
-    BOOL ok = NO;
-    if (sysctl(mib, 3, args, &size, NULL, 0) == 0 && size > sizeof(int)) {
-        const char *execPath = args + sizeof(int);
-        size_t available = size - sizeof(int);
-        size_t pathLen = strnlen(execPath, available);
-        if (pathLen > 0 && pathLen < available && pathLen < outLen) {
-            memcpy(out, execPath, pathLen);
-            out[pathLen] = '\0';
-            ok = YES;
-        }
-    }
-    free(args);
-    return ok;
-}
-
-static BOOL SGCSenderAuthorized(uid_t euid, const char *senderPath) {
-    if (euid == 0) return YES; /* Explicitly trusted administrative tools. */
-    if (euid != 501 || !senderPath || senderPath[0] == '\0') return NO;
-    for (size_t i = 0;
-         i < sizeof(kSGCAllowedSenderPaths) / sizeof(kSGCAllowedSenderPaths[0]);
-         i++) {
-        if (strcmp(senderPath, kSGCAllowedSenderPaths[i]) == 0) return YES;
-    }
-    return NO;
-}
-
 - (void)_serverDispatchRequestLocked:(SGControlChannelMessage *)msg {
     mach_port_t replyPort = msg->mach_header.msgh_remote_port;
     SGControlMessageType type = (SGControlMessageType)msg->messageType;
@@ -670,10 +611,11 @@ static BOOL SGCSenderAuthorized(uid_t euid, const char *senderPath) {
             pid_t senderPid  = (pid_t)trailer->msgh_audit.val[5];
             char  senderName[32];
             char  senderPath[1024];
-            SGCResolveSenderName(senderPid, senderName, sizeof(senderName));
-            SGCResolveSenderPath(senderPid, senderPath, sizeof(senderPath));
-
-            if (!SGCSenderAuthorized(senderEuid, senderPath)) {
+            BOOL authorized = SGControlSenderIsAuthorized(
+                senderPid, senderEuid,
+                senderName, sizeof(senderName),
+                senderPath, sizeof(senderPath));
+            if (!authorized) {
                 SGLOGW(SGControlChannel,
                        "code=%s type=0x%02x pid=%d euid=%d sender=%s path=%s result=denied",
                        SGND_CONTROL_UNAUTHORIZED, type, (int)senderPid, (int)senderEuid,

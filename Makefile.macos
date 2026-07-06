@@ -18,30 +18,31 @@ BIN        := $(BUILD_DIR)/SkyglowNotificationsDaemon
 
 CC  := xcrun clang
 OBJC_SRCS := \
-	$(DAEMON_DIR)/main.m \
-	$(DAEMON_DIR)/SGLog.m \
-	$(DAEMON_DIR)/SGProtocolHandler.m \
-	$(DAEMON_DIR)/SGServerLocator.m \
-	$(DAEMON_DIR)/SGDatabaseManager.m \
-	$(DAEMON_DIR)/SGCryptoEngine.m \
-	$(DAEMON_DIR)/SGTokenManager.m \
-	$(DAEMON_DIR)/SGPayloadParser.m \
-	$(DAEMON_DIR)/SGJSONParser.m \
-	$(DAEMON_DIR)/SGStructuredTLV.m \
-	$(DAEMON_DIR)/SGConfiguration.m \
-	$(DAEMON_DIR)/SGKeychainStore.m \
-	$(DAEMON_DIR)/SGKeepAliveOffload.m \
-	$(DAEMON_DIR)/SGReachabilityMonitor.m \
-	$(DAEMON_DIR)/SGDaemon.m \
-	$(DAEMON_DIR)/SGAvailability.m \
-	$(DAEMON_DIR)/SGStorage.m \
-	$(DAEMON_DIR)/SGStateStore.m \
-	$(DAEMON_DIR)/SGControlChannel.m \
-	$(DAEMON_DIR)/SGCompatibilityShim.m
+	$(DAEMON_DIR)/core/main.m \
+	$(DAEMON_DIR)/shared/SGLog.m \
+	$(DAEMON_DIR)/net/SGProtocolHandler.m \
+	$(DAEMON_DIR)/net/SGServerLocator.m \
+	$(DAEMON_DIR)/state/SGDatabaseManager.m \
+	$(DAEMON_DIR)/crypto/SGCryptoEngine.m \
+	$(DAEMON_DIR)/crypto/SGTokenManager.m \
+	$(DAEMON_DIR)/payload/SGPayloadParser.m \
+	$(DAEMON_DIR)/payload/SGJSONParser.m \
+	$(DAEMON_DIR)/payload/SGStructuredTLV.m \
+	$(DAEMON_DIR)/state/SGConfiguration.m \
+	$(DAEMON_DIR)/state/SGKeychainStore.m \
+	$(DAEMON_DIR)/net/SGKeepAliveOffload.m \
+	$(DAEMON_DIR)/net/SGReachabilityMonitor.m \
+	$(DAEMON_DIR)/core/SGDaemon.m \
+	$(DAEMON_DIR)/platform/SGAvailability.m \
+	$(DAEMON_DIR)/state/SGStorage.m \
+	$(DAEMON_DIR)/state/SGStateStore.m \
+	$(DAEMON_DIR)/net/SGControlAuthorization.m \
+	$(DAEMON_DIR)/net/SGControlChannel.m \
+	$(DAEMON_DIR)/platform/SGCompatibilityShim.m
 
 C_SRCS := \
-	$(DAEMON_DIR)/SGStatusServer.c \
-	$(DAEMON_DIR)/SGKeepAliveStrategy.c \
+	$(DAEMON_DIR)/shared/SGStatusServer.c \
+	$(DAEMON_DIR)/net/SGKeepAliveStrategy.c \
 	libraries/sqlite/sqlite3.c
 
 OBJS := $(patsubst %,$(BUILD_DIR)/%.o,$(OBJC_SRCS) $(C_SRCS))
@@ -69,7 +70,13 @@ COMMON_FLAGS := \
 	-arch $(shell uname -m) \
 	-fno-objc-arc \
 	-fstack-protector-all -D_FORTIFY_SOURCE=2 \
-	-I$(DAEMON_DIR) \
+	-I$(DAEMON_DIR)/core \
+	-I$(DAEMON_DIR)/state \
+	-I$(DAEMON_DIR)/net \
+	-I$(DAEMON_DIR)/crypto \
+	-I$(DAEMON_DIR)/payload \
+	-I$(DAEMON_DIR)/platform \
+	-I$(DAEMON_DIR)/shared \
 	-Ilibraries/sqlite/include \
 	-I$(OPENSSL_INC) \
 	-DOPENSSL_API_COMPAT=0x10100000L \

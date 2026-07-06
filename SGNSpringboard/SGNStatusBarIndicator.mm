@@ -1,10 +1,10 @@
 #import <UIKit/UIKit.h>
 #import "LSStatusBarItem.h"
-#import "../Skyglow-Notifications-Daemon/SGStatusServer.h"
-#import "../Skyglow-Notifications-Daemon/SGSharedConstants.h"
-#import "../Skyglow-Notifications-Daemon/SGControlChannel.h"
-#import "../Skyglow-Notifications-Daemon/SGControlChannelProtocol.h"
-#import "../Skyglow-Notifications-Daemon/SGLog.h"
+#import "SGStatusServer.h"
+#import "SGSharedConstants.h"
+#import "SGControlChannel.h"
+#import "SGControlChannelProtocol.h"
+#import "SGLog.h"
 
 static NSString * const kStatusBarIndicatorEnabledKey = @"statusBarIndicatorEnabled";
 static NSString * const kIndicatorIdentifier          = @"com.skyglow.snd.indicator";

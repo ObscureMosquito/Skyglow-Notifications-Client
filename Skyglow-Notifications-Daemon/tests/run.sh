@@ -4,6 +4,6 @@
 set -e
 cd "$(dirname "$0")"
 OUT="$(mktemp -d)"
-clang -Wall -Wextra -I.. -o "$OUT/test_keepalive" test_keepalive_strategy.c ../SGKeepAliveStrategy.c
+clang -Wall -Wextra -I../net -o "$OUT/test_keepalive" test_keepalive_strategy.c ../net/SGKeepAliveStrategy.c
 "$OUT/test_keepalive"
 rm -rf "$OUT"

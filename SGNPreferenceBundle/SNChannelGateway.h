@@ -1,5 +1,5 @@
 #import <Foundation/Foundation.h>
-#import "../Skyglow-Notifications-Daemon/SGStatusServer.h"
+#import "SGStatusServer.h"
 
 /**
  * SNChannelGateway — the prefs bundle's facade over SGControlChannel.

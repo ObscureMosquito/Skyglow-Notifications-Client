@@ -1,6 +1,6 @@
 #import "SNLogTailViewController.h"
 #import "SNDataManager.h"
-#import "../Skyglow-Notifications-Daemon/SGSharedConstants.h"
+#import "SGSharedConstants.h"
 #include <sys/stat.h>
 
 /**

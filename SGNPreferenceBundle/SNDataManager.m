@@ -1,6 +1,6 @@
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
-#import "../Skyglow-Notifications-Daemon/SGSharedConstants.h"
+#import "SGSharedConstants.h"
 #import <UIKit/UIKit.h>
 #import <sqlite3.h>
 #include <openssl/pem.h>

@@ -1,6 +1,6 @@
 #import "SNChannelGateway.h"
-#import "../Skyglow-Notifications-Daemon/SGControlChannel.h"
-#import "../Skyglow-Notifications-Daemon/SGControlChannelProtocol.h"
+#import "SGControlChannel.h"
+#import "SGControlChannelProtocol.h"
 #include <string.h>
 
 @implementation SNChannelGateway

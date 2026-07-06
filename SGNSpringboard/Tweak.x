@@ -4,11 +4,11 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #include <bootstrap.h>
-#import "../Skyglow-Notifications-Daemon/SGControlChannel.h"
-#import "../Skyglow-Notifications-Daemon/SGControlChannelProtocol.h"
-#import "../Skyglow-Notifications-Daemon/SGSharedConstants.h"
-#import "../Skyglow-Notifications-Daemon/SGStorage.h"
-#import "../Skyglow-Notifications-Daemon/SGCompatibilityShim.h"
+#import "SGControlChannel.h"
+#import "SGControlChannelProtocol.h"
+#import "SGSharedConstants.h"
+#import "SGStorage.h"
+#import "SGCompatibilityShim.h"
 
 #pragma mark - Private Class Interfaces
 

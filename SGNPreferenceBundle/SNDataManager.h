@@ -1,7 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
-#include "../Skyglow-Notifications-Daemon/SGStatusServer.h"
+#include "SGStatusServer.h"
 
 @interface SNDataManager : NSObject
 
