@@ -6,5 +6,6 @@ Description: Low power daemon that runs in the background and fetches notificati
 Maintainer: Requis, Preloading
 Author: Requis, Preloading
 Section: Tweaks
+Icon: file:///Library/PreferenceBundles/
 Depiction: https://cydia.skyglow.es/depictions/com.skyglow.snd/depictions/index.html
 Depends: firmware (>= 4.0), mobilesubstrate | substitute | ellekit, com.iptm.libstatusbar

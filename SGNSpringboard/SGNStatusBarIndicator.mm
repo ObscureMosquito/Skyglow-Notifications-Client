@@ -9,6 +9,15 @@
 static NSString * const kStatusBarIndicatorEnabledKey = @"statusBarIndicatorEnabled";
 static NSString * const kIndicatorIdentifier          = @"com.skyglow.snd.indicator";
 
+static NSString *SGNIndicatorPath(NSString *path) {
+    static int rootless = -1;
+    if (rootless < 0) {
+        rootless = [[NSFileManager defaultManager]
+            fileExistsAtPath:@"/var/jb"] ? 1 : 0;
+    }
+    return rootless ? [@"/var/jb" stringByAppendingString:path] : path;
+}
+
 #pragma mark - State → image name mapping
 
 static NSString *SGNImageNameForState(SGState state) {
@@ -44,11 +53,12 @@ static LSStatusBarItem *gIndicatorItem = nil;
 static NSString        *gIndicatorImageName = nil;
 
 static BOOL SGNIndicatorPrefEnabled(void) {
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:SG_PREFS_PLIST_PATH];
+    NSString *path = SGNIndicatorPath(SG_PREFS_PLIST_PATH);
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:path];
     NSNumber *v = [prefs objectForKey:kStatusBarIndicatorEnabledKey];
     BOOL enabled = v ? [v boolValue] : NO;
     SGLOGI(SGNStatusBar, "pref read: path=%s prefs_present=%d enabled=%d",
-           [SG_PREFS_PLIST_PATH UTF8String], prefs != nil, enabled);
+           [path UTF8String], prefs != nil, enabled);
     return enabled;
 }
 

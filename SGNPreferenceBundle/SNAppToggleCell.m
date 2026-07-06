@@ -190,9 +190,15 @@
 
 - (void)syncAccessoryState {
     BOOL deleting = [[_sgnSpecifier propertyForKey:@"sgnDeleting"] boolValue];
+    BOOL toggling = [[_sgnSpecifier propertyForKey:@"sgnToggling"] boolValue];
     BOOL hideToggle = [[_sgnSpecifier propertyForKey:@"sgnHideToggle"] boolValue];
+    self.userInteractionEnabled = !(deleting || toggling);
 
-    if (deleting) {
+    /* Both a pending delete and a pending enable/disable show the spinner in
+     * place of the accessory and block further interaction until the daemon
+     * acks.  sgnToggling is kept separate from sgnDeleting so the list
+     * controller's delete bookkeeping isn't confused by an in-flight toggle. */
+    if (deleting || toggling) {
         if (!_activityIndicator) {
             _activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
         }
@@ -220,7 +226,11 @@
 - (void)setDeletingAccessoryVisible:(BOOL)deleting {
     [_sgnSpecifier setProperty:@(deleting) forKey:@"sgnDeleting"];
     [self syncAccessoryState];
-    self.userInteractionEnabled = !deleting;
+}
+
+- (void)setTogglePending:(BOOL)pending {
+    [_sgnSpecifier setProperty:@(pending) forKey:@"sgnToggling"];
+    [self syncAccessoryState];
 }
 
 - (void)configureCellForBundleId:(NSString *)bundleId {
@@ -247,7 +257,6 @@
         }
     }
 
-    self.userInteractionEnabled = ![[_sgnSpecifier propertyForKey:@"sgnDeleting"] boolValue];
     self.selectionStyle = UITableViewCellSelectionStyleNone;
 }
 
@@ -255,13 +264,37 @@
     NSString *bundleId = [_sgnSpecifier propertyForKey:@"bundleId"];
     if (!bundleId) return;
 
-    [[SNDataManager shared] setAppStatusValue:sender.isOn forBundleId:bundleId];
-    if (sender.isOn) {
-        [SNChannelGateway postEnableAppForBundleId:bundleId];
+    /* The daemon now owns the plist appStatus write, so the UI no longer writes
+     * it optimistically: show the spinner + block until the daemon acks, then
+     * reflect the change (or revert the switch on failure).  Same confirm-then-
+     * refresh contract the profile operations already use. */
+    BOOL desired = sender.isOn;
+    [self setTogglePending:YES];
+
+    PSSpecifier *requestSpecifier = [_sgnSpecifier retain];
+    NSString *requestBundleID = [bundleId copy];
+    SNChannelCommandCompletion done = ^(BOOL ok, NSString *message) {
+        [requestSpecifier setProperty:@NO forKey:@"sgnToggling"];
+
+        /* The table may have reused this cell while the daemon request was in
+         * flight.  Only touch its visible controls if it still represents the
+         * request's specifier; otherwise configureCellForBundleId: will read
+         * the durable state when that row next appears. */
+        if (_sgnSpecifier == requestSpecifier) {
+            [self syncAccessoryState];
+            if (!ok) {
+                [_toggleSwitch setOn:!desired animated:YES];
+            }
+        }
+        [requestSpecifier release];
+        [requestBundleID release];
+    };
+
+    if (desired) {
+        [SNChannelGateway enableAppForBundleId:requestBundleID completion:done];
     } else {
-        [SNChannelGateway postDisableAppForBundleId:bundleId];
+        [SNChannelGateway disableAppForBundleId:requestBundleID completion:done];
     }
-    NSLog(@"[SNAppToggleCell] %@ → %@", bundleId, sender.isOn ? @"ON" : @"OFF");
 }
 
 - (void)dealloc {

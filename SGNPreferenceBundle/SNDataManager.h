@@ -13,11 +13,9 @@
 
 /** Main Preferences */
 - (NSDictionary *)mainPrefs;
+- (NSDictionary *)publicState;
 - (BOOL)isEnabled;
 - (NSDictionary *)appStatus;
-- (void)setAppStatusValue:(BOOL)value forBundleId:(NSString *)bundleId;
-- (void)removeAppStatusForBundleId:(NSString *)bundleId;
-- (void)setMainPrefValue:(id)value forKey:(NSString *)key;
 - (NSString *)serverAddressInput;
 
 /** Profile — active profile shortcuts (delegates to active profile index) */
@@ -51,7 +49,6 @@
 - (NSDictionary *)cachedDNSForServerAddress:(NSString *)serverAddr;
 - (void)clearDNSCache;
 - (void)clearAllTokens;
-- (void)removeAppFromDatabase:(NSString *)bundleId;
 
 /** Certificate Parsing */
 - (NSDictionary *)parseCertificatePEM:(NSString *)pem;

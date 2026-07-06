@@ -330,13 +330,21 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
     if (!bundleId) return;
 
     BOOL on = [value boolValue];
-    [[SNDataManager shared] setAppStatusValue:on forBundleId:bundleId];
+
+    /* The daemon now owns the appStatus plist write (via ENABLE/DISABLE_APP), so
+     * the UI no longer writes it here.  The switch keeps the position the user
+     * set it to; on daemon failure we reload the specifier, which re-reads the
+     * unchanged daemon state and thereby reverts the switch. */
+    PSSpecifier *specRet = [specifier retain];
+    SNChannelCommandCompletion done = ^(BOOL ok, NSString *message) {
+        if (!ok) [self reloadSpecifier:specRet animated:YES];
+        [specRet release];
+    };
     if (on) {
-        [SNChannelGateway postEnableAppForBundleId:bundleId];
+        [SNChannelGateway enableAppForBundleId:bundleId completion:done];
     } else {
-        [SNChannelGateway postDisableAppForBundleId:bundleId];
+        [SNChannelGateway disableAppForBundleId:bundleId completion:done];
     }
-    [self reloadSpecifier:specifier animated:YES];
 }
 
 - (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -378,7 +386,8 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
                 [self _showDeletionErrorForBundleId:bidCopy message:message];
             } else {
                 if ([secCopy isEqualToString:kSGNSectionSkyglow]) {
-                    [[SNDataManager shared] removeAppStatusForBundleId:bidCopy];
+                    /* appStatus removal is now part of the daemon's DELETE_APP
+                     * cascade — no client-side plist write. */
                 } else if ([secCopy isEqualToString:kSGNSectionAPNs]) {
                     [self _removeAPNsBundleFromCachedList:bidCopy];
                 }

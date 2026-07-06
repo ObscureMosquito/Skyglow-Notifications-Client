@@ -36,6 +36,14 @@
 - (BOOL)removeTokenForBundleIdentifier:(NSString *)bundleID;
 
 /**
+ * Removes a vanished application's token and locally queued deliveries from
+ * every profile in one database transaction. Provider intent is device-wide,
+ * so uninstall/delete must not leave an inactive profile able to revive an
+ * orphaned registration later.
+ */
+- (BOOL)removeAllStateForBundleIdentifier:(NSString *)bundleID;
+
+/**
  * Returns the full (routing_key, bundle_id, is_muted) registration set.
  * Each entry is a dictionary with keys: routingKey (NSData), bundleID
  * (NSString), isMuted (NSNumber bool).  Used by SGP_FlushActiveTopicFilter

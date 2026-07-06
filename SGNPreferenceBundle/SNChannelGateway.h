@@ -45,16 +45,28 @@ typedef void (^SNChannelBundleListCompletion)(BOOL ok, NSArray *bundleIds, NSStr
                          completion:(SNChannelCommandCompletion)completion;
 
 /**
- * Unified per-app state commands sent to the DAEMON (not the SB tweak).
- * These replace the prior pattern of the prefs bundle writing the DB
- * directly: the plist remains the source-of-truth for user intent and is
- * written here, then the daemon is told to sync its DB + server filter
- * accordingly.  Fire-and-forget; the daemon handles the cascade including
- * any required SB-side actions (e.g. native deregister on delete).
+ * Enable/disable a single app through the daemon and wait for its ack.  The
+ * daemon syncs its DB + server filter AND now owns the plist appStatus write,
+ * so the UI must not touch the plist itself — it reflects the change only when
+ * ok=YES.  Completion fires on the main queue; on ok=NO the caller should
+ * revert the toggle and surface `message`.
  */
-+ (void)postEnableAppForBundleId:(NSString *)bundleId;
-+ (void)postDisableAppForBundleId:(NSString *)bundleId;
++ (void)enableAppForBundleId:(NSString *)bundleId completion:(SNChannelCommandCompletion)completion;
++ (void)disableAppForBundleId:(NSString *)bundleId completion:(SNChannelCommandCompletion)completion;
+
 + (void)deleteAppForBundleId:(NSString *)bundleId completion:(SNChannelCommandCompletion)completion;
+
+/**
+ * Flips the global enabled switch through the daemon (which owns the plist
+ * write + config reload).  Replaces the prefs bundle writing `enabled` to the
+ * plist and posting a separate reload.  Completion fires on the main queue.
+ */
++ (void)setEnabled:(BOOL)enabled completion:(SNChannelCommandCompletion)completion;
+
+/** Updates the cosmetic status-bar preference through the daemon-owned
+ * preferences writer. */
++ (void)setStatusBarIndicatorEnabled:(BOOL)enabled
+                          completion:(SNChannelCommandCompletion)completion;
 
 /**
  * Atomically deletes the profile at the given index (1..5) via the daemon.

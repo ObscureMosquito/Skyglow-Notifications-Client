@@ -247,8 +247,23 @@ typedef enum {
 #pragma mark Actions
 
 - (void)_indicatorSwitchChanged:(UISwitch *)sw {
-    [[SNDataManager shared] setMainPrefValue:@(sw.on) forKey:kStatusBarIndicatorEnabledKey];
-    [SNChannelGateway postReloadConfig];
+    BOOL requestedValue = sw.on;
+    sw.enabled = NO;
+    [SNChannelGateway setStatusBarIndicatorEnabled:requestedValue
+                                        completion:^(BOOL ok, NSString *message) {
+        self.indicatorSwitch.enabled = YES;
+        if (!ok) {
+            [self.indicatorSwitch setOn:!requestedValue animated:YES];
+            UIAlertView *alert = [[UIAlertView alloc]
+                initWithTitle:@"Could Not Update Skyglow"
+                      message:message ?: @"The daemon did not accept the change."
+                     delegate:nil
+            cancelButtonTitle:@"OK"
+            otherButtonTitles:nil];
+            [alert show];
+            [alert release];
+        }
+    }];
 }
 
 - (void)dealloc {

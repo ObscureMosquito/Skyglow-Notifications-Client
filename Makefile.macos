@@ -34,6 +34,7 @@ OBJC_SRCS := \
 	$(DAEMON_DIR)/SGReachabilityMonitor.m \
 	$(DAEMON_DIR)/SGDaemon.m \
 	$(DAEMON_DIR)/SGAvailability.m \
+	$(DAEMON_DIR)/SGStorage.m \
 	$(DAEMON_DIR)/SGControlChannel.m \
 	$(DAEMON_DIR)/SGCompatibilityShim.m
 

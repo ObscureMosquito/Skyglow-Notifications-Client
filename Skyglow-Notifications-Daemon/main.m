@@ -259,6 +259,25 @@ int main(int argc, char *argv[]) {
         [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                           SGControlReplyBlock reply,
                                           SGControlReplyErrorBlock replyError) {
+            if (req->payloadLength < sizeof(SGCEnabledPayload)) {
+                replyError(SGCERR_INVALID_REQUEST, @"set-enabled payload too short");
+                return;
+            }
+            SGCEnabledPayload *ep = (SGCEnabledPayload *)req->payload;
+            if (ep->enabled > 1) {
+                replyError(SGCERR_INVALID_REQUEST, @"set-enabled value invalid");
+                return;
+            }
+            BOOL enabled = (ep->enabled != 0);
+
+            BOOL ok = [daemon performSetEnabled:enabled];
+            if (ok) reply(SGCMSG_GENERIC_ACK, nil);
+            else    replyError(SGCERR_INTERNAL, @"could not persist enabled state");
+        } forMessageType:SGCMSG_SET_ENABLED];
+
+        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                          SGControlReplyBlock reply,
+                                          SGControlReplyErrorBlock replyError) {
             SGLOGI(Skyglow, "code=%s message=TEST_INJECT result=received", SGND_DAEMON_TEST_INJECT);
             reply(SGCMSG_GENERIC_ACK, nil);
         } forMessageType:SGCMSG_TEST_INJECT];
@@ -279,23 +298,11 @@ int main(int argc, char *argv[]) {
                 replyError(SGCERR_INVALID_REQUEST, @"enable bundle id invalid");
                 return;
             }
-            SGDatabaseManager *db = [SGDatabaseManager sharedManager];
-            SGTokenManager *tm = [[SGTokenManager alloc] init];
-            NSError *err = nil;
-            NSData *tok = [tm synchronizedTokenForBundleIdentifier:bundleID error:&err];
-            [tm release];
-            if (!tok) {
-                SGLOGE(Skyglow, "code=%s bundle=%s result=failed reason=%s", SGND_TOKEN_GENERATE_FAILED,
-                            [bundleID UTF8String], [[err description] UTF8String]);
-                NSString *detail = err ? [err localizedDescription] : @"Token generation failed";
-                [bundleID release];
-                replyError(SGCERR_INTERNAL, detail);
-                return;
-            }
-            [db setMuted:NO forBundleIdentifier:bundleID];
-            SGP_FlushActiveTopicFilter();
+            BOOL ok = [daemon performSetAppEnabled:YES
+                               forBundleIdentifier:bundleID];
             [bundleID release];
-            reply(SGCMSG_GENERIC_ACK, nil);
+            if (ok) reply(SGCMSG_GENERIC_ACK, nil);
+            else    replyError(SGCERR_INTERNAL, @"could not persist enabled application state");
         } forMessageType:SGCMSG_ENABLE_APP];
 
         [controlChannel registerHandler:^(const SGControlChannelMessage *req,
@@ -314,11 +321,51 @@ int main(int argc, char *argv[]) {
                 replyError(SGCERR_INVALID_REQUEST, @"disable bundle id invalid");
                 return;
             }
-            [[SGDatabaseManager sharedManager] setMuted:YES forBundleIdentifier:bundleID];
-            SGP_FlushActiveTopicFilter();
+            BOOL ok = [daemon performSetAppEnabled:NO
+                               forBundleIdentifier:bundleID];
             [bundleID release];
-            reply(SGCMSG_GENERIC_ACK, nil);
+            if (ok) reply(SGCMSG_GENERIC_ACK, nil);
+            else    replyError(SGCERR_INTERNAL, @"could not persist disabled application state");
         } forMessageType:SGCMSG_DISABLE_APP];
+
+        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                          SGControlReplyBlock reply,
+                                          SGControlReplyErrorBlock replyError) {
+            if (req->payloadLength < sizeof(SGCBundleIdPayload)) {
+                replyError(SGCERR_INVALID_REQUEST, @"clear-app-intent payload too short");
+                return;
+            }
+            SGCBundleIdPayload *bp = (SGCBundleIdPayload *)req->payload;
+            NSString *bundleID = [[NSString alloc] initWithBytes:bp->bundleID
+                                                          length:strnlen(bp->bundleID, sizeof(bp->bundleID))
+                                                        encoding:NSUTF8StringEncoding];
+            if (!SG_IsIdentifierStringSafe(bundleID)) {
+                [bundleID release];
+                replyError(SGCERR_INVALID_REQUEST, @"clear-app-intent bundle id invalid");
+                return;
+            }
+            BOOL ok = [daemon performClearAppIntentForBundleIdentifier:bundleID];
+            [bundleID release];
+            if (ok) reply(SGCMSG_GENERIC_ACK, nil);
+            else    replyError(SGCERR_INTERNAL, @"could not clear application intent");
+        } forMessageType:SGCMSG_CLEAR_APP_INTENT];
+
+        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                          SGControlReplyBlock reply,
+                                          SGControlReplyErrorBlock replyError) {
+            if (req->payloadLength < sizeof(SGCEnabledPayload)) {
+                replyError(SGCERR_INVALID_REQUEST, @"status-bar payload too short");
+                return;
+            }
+            SGCEnabledPayload *ep = (SGCEnabledPayload *)req->payload;
+            if (ep->enabled > 1) {
+                replyError(SGCERR_INVALID_REQUEST, @"status-bar value invalid");
+                return;
+            }
+            BOOL ok = [daemon performSetStatusBarIndicatorEnabled:(ep->enabled != 0)];
+            if (ok) reply(SGCMSG_GENERIC_ACK, nil);
+            else    replyError(SGCERR_INTERNAL, @"could not persist status-bar setting");
+        } forMessageType:SGCMSG_SET_STATUS_BAR_ENABLED];
 
         [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                           SGControlReplyBlock reply,
@@ -344,10 +391,12 @@ int main(int argc, char *argv[]) {
             [daemon dispatchResetRegistrationForBundleIdentifier:bundleRet
                                                       completion:^(SGControlError err) {
                 if (err == SGCERR_OK) {
-                    [daemon _runDeletionCascadeForBundle:bundleRet];
-                    SGP_FlushActiveTopicFilter();
-                    [daemon clearPendingDeletionForBundleIdentifier:bundleRet];
-                    replyCopy(SGCMSG_GENERIC_ACK, nil);
+                    if ([daemon performDeleteAppStateForBundleIdentifier:bundleRet]) {
+                        replyCopy(SGCMSG_GENERIC_ACK, nil);
+                    } else {
+                        replyErrorCopy(SGCERR_INTERNAL,
+                                       @"could not persist application deletion");
+                    }
                 } else {
                     NSString *detail = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
                         ? @"SpringBoard did not respond"
@@ -437,6 +486,8 @@ int main(int argc, char *argv[]) {
         [springBoardClient start];
         [daemon attachSpringBoardClient:springBoardClient];
 
+        [daemon drainDurableEventInbox];
+        [daemon schedulePublicStateSnapshot];
         [daemon start];
 
         CFRunLoopRun();

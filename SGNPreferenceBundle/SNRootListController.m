@@ -117,8 +117,29 @@
 - (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
     NSString *key = [specifier propertyForKey:@"key"];
     if (!key) return;
-    [[SNDataManager shared] setMainPrefValue:value forKey:key];
-    [SNChannelGateway postReloadConfig];
+
+    /* Root.plist currently has a single writable setting. Keep this explicit
+     * so adding another specifier cannot accidentally reintroduce a second
+     * preferences writer. */
+    if ([key isEqualToString:@"enabled"]) {
+        PSSpecifier *specifierCopy = [specifier retain];
+        [SNChannelGateway setEnabled:[value boolValue]
+                          completion:^(BOOL ok, NSString *message) {
+            if (!ok) {
+                [self reloadSpecifier:specifierCopy animated:YES];
+                UIAlertView *alert = [[UIAlertView alloc]
+                    initWithTitle:@"Could Not Update Skyglow"
+                          message:message ?: @"The daemon did not accept the change."
+                         delegate:nil
+                cancelButtonTitle:@"OK"
+                otherButtonTitles:nil];
+                [alert show];
+                [alert release];
+            }
+            [specifierCopy release];
+        }];
+        return;
+    }
 }
 
 - (void)pushDebugView {

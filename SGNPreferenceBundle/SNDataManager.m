@@ -33,13 +33,17 @@ static inline NSString * SGMainPrefsPath() { return SGPath(SG_PREFS_PLIST_PATH);
 static inline NSString * SGProfilePathForIndex(NSInteger idx) {
     return SGPath([NSString stringWithFormat:SG_PROFILE_PLIST_FORMAT, (long)idx]);
 }
-static inline NSString * SGProfilePath() {
+static inline NSInteger SGActiveProfileIndex(void) {
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()];
     NSNumber *num = [prefs objectForKey:@"activeProfile"];
-    NSInteger idx = (num && [num integerValue] >= 1 && [num integerValue] <= 5) ? [num integerValue] : 1;
-    return SGProfilePathForIndex(idx);
+    NSInteger idx = [num integerValue];
+    return (idx >= 1 && idx <= 5) ? idx : 1;
+}
+static inline NSString * SGProfilePath() {
+    return SGProfilePathForIndex(SGActiveProfileIndex());
 }
 static inline NSString * SGDBPath()        { return SGPath(SG_DB_PATH); }
+static inline NSString * SGPublicStatePath() { return SGPath(SG_PUBLIC_STATE_PATH); }
 
 @interface SNDataManager ()
 @end
@@ -124,29 +128,21 @@ static inline NSString * SGDBPath()        { return SGPath(SG_DB_PATH); }
 - (NSString *)dbPath        { return SGDBPath(); }
 
 - (NSDictionary *)mainPrefs { return [NSDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()] ?: @{}; }
+- (NSDictionary *)publicState {
+    NSDictionary *state =
+        [NSDictionary dictionaryWithContentsOfFile:SGPublicStatePath()];
+    return ([[state objectForKey:@"formatVersion"] integerValue] == 1)
+        ? state : @{};
+}
 - (BOOL)isEnabled { return [[[self mainPrefs] objectForKey:@"enabled"] boolValue]; }
 
 - (NSDictionary *)appStatus { return [[self mainPrefs] objectForKey:@"appStatus"] ?: @{}; }
 
-- (void)setAppStatusValue:(BOOL)value forBundleId:(NSString *)bundleId {
-    if (!bundleId) return;
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()] ?: [NSMutableDictionary dictionary];
-    NSMutableDictionary *appSt = [NSMutableDictionary dictionaryWithDictionary:[prefs objectForKey:@"appStatus"] ?: @{}];
-    [appSt setObject:@(value) forKey:bundleId];
-    [prefs setObject:appSt forKey:@"appStatus"];
-    [prefs writeToFile:SGMainPrefsPath() atomically:YES];
-}
-
-- (void)removeAppStatusForBundleId:(NSString *)bundleId {
-    if (!bundleId) return;
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()] ?: [NSMutableDictionary dictionary];
-
-    NSMutableDictionary *appSt = [NSMutableDictionary dictionaryWithDictionary:[prefs objectForKey:@"appStatus"] ?: @{}];
-    [appSt removeObjectForKey:bundleId];
-    [prefs setObject:appSt forKey:@"appStatus"];
-
-    [prefs writeToFile:SGMainPrefsPath() atomically:YES];
-}
+/* Preference-bundle appStatus changes now go through the daemon
+ * (ENABLE/DISABLE/DELETE_APP), so this process only reads appStatus and drives
+ * user changes through SNChannelGateway. SpringBoard records registration and
+ * uninstall intent in the durable inbox, touching this plist only if that
+ * write-ahead path itself fails. */
 
 - (NSString *)serverAddressInput {
     return [[self mainPrefs] objectForKey:@"notificationServerAddress"];
@@ -155,7 +151,14 @@ static inline NSString * SGDBPath()        { return SGPath(SG_DB_PATH); }
 - (void)clearDNSCache {
     sqlite3 *db = NULL;
     if (sqlite3_open([SGDBPath() UTF8String], &db) == SQLITE_OK) {
-        sqlite3_exec(db, "DELETE FROM dns_cache;", NULL, NULL, NULL);
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(db,
+                "DELETE FROM dns_cache WHERE profile_id = ?",
+                -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, (sqlite3_int64)SGActiveProfileIndex());
+            sqlite3_step(stmt);
+        }
+        if (stmt) sqlite3_finalize(stmt);
         sqlite3_close(db);
     }
 }
@@ -163,16 +166,16 @@ static inline NSString * SGDBPath()        { return SGPath(SG_DB_PATH); }
 - (void)clearAllTokens {
     sqlite3 *db = NULL;
     if (sqlite3_open([SGDBPath() UTF8String], &db) == SQLITE_OK) {
-        sqlite3_exec(db, "DELETE FROM notifications;", NULL, NULL, NULL);
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(db,
+                "DELETE FROM notifications WHERE profile_id = ?",
+                -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(stmt, 1, (sqlite3_int64)SGActiveProfileIndex());
+            sqlite3_step(stmt);
+        }
+        if (stmt) sqlite3_finalize(stmt);
         sqlite3_close(db);
     }
-}
-
-- (void)setMainPrefValue:(id)value forKey:(NSString *)key {
-    if (!key) return;
-    NSMutableDictionary *prefs = [NSMutableDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()] ?: [NSMutableDictionary dictionary];
-    if (value) [prefs setObject:value forKey:key]; else [prefs removeObjectForKey:key];
-    [prefs writeToFile:SGMainPrefsPath() atomically:YES];
 }
 
 - (NSDictionary *)profile { return [NSDictionary dictionaryWithContentsOfFile:SGProfilePath()] ?: @{}; }
@@ -196,7 +199,11 @@ static sqlite3 *openDBReadOnly(void) {
     if (!db) return @[];
     NSMutableArray *results = [NSMutableArray array];
     sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, "SELECT bundle_id, token, routing_key FROM notifications ORDER BY bundle_id ASC", -1, &stmt, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(db,
+            "SELECT bundle_id, token, routing_key FROM notifications "
+            "WHERE profile_id = ? ORDER BY bundle_id ASC",
+            -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, (sqlite3_int64)SGActiveProfileIndex());
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             const char *bID = (const char *)sqlite3_column_text(stmt, 0);
             const void *tData = sqlite3_column_blob(stmt, 1);
@@ -218,11 +225,28 @@ static sqlite3 *openDBReadOnly(void) {
 }
 
 - (NSSet *)registeredBundleIDs {
+    NSArray *snapshotIDs = [[self publicState] objectForKey:@"registeredBundleIDs"];
+    if ([snapshotIDs isKindOfClass:[NSArray class]]) {
+        NSMutableSet *safeIDs = [NSMutableSet set];
+        for (id bundleID in snapshotIDs) {
+            if ([bundleID isKindOfClass:[NSString class]]) {
+                [safeIDs addObject:bundleID];
+            }
+        }
+        return safeIDs;
+    }
+
+    /* Compatibility/recovery fallback for an installation that has not yet
+     * emitted its first public snapshot. This is read-only; debug tooling
+     * intentionally retains its existing direct database inspection paths. */
     sqlite3 *db = openDBReadOnly();
     if (!db) return [NSSet set];
     NSMutableSet *ids = [NSMutableSet set];
     sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, "SELECT DISTINCT bundle_id FROM notifications", -1, &stmt, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(db,
+            "SELECT DISTINCT bundle_id FROM notifications WHERE profile_id = ?",
+            -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, (sqlite3_int64)SGActiveProfileIndex());
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             const char *bID = (const char *)sqlite3_column_text(stmt, 0);
             if (bID) [ids addObject:SNSafeUTF8(bID)];
@@ -234,11 +258,19 @@ static sqlite3 *openDBReadOnly(void) {
 }
 
 - (NSInteger)registeredTokenCount {
+    NSArray *snapshotIDs = [[self publicState] objectForKey:@"registeredBundleIDs"];
+    if ([snapshotIDs isKindOfClass:[NSArray class]]) {
+        return (NSInteger)[snapshotIDs count];
+    }
+
     sqlite3 *db = openDBReadOnly();
     if (!db) return 0;
     NSInteger count = 0;
     sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, "SELECT count(*) FROM notifications", -1, &stmt, NULL) == SQLITE_OK) {
+    if (sqlite3_prepare_v2(db,
+            "SELECT count(*) FROM notifications WHERE profile_id = ?",
+            -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, (sqlite3_int64)SGActiveProfileIndex());
         if (sqlite3_step(stmt) == SQLITE_ROW) count = sqlite3_column_int(stmt, 0);
     }
     if (stmt) sqlite3_finalize(stmt);
@@ -250,20 +282,6 @@ static sqlite3 *openDBReadOnly(void) {
     return [[[NSFileManager defaultManager] attributesOfItemAtPath:SGDBPath() error:nil] fileSize];
 }
 
-- (void)removeAppFromDatabase:(NSString *)bundleId {
-    if (!bundleId) return;
-    sqlite3 *db = NULL;
-    if (sqlite3_open([SGDBPath() UTF8String], &db) == SQLITE_OK) {
-        sqlite3_stmt *stmt = NULL;
-        if (sqlite3_prepare_v2(db, "DELETE FROM notifications WHERE bundle_id = ?", -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_text(stmt, 1, [bundleId UTF8String], -1, SQLITE_TRANSIENT);
-            sqlite3_step(stmt);
-        }
-        if (stmt) sqlite3_finalize(stmt);
-    }
-    if (db) sqlite3_close(db);
-}
-
 - (NSDictionary *)cachedDNSForServerAddress:(NSString *)serverAddr {
     if (!serverAddr) return nil;
     sqlite3 *db = openDBReadOnly();
@@ -271,8 +289,11 @@ static sqlite3 *openDBReadOnly(void) {
     NSString *dnsKey = [NSString stringWithFormat:@"_sgn.%@", serverAddr];
     NSDictionary *result = nil;
     sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, "SELECT ip, port FROM dns_cache WHERE domain = ?", -1, &stmt, NULL) == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, [dnsKey UTF8String], -1, SQLITE_TRANSIENT);
+    if (sqlite3_prepare_v2(db,
+            "SELECT ip, port FROM dns_cache WHERE profile_id = ? AND domain = ?",
+            -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, (sqlite3_int64)SGActiveProfileIndex());
+        sqlite3_bind_text(stmt, 2, [dnsKey UTF8String], -1, SQLITE_TRANSIENT);
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             const char *ip = (const char *)sqlite3_column_text(stmt, 0);
             const char *port = (const char *)sqlite3_column_text(stmt, 1);

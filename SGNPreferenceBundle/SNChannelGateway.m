@@ -81,23 +81,84 @@ static SGControlChannel *DaemonClient(void) {
     }];
 }
 
-static void SendBundleCommandToDaemon(uint8_t messageType, NSString *bundleId) {
-    if (bundleId.length == 0) return;
+static void SendBundleCommandWithCompletion(uint8_t messageType, NSString *bundleId,
+                                            SNChannelCommandCompletion completion) {
+    if (bundleId.length == 0) {
+        if (completion) completion(NO, @"The selected application could not be identified.");
+        return;
+    }
     SGCBundleIdPayload payload;
     memset(&payload, 0, sizeof(payload));
     SNCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
+
     [DaemonClient() sendRequest:messageType
                         payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
-                        timeout:0
-                     completion:nil];
+                        timeout:SG_CONTROL_DELETE_APP_TIMEOUT_SEC
+                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
+        BOOL ok = (err == SGCERR_OK);
+        NSString *message = nil;
+        if (!ok) {
+            message = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                ? @"Could not communicate with the Skyglow daemon. Try again after restarting it."
+                : @"The daemon could not update this application.";
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(ok, message);
+        });
+    }];
 }
 
-+ (void)postEnableAppForBundleId:(NSString *)bundleId {
-    SendBundleCommandToDaemon(SGCMSG_ENABLE_APP, bundleId);
++ (void)enableAppForBundleId:(NSString *)bundleId completion:(SNChannelCommandCompletion)completion {
+    SendBundleCommandWithCompletion(SGCMSG_ENABLE_APP, bundleId, completion);
 }
 
-+ (void)postDisableAppForBundleId:(NSString *)bundleId {
-    SendBundleCommandToDaemon(SGCMSG_DISABLE_APP, bundleId);
++ (void)disableAppForBundleId:(NSString *)bundleId completion:(SNChannelCommandCompletion)completion {
+    SendBundleCommandWithCompletion(SGCMSG_DISABLE_APP, bundleId, completion);
+}
+
++ (void)setEnabled:(BOOL)enabled completion:(SNChannelCommandCompletion)completion {
+    SGCEnabledPayload payload;
+    memset(&payload, 0, sizeof(payload));
+    payload.enabled = enabled ? 1 : 0;
+
+    [DaemonClient() sendRequest:SGCMSG_SET_ENABLED
+                        payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
+                        timeout:SG_CONTROL_DELETE_APP_TIMEOUT_SEC
+                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
+        BOOL ok = (err == SGCERR_OK);
+        NSString *message = nil;
+        if (!ok) {
+            message = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                ? @"Could not communicate with the Skyglow daemon. Try again after restarting it."
+                : @"The daemon could not change the enabled state.";
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(ok, message);
+        });
+    }];
+}
+
++ (void)setStatusBarIndicatorEnabled:(BOOL)enabled
+                          completion:(SNChannelCommandCompletion)completion {
+    SGCEnabledPayload payload;
+    memset(&payload, 0, sizeof(payload));
+    payload.enabled = enabled ? 1 : 0;
+
+    [DaemonClient() sendRequest:SGCMSG_SET_STATUS_BAR_ENABLED
+                        payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
+                        timeout:SG_CONTROL_DELETE_APP_TIMEOUT_SEC
+                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
+        BOOL ok = (err == SGCERR_OK);
+        NSString *message = nil;
+        if (!ok) {
+            message = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                ? @"Could not communicate with the Skyglow daemon. Try again after restarting it."
+                : @"The daemon could not change the status-bar setting.";
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(ok, message);
+        });
+    }];
 }
 
 + (void)deleteAppForBundleId:(NSString *)bundleId completion:(SNChannelCommandCompletion)completion {

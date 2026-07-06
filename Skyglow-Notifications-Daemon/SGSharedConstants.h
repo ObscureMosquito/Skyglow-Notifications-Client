@@ -18,10 +18,10 @@
 
 #pragma mark - File Paths (system-root relative; wrap with SGPath)
 
-/* User-intent SSOT: per-bundle Skyglow choice + pendingDeletions.
- * Written by: prefs bundle (toggle, swipe-delete), SB tweak (uninstall +
- *   prompt acceptance), daemon (clearing pendingDeletions only).
- * Read by: everyone. */
+/* User-intent SSOT. The daemon is the normal writer. SpringBoard first
+ * records registration/uninstall intents in the durable inbox; it writes
+ * this plist only as an emergency fallback if the inbox itself is unavailable.
+ * All non-debug consumers are read-only. */
 #define SG_PREFS_PLIST_PATH         @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist"
 
 /* Per-profile server config (server address, certificate path, device
@@ -32,6 +32,8 @@
 /* Operational SSOT: tokens, e2ee keys, routing keys, mute flags, retry
  * queue.  Owned exclusively by the daemon. */
 #define SG_DB_PATH                  @"/var/mobile/Library/SkyglowNotifications/sqlite.db"
+#define SG_DURABLE_EVENT_INBOX_PATH @"/var/mobile/Library/SkyglowNotifications/inbox"
+#define SG_PUBLIC_STATE_PATH        @"/var/mobile/Library/SkyglowNotifications/public-state.plist"
 
 /* Daemon lifecycle. */
 #define SG_LOG_PATH                 @"/var/log/skyglow.log"

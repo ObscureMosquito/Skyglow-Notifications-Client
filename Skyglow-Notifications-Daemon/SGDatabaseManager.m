@@ -3,8 +3,10 @@
 #import "SGProtocolHandler.h"
 #import "SGLog.h"
 #include <sqlite3.h>
+#include <pwd.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <TargetConditionals.h>
 
 #define SG_DATABASE_APPLICATION_ID 0x53474E44
 #define SG_SCHEMA_VERSION 1
@@ -14,6 +16,18 @@
 static sqlite3_int64 SGActiveProfileID(void) {
     NSInteger profile = [[SGConfiguration sharedConfiguration] activeProfileIndex];
     return (sqlite3_int64)((profile >= 1 && profile <= 5) ? profile : 1);
+}
+
+static void SGApplyDatabaseOwnership(NSString *path) {
+#if !TARGET_OS_OSX
+    struct passwd *mobile = getpwnam("mobile");
+    if (mobile) {
+        (void)chown([path fileSystemRepresentation],
+                    mobile->pw_uid, mobile->pw_gid);
+    }
+#else
+    (void)path;
+#endif
 }
 
 @implementation SGDatabaseManager {
@@ -40,8 +54,8 @@ static sqlite3_int64 SGActiveProfileID(void) {
         [fm createDirectoryAtPath:dbDir
       withIntermediateDirectories:YES attributes:nil error:NULL];
 
-        chmod([dbDir UTF8String], 0755);
-        chown([dbDir UTF8String], 501, 501);
+        chmod([dbDir fileSystemRepresentation], 0700);
+        SGApplyDatabaseOwnership(dbDir);
 
         if (sqlite3_open([dbPath UTF8String], &_database) != SQLITE_OK) {
             SGLOGE(SGDatabaseManager, "code=%s path=%s result=failed", SGND_DATABASE_OPEN_FAILED, [dbPath UTF8String]);
@@ -51,16 +65,18 @@ static sqlite3_int64 SGActiveProfileID(void) {
 
         sqlite3_busy_timeout(_database, 3000);
 
-        chmod([dbPath UTF8String], 0600);
-        chown([dbPath UTF8String], 501, 501);
+        chmod([dbPath fileSystemRepresentation], 0600);
+        SGApplyDatabaseOwnership(dbPath);
 
         sqlite3_exec(_database, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
         sqlite3_exec(_database, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
 
-        chmod([[dbPath stringByAppendingString:@"-wal"] UTF8String], 0600);
-        chmod([[dbPath stringByAppendingString:@"-shm"] UTF8String], 0600);
-        chown([[dbPath stringByAppendingString:@"-wal"] UTF8String], 501, 501);
-        chown([[dbPath stringByAppendingString:@"-shm"] UTF8String], 501, 501);
+        NSString *walPath = [dbPath stringByAppendingString:@"-wal"];
+        NSString *shmPath = [dbPath stringByAppendingString:@"-shm"];
+        chmod([walPath fileSystemRepresentation], 0600);
+        chmod([shmPath fileSystemRepresentation], 0600);
+        SGApplyDatabaseOwnership(walPath);
+        SGApplyDatabaseOwnership(shmPath);
 
         if (![self _initializeSchema]) {
             [self release];
@@ -272,6 +288,46 @@ static sqlite3_int64 SGActiveProfileID(void) {
             sqlite3_bind_text(stmt, 2, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
             ok = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
+        }
+    });
+    return ok;
+}
+
+- (BOOL)removeAllStateForBundleIdentifier:(NSString *)bundleID {
+    if (![bundleID length]) return NO;
+    __block BOOL ok = NO;
+    dispatch_sync(_databaseQueue, ^{
+        if (sqlite3_exec(_database, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+            return;
+        }
+
+        sqlite3_stmt *tokens = NULL;
+        sqlite3_stmt *deliveries = NULL;
+        BOOL tokensReady = (sqlite3_prepare_v2(_database,
+            "DELETE FROM notifications WHERE bundle_id = ?",
+            -1, &tokens, NULL) == SQLITE_OK);
+        BOOL deliveriesReady = (sqlite3_prepare_v2(_database,
+            "DELETE FROM local_pending_deliveries WHERE bundle_id = ?",
+            -1, &deliveries, NULL) == SQLITE_OK);
+
+        BOOL tokensDeleted = NO;
+        BOOL deliveriesDeleted = NO;
+        if (tokensReady && deliveriesReady) {
+            sqlite3_bind_text(tokens, 1, [bundleID UTF8String],
+                              -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(deliveries, 1, [bundleID UTF8String],
+                              -1, SQLITE_TRANSIENT);
+            tokensDeleted = (sqlite3_step(tokens) == SQLITE_DONE);
+            deliveriesDeleted = (sqlite3_step(deliveries) == SQLITE_DONE);
+        }
+        if (tokens) sqlite3_finalize(tokens);
+        if (deliveries) sqlite3_finalize(deliveries);
+
+        if (tokensDeleted && deliveriesDeleted &&
+            sqlite3_exec(_database, "COMMIT", NULL, NULL, NULL) == SQLITE_OK) {
+            ok = YES;
+        } else {
+            sqlite3_exec(_database, "ROLLBACK", NULL, NULL, NULL);
         }
     });
     return ok;

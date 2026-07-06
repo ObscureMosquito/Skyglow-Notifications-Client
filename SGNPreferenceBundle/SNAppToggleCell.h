@@ -17,4 +17,8 @@
 
 - (void)setDeletingAccessoryVisible:(BOOL)deleting;
 
+/** Shows the spinner in place of the toggle and blocks the cell while an
+ *  enable/disable request is in flight with the daemon. */
+- (void)setTogglePending:(BOOL)pending;
+
 @end

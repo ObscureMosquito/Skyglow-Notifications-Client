@@ -202,6 +202,21 @@ typedef enum : uint8_t {
      * connection is attempted immediately.  Payload is SGCProfileIndexPayload. */
     SGCMSG_SET_ACTIVE_PROFILE  = 0x23,  /* SGCProfileIndexPayload */
 
+    /* Prefs -> daemon: flip the global "enabled" switch.  The daemon owns the
+     * write of the `enabled` key in main prefs (so it is the sole writer of the
+     * keys it consumes), then reloads config and drives the FSM enable/disable
+     * cascade.  Replaces the prefs bundle writing the plist directly and posting
+     * SGCMSG_RELOAD_CONFIG.  Payload is SGCEnabledPayload. */
+    SGCMSG_SET_ENABLED         = 0x24,  /* SGCEnabledPayload */
+
+    /* Generic persisted intent emitted by a platform adapter when the user
+     * chooses the platform's native push provider.  This removes appStatus
+     * without invoking any SpringBoard-specific cleanup. */
+    SGCMSG_CLEAR_APP_INTENT    = 0x25,  /* SGCBundleIdPayload */
+
+    /* Preference UI -> daemon: persist the status-indicator preference. */
+    SGCMSG_SET_STATUS_BAR_ENABLED = 0x26, /* SGCEnabledPayload */
+
     /* Responses */
     SGCMSG_GENERIC_ACK         = 0x30,  /* (empty payload)           */
     SGCMSG_TOKEN_RESPONSE      = 0x31,  /* SGCTokenResponsePayload   */
@@ -367,6 +382,13 @@ typedef struct {
 typedef struct {
     uint8_t profileIndex;
 } SGCProfileIndexPayload;
+
+/**
+ * SGCMSG_SET_ENABLED payload.  Non-zero enables the daemon, zero disables it.
+ */
+typedef struct {
+    uint8_t enabled;
+} SGCEnabledPayload;
 
 /**
  * SGCMSG_SAVE_PROFILE payload.  profileIndex is 1..5.  serverAddress is a
