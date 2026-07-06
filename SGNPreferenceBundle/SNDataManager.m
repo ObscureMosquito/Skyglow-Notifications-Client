@@ -9,6 +9,7 @@
 #include <openssl/sha.h>
 #include <unistd.h>
 #include <dns_sd.h>
+#include <notify.h>
 
 static NSString *SNSafeUTF8(const char *s) {
     if (!s) return @"";
@@ -44,6 +45,11 @@ static inline NSString * SGProfilePath() {
 }
 static inline NSString * SGDBPath()        { return SGPath(SG_DB_PATH); }
 static inline NSString * SGPublicStatePath() { return SGPath(SG_PUBLIC_STATE_PATH); }
+
+static NSString * const kSGNIndicatorPlist  = @"/var/mobile/Library/Preferences/com.skyglow.sndp.indicator.plist";
+static NSString * const kSGNIndicatorKey    = @"enabled";
+static const char * const kSGNIndicatorNote = "com.skyglow.sndp.indicator.changed";
+static inline NSString * SGIndicatorPrefsPath() { return SGPath(kSGNIndicatorPlist); }
 
 @interface SNDataManager ()
 @end
@@ -146,6 +152,23 @@ static inline NSString * SGPublicStatePath() { return SGPath(SG_PUBLIC_STATE_PAT
 
 - (NSString *)serverAddressInput {
     return [[self mainPrefs] objectForKey:@"notificationServerAddress"];
+}
+
+- (BOOL)indicatorEnabled {
+    NSNumber *v = [[NSDictionary dictionaryWithContentsOfFile:SGIndicatorPrefsPath()]
+                      objectForKey:kSGNIndicatorKey];
+    return v ? [v boolValue] : NO;
+}
+
+- (BOOL)setIndicatorEnabled:(BOOL)enabled {
+    NSString *path = SGIndicatorPrefsPath();
+    NSMutableDictionary *ind =
+        [NSMutableDictionary dictionaryWithContentsOfFile:path]
+        ?: [NSMutableDictionary dictionary];
+    [ind setObject:[NSNumber numberWithBool:enabled] forKey:kSGNIndicatorKey];
+    if (![ind writeToFile:path atomically:YES]) return NO;
+    notify_post(kSGNIndicatorNote);
+    return YES;
 }
 
 - (void)clearDNSCache {

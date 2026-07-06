@@ -63,11 +63,6 @@ typedef void (^SNChannelBundleListCompletion)(BOOL ok, NSArray *bundleIds, NSStr
  */
 + (void)setEnabled:(BOOL)enabled completion:(SNChannelCommandCompletion)completion;
 
-/** Updates the cosmetic status-bar preference through the daemon-owned
- * preferences writer. */
-+ (void)setStatusBarIndicatorEnabled:(BOOL)enabled
-                          completion:(SNChannelCommandCompletion)completion;
-
 /**
  * Atomically deletes the profile at the given index (1..5) via the daemon.
  * The daemon does keychain + plist + DB cleanup in one step.  Completion

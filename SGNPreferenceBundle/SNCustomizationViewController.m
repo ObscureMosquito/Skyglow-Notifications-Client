@@ -1,8 +1,5 @@
 #import "SNCustomizationViewController.h"
 #import "SNDataManager.h"
-#import "SNChannelGateway.h"
-
-static NSString * const kStatusBarIndicatorEnabledKey = @"statusBarIndicatorEnabled";
 
 #pragma mark - Legend cell
 
@@ -230,8 +227,7 @@ typedef enum {
             cell.accessoryView = self.indicatorSwitch;
         }
         cell.textLabel.text = @"Show in Status Bar";
-        NSNumber *current = [[[SNDataManager shared] mainPrefs] objectForKey:kStatusBarIndicatorEnabledKey];
-        self.indicatorSwitch.on = (current != nil) ? [current boolValue] : NO;
+        self.indicatorSwitch.on = [[SNDataManager shared] indicatorEnabled];
         return cell;
     }
 
@@ -248,22 +244,17 @@ typedef enum {
 
 - (void)_indicatorSwitchChanged:(UISwitch *)sw {
     BOOL requestedValue = sw.on;
-    sw.enabled = NO;
-    [SNChannelGateway setStatusBarIndicatorEnabled:requestedValue
-                                        completion:^(BOOL ok, NSString *message) {
-        self.indicatorSwitch.enabled = YES;
-        if (!ok) {
-            [self.indicatorSwitch setOn:!requestedValue animated:YES];
-            UIAlertView *alert = [[UIAlertView alloc]
-                initWithTitle:@"Could Not Update Skyglow"
-                      message:message ?: @"The daemon did not accept the change."
-                     delegate:nil
-            cancelButtonTitle:@"OK"
-            otherButtonTitles:nil];
-            [alert show];
-            [alert release];
-        }
-    }];
+    if ([[SNDataManager shared] setIndicatorEnabled:requestedValue]) return;
+
+    [self.indicatorSwitch setOn:!requestedValue animated:YES];
+    UIAlertView *alert = [[UIAlertView alloc]
+        initWithTitle:@"Could Not Update Skyglow"
+              message:@"The status-bar setting could not be saved."
+             delegate:nil
+    cancelButtonTitle:@"OK"
+    otherButtonTitles:nil];
+    [alert show];
+    [alert release];
 }
 
 - (void)dealloc {

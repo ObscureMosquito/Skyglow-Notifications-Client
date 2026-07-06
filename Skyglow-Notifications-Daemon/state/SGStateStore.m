@@ -161,17 +161,6 @@
     }
 }
 
-- (BOOL)performSetStatusBarIndicatorEnabled:(BOOL)enabled {
-    BOOL persisted = [self updateMainPreferences:
-        ^(NSMutableDictionary *preferences) {
-            [preferences setObject:[NSNumber numberWithBool:enabled]
-                            forKey:@"statusBarIndicatorEnabled"];
-        }];
-    if (!persisted) return NO;
-    [self schedulePublicStateSnapshot];
-    return YES;
-}
-
 #pragma mark - Public read-model snapshot
 
 - (BOOL)_writePublicStateSnapshot {
@@ -190,8 +179,7 @@
         ([[NSDate date] timeIntervalSince1970])] forKey:@"updatedAt"];
 
     for (NSString *key in @[
-            @"enabled", @"activeProfile", @"logLevel",
-            @"statusBarIndicatorEnabled", @"appStatus"]) {
+            @"enabled", @"activeProfile", @"logLevel", @"appStatus"]) {
         id value = [preferences objectForKey:key];
         if (value) [snapshot setObject:value forKey:key];
     }

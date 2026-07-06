@@ -214,9 +214,6 @@ typedef enum : uint8_t {
      * without invoking any SpringBoard-specific cleanup. */
     SGCMSG_CLEAR_APP_INTENT    = 0x25,  /* SGCBundleIdPayload */
 
-    /* Preference UI -> daemon: persist the status-indicator preference. */
-    SGCMSG_SET_STATUS_BAR_ENABLED = 0x26, /* SGCEnabledPayload */
-
     /* Responses */
     SGCMSG_GENERIC_ACK         = 0x30,  /* (empty payload)           */
     SGCMSG_TOKEN_RESPONSE      = 0x31,  /* SGCTokenResponsePayload   */

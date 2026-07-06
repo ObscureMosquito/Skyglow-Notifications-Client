@@ -354,29 +354,6 @@ int main(int argc, char *argv[]) {
         [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                           SGControlReplyBlock reply,
                                           SGControlReplyErrorBlock replyError) {
-            if (req->payloadLength < sizeof(SGCEnabledPayload)) {
-                replyError(SGCERR_INVALID_REQUEST, @"status-bar payload too short");
-                return;
-            }
-            SGCEnabledPayload *ep = (SGCEnabledPayload *)req->payload;
-            if (ep->enabled > 1) {
-                replyError(SGCERR_INVALID_REQUEST, @"status-bar value invalid");
-                return;
-            }
-            BOOL ok = [daemon.stateStore performSetStatusBarIndicatorEnabled:(ep->enabled != 0)];
-            if (ok) {
-                /* The store owns the write; broadcasting "config changed" so the
-                 * SB tweak re-reads the preference is the daemon side's job. */
-                [controlChannel postEvent:SGCEVT_CONFIG_RELOADED payload:nil];
-                reply(SGCMSG_GENERIC_ACK, nil);
-            } else {
-                replyError(SGCERR_INTERNAL, @"could not persist status-bar setting");
-            }
-        } forMessageType:SGCMSG_SET_STATUS_BAR_ENABLED];
-
-        [controlChannel registerHandler:^(const SGControlChannelMessage *req,
-                                          SGControlReplyBlock reply,
-                                          SGControlReplyErrorBlock replyError) {
             if (req->payloadLength < sizeof(SGCBundleIdPayload)) {
                 replyError(SGCERR_INVALID_REQUEST, @"delete payload too short");
                 return;

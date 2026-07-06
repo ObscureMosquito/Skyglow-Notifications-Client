@@ -46,9 +46,6 @@
 /** Clears daemon-owned operational and intent state after an app disappears. */
 - (BOOL)performDeleteAppStateForBundleIdentifier:(NSString *)bundleID;
 
-/** Persists the presentation-only status-indicator preference. */
-- (BOOL)performSetStatusBarIndicatorEnabled:(BOOL)enabled;
-
 /**
  * Per-bundle operational cleanup: drops the DB row and scrubs queued local
  * pending deliveries.  Idempotent.  Does not flush the server filter or clear

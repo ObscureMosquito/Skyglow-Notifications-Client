@@ -5,9 +5,12 @@
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
 #import "SGLog.h"
+#include <notify.h>
 
-static NSString * const kStatusBarIndicatorEnabledKey = @"statusBarIndicatorEnabled";
-static NSString * const kIndicatorIdentifier          = @"com.skyglow.snd.indicator";
+static NSString * const kSGNIndicatorPlist   = @"/var/mobile/Library/Preferences/com.skyglow.sndp.indicator.plist";
+static NSString * const kSGNIndicatorKey     = @"enabled";
+static const char * const kSGNIndicatorNote  = "com.skyglow.sndp.indicator.changed";
+static NSString * const kIndicatorIdentifier = @"com.skyglow.snd.indicator";
 
 static NSString *SGNIndicatorPath(NSString *path) {
     static int rootless = -1;
@@ -53,12 +56,11 @@ static LSStatusBarItem *gIndicatorItem = nil;
 static NSString        *gIndicatorImageName = nil;
 
 static BOOL SGNIndicatorPrefEnabled(void) {
-    NSString *path = SGNIndicatorPath(SG_PREFS_PLIST_PATH);
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:path];
-    NSNumber *v = [prefs objectForKey:kStatusBarIndicatorEnabledKey];
+    NSNumber *v = [[NSDictionary dictionaryWithContentsOfFile:
+                       SGNIndicatorPath(kSGNIndicatorPlist)]
+                      objectForKey:kSGNIndicatorKey];
     BOOL enabled = v ? [v boolValue] : NO;
-    SGLOGI(SGNStatusBar, "pref read: path=%s prefs_present=%d enabled=%d",
-           [path UTF8String], prefs != nil, enabled);
+    SGLOGI(SGNStatusBar, "pref read: enabled=%d value_present=%d", enabled, v != nil);
     return enabled;
 }
 
@@ -118,19 +120,29 @@ static void SGNSubscribeToDaemonEvents(SGControlChannel *daemonClient) {
     } completion:^(SGControlError err, uint64_t subId) {
         SGLOGI(SGNStatusBar, "STATE_CHANGED subscribe completion: err=%d subId=%llu", err, subId);
     }];
+}
 
-    [daemonClient subscribeToEvent:SGCEVT_CONFIG_RELOADED
-                           handler:^(SGControlEventType eventType, NSData *data) {
-        SGLOGI(SGNStatusBar, "CONFIG_RELOADED received — reconciling pref");
+static void SGNRegisterIndicatorPrefObserver(void) {
+    static BOOL registered = NO;
+    if (registered) return;
+    registered = YES;
+
+    int token = 0;
+    uint32_t rc = notify_register_dispatch(kSGNIndicatorNote,
+                                           &token, dispatch_get_main_queue(),
+                                           ^(int t) {
         SGNIndicatorReconcileWithPref();
-    } completion:^(SGControlError err, uint64_t subId) {
-        SGLOGI(SGNStatusBar, "CONFIG_RELOADED subscribe completion: err=%d subId=%llu", err, subId);
-    }];
+    });
+    if (rc != NOTIFY_STATUS_OK) {
+        SGLOGE(SGNStatusBar, "notify_register_dispatch failed rc=%u", (unsigned)rc);
+        registered = NO;
+    }
 }
 
 extern "C" void SGNStatusBarIndicator_Start(SGControlChannel *daemonClient) {
     SGLOGI(SGNStatusBar, "Start: daemonClient=%p", daemonClient);
     SGNIndicatorReconcileWithPref();
+    SGNRegisterIndicatorPrefObserver();
 
     if (!daemonClient) {
         SGLOGE(SGNStatusBar, "Start: daemonClient is NULL — no live updates");
