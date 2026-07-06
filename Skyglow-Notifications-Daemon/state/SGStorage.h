@@ -13,7 +13,6 @@ extern NSString * const SGDurableEventCreatedAtKey;
 extern NSString * const SGDurableEventFilePathKey;
 
 extern NSString * const SGDurableEventSetAppEnabled;
-extern NSString * const SGDurableEventClearAppIntent;
 extern NSString * const SGDurableEventDeleteApp;
 
 /**

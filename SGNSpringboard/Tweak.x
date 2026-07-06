@@ -216,18 +216,21 @@ static void SGNSendDurableBundleCommand(SGControlMessageType messageType,
         SGNSetRuntimeAppIntent(bundleId, NO);
     }
 
-    NSError *enqueueError = nil;
-    NSString *eventPath = SGDurableEventEnqueue(
-        SGNPath(SG_DURABLE_EVENT_INBOX_PATH),
-        eventType, bundleId, enabled, &enqueueError);
-    if (!eventPath) {
-        /* The inbox is the normal write-ahead path. Retain the old shared
-         * plist mutation as a last-resort fallback so a storage/permissions
-         * regression cannot silently discard registration or uninstall
-         * intent. The daemon clears this legacy marker after applying it. */
-        NSLog(@"[SGN] Durable intent enqueue failed for %@: %@; using legacy fallback",
-              bundleId, enqueueError);
-        SGNApplyLegacyIntentFallback(eventType, bundleId, enabled);
+    NSString *eventPath = nil;
+    if (eventType) {
+        NSError *enqueueError = nil;
+        eventPath = SGDurableEventEnqueue(
+            SGNPath(SG_DURABLE_EVENT_INBOX_PATH),
+            eventType, bundleId, enabled, &enqueueError);
+        if (!eventPath) {
+            /* The inbox is the normal write-ahead path. Retain the old shared
+             * plist mutation as a last-resort fallback so a storage/permissions
+             * regression cannot silently discard registration or uninstall
+             * intent. The daemon clears this legacy marker after applying it. */
+            NSLog(@"[SGN] Durable intent enqueue failed for %@: %@; using legacy fallback",
+                  bundleId, enqueueError);
+            SGNApplyLegacyIntentFallback(eventType, bundleId, enabled);
+        }
     }
 
     if (!gSGCDaemonClient) return;
@@ -934,7 +937,7 @@ static BOOL sPassThrough      = NO;
     } else {
         SGNSetRuntimeAppIntent(sPendingBundleId, NO);
         SGNSendDurableBundleCommand(SGCMSG_CLEAR_APP_INTENT,
-                                    SGDurableEventClearAppIntent,
+                                    nil,
                                     sPendingBundleId, nil);
 
         if (sPendingIsModern) {

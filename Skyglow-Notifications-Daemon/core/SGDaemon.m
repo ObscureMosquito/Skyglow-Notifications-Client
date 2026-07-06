@@ -1055,23 +1055,27 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 dataFromPropertyList:parsed
                               format:NSPropertyListBinaryFormat_v1_0
                     errorDescription:NULL];
-            if (serialized) {
-                int64_t effective = (expiresAt > now) ? expiresAt : (now + kSGLocalPendingFallbackDeadlineSec);
+            int64_t effective = (expiresAt > now) ? expiresAt : (now + kSGLocalPendingFallbackDeadlineSec);
+            BOOL queued = serialized &&
                 [db enqueueLocalPendingDeliveryForMessageID:msgID
                                                    bundleID:routingData[@"bundleID"]
                                                     payload:serialized
                                                   deviceSeq:arrivedSeq
                                                   expiresAt:effective];
+            if (queued) {
                 dispatch_async(_localDeliveryDrainQueue, ^{
                     [self _startLocalDeliveryRetryTimer];
                 });
                 SGLOGW(SGDaemon, "code=%s msg=%s bundle=%s kr=%d deadline=%s action=queue_local_retry", SGND_DELIVERY_LOCAL_RETRY_QUEUED,
                             msgHex, [routingData[@"bundleID"] UTF8String], deliveryKr,
                             (expiresAt > now) ? "wire_expiry" : "fallback");
-            } else {
+            } else if (!serialized) {
                 SGLOGE(SGDaemon, "code=%s msg=%s kr=%d ack=parse_failed action=halt_resends", SGND_DELIVERY_LOCAL_RETRY_BAD_PAYLOAD, msgHex, deliveryKr);
                 SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
                 [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+            } else {
+                SGLOGE(SGDaemon, "code=%s msg=%s kr=%d action=abort_for_redelivery", SGND_DELIVERY_LOCAL_RETRY_ENQUEUE_FAILED, msgHex, deliveryKr);
+                SGP_AbortConnection();
             }
         }
 

@@ -250,9 +250,6 @@
         return [self performSetAppEnabled:[enabled boolValue]
                       forBundleIdentifier:bundleID];
     }
-    if ([type isEqualToString:SGDurableEventClearAppIntent]) {
-        return [self performClearAppIntentForBundleIdentifier:bundleID];
-    }
     if ([type isEqualToString:SGDurableEventDeleteApp]) {
         return [self performDeleteAppStateForBundleIdentifier:bundleID];
     }
@@ -271,7 +268,6 @@
                     [event objectForKey:SGDurableEventBundleIdentifierKey];
                 BOOL knownType =
                     [type isEqualToString:SGDurableEventSetAppEnabled] ||
-                    [type isEqualToString:SGDurableEventClearAppIntent] ||
                     [type isEqualToString:SGDurableEventDeleteApp];
                 BOOL payloadValid =
                     ![type isEqualToString:SGDurableEventSetAppEnabled] ||

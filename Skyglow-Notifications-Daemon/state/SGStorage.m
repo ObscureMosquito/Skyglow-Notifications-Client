@@ -15,7 +15,6 @@ NSString * const SGDurableEventCreatedAtKey        = @"createdAt";
 NSString * const SGDurableEventFilePathKey          = @"_eventFilePath";
 
 NSString * const SGDurableEventSetAppEnabled = @"set_app_enabled";
-NSString * const SGDurableEventClearAppIntent = @"clear_app_intent";
 NSString * const SGDurableEventDeleteApp = @"delete_app";
 
 static NSString * const SGStorageErrorDomain = @"com.skyglow.storage";
