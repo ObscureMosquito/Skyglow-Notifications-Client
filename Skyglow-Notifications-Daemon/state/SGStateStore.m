@@ -1,13 +1,35 @@
 #import "SGStateStore.h"
-#import "SGStorage.h"
+#import "SGAtomicFile.h"
+#import "SGDurableInbox.h"
 #import "SGConfiguration.h"
 #import "SGDatabaseManager.h"
+#import "SGKeychainStore.h"
 #import "SGTokenManager.h"
 #import "SGControlChannelProtocol.h"
 #import "SGStatusServer.h"
 #import "SGProtocolHandler.h"
 #import "SGLog.h"
 #import "SGLogDiagnostics.h"
+#include <unistd.h>
+
+static NSString * const kSGProfileCertificateDirectory =
+    @"/var/mobile/Library/SkyglowNotifications";
+
+/* System-root-relative (wrap with SGPath before touching disk), matching how
+ * the plist's server_pub_key value has always been stored. */
+static NSString *SGProfileCertificatePathForIndex(NSInteger profileIdx) {
+    return [NSString stringWithFormat:@"%@/profile%ld-server.pem",
+            kSGProfileCertificateDirectory, (long)profileIdx];
+}
+
+static NSString *SGProfilePlistPathForIndex(NSInteger profileIdx) {
+    return SGPath([NSString stringWithFormat:
+        SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
+}
+
+static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
+    return profileIdx >= 1 && profileIdx <= 5;
+}
 
 @implementation SGStateStore {
     dispatch_queue_t _storageQueue;
@@ -63,6 +85,166 @@
     }];
 }
 
+#pragma mark - Profile-slot persistence choke points
+
+- (BOOL)_updateProfileAtIndex:(NSInteger)profileIdx
+                     mutation:(void (^)(NSMutableDictionary *profile))mutation {
+    if (!SGProfileIndexIsValid(profileIdx) || !mutation) return NO;
+    @synchronized(self) {
+        NSString *plistPath = SGProfilePlistPathForIndex(profileIdx);
+        NSMutableDictionary *profile =
+            [NSMutableDictionary dictionaryWithContentsOfFile:plistPath]
+            ?: [NSMutableDictionary dictionary];
+        mutation(profile);
+        return SGAtomicWritePropertyList(profile, plistPath, 0644, NULL);
+    }
+}
+
+- (BOOL)commitRegistrationForProfileAtIndex:(NSInteger)profileIdx
+                              deviceAddress:(NSString *)deviceAddress
+                              privateKeyPEM:(NSString *)privateKeyPEM {
+    if (!SGProfileIndexIsValid(profileIdx) ||
+        ![deviceAddress length] || ![privateKeyPEM length]) {
+        return NO;
+    }
+    @synchronized(self) {
+        if (!SGKeychain_StorePrivateKeyPEM(privateKeyPEM, profileIdx)) {
+            SGLOGE(SGStateStore, "code=%s profile=%ld result=failed",
+                   SGND_REGISTRATION_KEY_WRITE_FAILED, (long)profileIdx);
+            return NO;
+        }
+        BOOL persisted = [self _updateProfileAtIndex:profileIdx
+                                            mutation:^(NSMutableDictionary *profile) {
+            [profile setObject:deviceAddress forKey:@"device_address"];
+        }];
+        if (!persisted) {
+            SGKeychain_DeletePrivateKey(profileIdx);
+            return NO;
+        }
+        return YES;
+    }
+}
+
+- (BOOL)wipeProfileCredentialsAtIndex:(NSInteger)profileIdx {
+    if (!SGProfileIndexIsValid(profileIdx)) return NO;
+    @synchronized(self) {
+        SGKeychain_DeletePrivateKey(profileIdx);
+        return [self _updateProfileAtIndex:profileIdx
+                                  mutation:^(NSMutableDictionary *profile) {
+            [profile removeObjectForKey:@"device_address"];
+            [profile removeObjectForKey:@"privateKey"];
+        }];
+    }
+}
+
+- (BOOL)saveProfileAtIndex:(NSInteger)profileIdx
+             serverAddress:(NSString *)serverAddress
+            certificatePEM:(NSString *)certificatePEM
+    invalidatedCredentials:(BOOL *)outInvalidatedCredentials {
+    if (outInvalidatedCredentials) *outInvalidatedCredentials = NO;
+    if (!SGProfileIndexIsValid(profileIdx) || ![serverAddress length]) return NO;
+
+    @synchronized(self) {
+        /* Recreates the certificate directory with 0700 + mobile ownership;
+         * a bare mkdir here as root would leave a parent SpringBoard cannot
+         * write the inbox under. */
+        SGEnsureRuntimeDirectories();
+
+        NSString *storedCertPath = SGProfileCertificatePathForIndex(profileIdx);
+        NSString *certDiskPath = SGPath(storedCertPath);
+
+        NSDictionary *existing = [NSDictionary dictionaryWithContentsOfFile:
+            SGProfilePlistPathForIndex(profileIdx)] ?: @{};
+        NSString *oldAddress = [existing objectForKey:@"server_address"];
+        NSString *oldCertPath = [existing objectForKey:@"server_pub_key"];
+
+        BOOL hasNewCertificate = ([certificatePEM length] > 0);
+        NSData *previousCertData = [NSData dataWithContentsOfFile:certDiskPath];
+        BOOL certFileReplaced = NO;
+
+        if (hasNewCertificate) {
+            NSData *pemData =
+                [certificatePEM dataUsingEncoding:NSUTF8StringEncoding];
+            if (!SGAtomicWriteData(pemData, certDiskPath, 0644, NULL)) return NO;
+            certFileReplaced = YES;
+        } else if ([oldCertPath length] > 0) {
+            if (![oldCertPath isEqualToString:storedCertPath]) {
+                NSData *migrated =
+                    [NSData dataWithContentsOfFile:SGPath(oldCertPath)];
+                if (!migrated) return NO;
+                if (!SGAtomicWriteData(migrated, certDiskPath, 0644, NULL)) {
+                    return NO;
+                }
+                certFileReplaced = YES;
+            } else if (access([certDiskPath fileSystemRepresentation],
+                              F_OK) != 0) {
+                return NO;
+            }
+        } else {
+            return NO;
+        }
+
+        BOOL addressChanged =
+            (oldAddress && ![oldAddress isEqualToString:serverAddress]);
+        BOOL invalidate = addressChanged || hasNewCertificate;
+
+        BOOL persisted = [self _updateProfileAtIndex:profileIdx
+                                            mutation:^(NSMutableDictionary *profile) {
+            [profile setObject:serverAddress forKey:@"server_address"];
+            [profile setObject:storedCertPath forKey:@"server_pub_key"];
+            if (invalidate) {
+                [profile removeObjectForKey:@"device_address"];
+                [profile removeObjectForKey:@"privateKey"];
+            }
+        }];
+        if (!persisted) {
+            /* The plist still names the old server; restore the certificate
+             * it was pinned to so the pair stays consistent. */
+            if (certFileReplaced) {
+                if (previousCertData) {
+                    SGAtomicWriteData(previousCertData, certDiskPath, 0644, NULL);
+                } else {
+                    unlink([certDiskPath fileSystemRepresentation]);
+                }
+            }
+            return NO;
+        }
+
+        /* Keychain last: a crash here leaves an orphan key (overwritten on
+         * the next registration), never a credentialed plist without a key. */
+        if (invalidate) SGKeychain_DeletePrivateKey(profileIdx);
+        if (outInvalidatedCredentials) *outInvalidatedCredentials = invalidate;
+        return YES;
+    }
+}
+
+- (BOOL)removeProfileAtIndex:(NSInteger)profileIdx {
+    if (!SGProfileIndexIsValid(profileIdx)) return NO;
+    @synchronized(self) {
+        /* Keychain first: see header comment on removeProfileAtIndex:. */
+        SGKeychain_DeletePrivateKey(profileIdx);
+
+        NSString *certDiskPath =
+            SGPath(SGProfileCertificatePathForIndex(profileIdx));
+        NSFileManager *fm = [NSFileManager defaultManager];
+        if ([fm fileExistsAtPath:certDiskPath]) {
+            [fm removeItemAtPath:certDiskPath error:nil];
+        }
+
+        NSString *plistPath = SGProfilePlistPathForIndex(profileIdx);
+        if ([fm fileExistsAtPath:plistPath]) {
+            NSError *err = nil;
+            if (![fm removeItemAtPath:plistPath error:&err]) {
+                SGLOGE(SGStateStore,
+                       "profile-delete: plist removal failed idx=%ld errno=%d",
+                       (long)profileIdx, (int)[err code]);
+                return NO;
+            }
+        }
+        return YES;
+    }
+}
+
 #pragma mark - Delete-app private helpers
 
 - (BOOL)_runDeletionCascadeForBundleIdentifier:(NSString *)bundleID {
@@ -114,6 +296,21 @@
         if (!intentUpdated) {
             [database setMuted:rollbackMuted forBundleIdentifier:bundleID];
             return NO;
+        }
+
+        if (enabled) {
+            /* A committed enable proves the app exists right now and
+             * supersedes any queued missed-uninstall record (daemon down at
+             * uninstall, or the delete's ack was lost).  Purge them under the
+             * store lock so a later drain cannot replay a stale delete_app
+             * over this fresh registration. */
+            NSUInteger purged = SGDurableEventPurgeForBundleIdentifier(
+                SGPath(SG_DURABLE_EVENT_INBOX_PATH), bundleID);
+            if (purged > 0) {
+                SGLOGI(SGStateStore, "code=%s bundle=%s count=%lu",
+                       SGND_DURABLE_EVENT_PURGED, [bundleID UTF8String],
+                       (unsigned long)purged);
+            }
         }
 
         SGP_FlushActiveTopicFilter();
@@ -215,7 +412,25 @@
                  * without blocking an unrelated app's uninstall cleanup. */
                 if ([blockedBundles containsObject:bundleID]) continue;
 
-                if ([self _applyDurableEvent:event]) {
+                /* The envelope was listed before we got here; a live enable
+                 * may have purged the file since.  Re-check existence under
+                 * the store lock (purge and apply both hold it) so a
+                 * superseded event is never applied from the cached copy. */
+                BOOL applied = NO;
+                BOOL superseded = NO;
+                @synchronized(self) {
+                    NSString *eventPath =
+                        [event objectForKey:SGDurableEventFilePathKey];
+                    if (access([eventPath fileSystemRepresentation],
+                               F_OK) != 0) {
+                        superseded = YES;
+                    } else {
+                        applied = [self _applyDurableEvent:event];
+                    }
+                }
+                if (superseded) continue;
+
+                if (applied) {
                     SGDurableEventRemove(event);
                     SGLOGI(SGStateStore, "code=%s type=%s bundle=%s",
                            SGND_DURABLE_EVENT_APPLIED, [type UTF8String],

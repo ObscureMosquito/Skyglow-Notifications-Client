@@ -7,7 +7,7 @@
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
 #import "SGSharedConstants.h"
-#import "SGStorage.h"
+#import "SGDurableInbox.h"
 #import "SGCompatibilityShim.h"
 
 #pragma mark - Private Class Interfaces

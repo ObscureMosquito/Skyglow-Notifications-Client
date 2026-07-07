@@ -1,8 +1,12 @@
-#ifndef SKYGLOW_SG_STORAGE_H
-#define SKYGLOW_SG_STORAGE_H
+#ifndef SKYGLOW_SG_DURABLE_INBOX_H
+#define SKYGLOW_SG_DURABLE_INBOX_H
 
 #import <Foundation/Foundation.h>
-#include <sys/types.h>
+
+/**
+ * Durable missed-uninstall inbox: one immutable plist file per event,
+ * published atomically.
+ */
 
 extern NSString * const SGDurableEventFormatVersionKey;
 extern NSString * const SGDurableEventIdentifierKey;
@@ -10,19 +14,7 @@ extern NSString * const SGDurableEventTypeKey;
 extern NSString * const SGDurableEventBundleIdentifierKey;
 extern NSString * const SGDurableEventCreatedAtKey;
 extern NSString * const SGDurableEventFilePathKey;
-
-/** On-disk inbox event type.  Only delete_app is accepted. */
 extern NSString * const SGDurableEventDeleteApp;
-
-/**
- * Writes a property list with create-time permissions, fsync, and atomic
- * rename. Readers observe either the old complete file or the new complete
- * file; chmod is not repeated after publication.
- */
-BOOL SGAtomicWritePropertyList(id propertyList,
-                               NSString *path,
-                               mode_t mode,
-                               NSError **outError);
 
 /**
  * Persists one immutable missed-uninstall event before its IPC attempt. The
@@ -42,5 +34,12 @@ BOOL SGDurableEventRemove(NSDictionary *event);
 
 /** Moves an invalid event out of the active .plist namespace for inspection. */
 BOOL SGDurableEventQuarantine(NSDictionary *event);
+
+/**
+ * Removes every parseable pending event for one bundle identifier,
+ * regardless of type or age.
+ */
+NSUInteger SGDurableEventPurgeForBundleIdentifier(NSString *inboxPath,
+                                                  NSString *bundleIdentifier);
 
 #endif

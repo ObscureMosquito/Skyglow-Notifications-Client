@@ -10,8 +10,6 @@
 #import "SGAvailability.h"
 #import "SGControlChannel.h"
 #import "SGReachabilityMonitor.h"
-#import "SGKeychainStore.h"
-#import "SGStorage.h"
 #import "SGStateStore.h"
 #import "SGLog.h"
 #include <openssl/pem.h>
@@ -29,7 +27,6 @@ static const int64_t       kSGDrainSafetyLeewaySec                 =  30;
 static const int64_t       kSGLocalPendingFallbackDeadlineSec      = 86400;
 static const NSUInteger    kSGSeenMessageIDCap                     = 200;
 static const NSTimeInterval kSGNotificationProcessingAssertionSec  = 15.0;
-static NSString * const    kSGProfileCertificateDirectory          = @"/var/mobile/Library/SkyglowNotifications";
 
 typedef struct { SGState from; SGState to; } SGTransition;
 
@@ -49,15 +46,6 @@ static const SGStateDeadline kSGStateDeadlines[] = {
     { SGStateAuthenticating, SGEventAuthTimeout,   SGP_NET_OP_TIMEOUT_SEC * 2 },
     { SGStateRegistering,    SGEventDisconnected,  SGP_NET_OP_TIMEOUT_SEC * 2 },
 };
-
-static NSString *SGProfileCertificatePathForIndex(NSInteger profileIdx) {
-    return [NSString stringWithFormat:@"%@/profile%ld-server.pem",
-            kSGProfileCertificateDirectory, (long)profileIdx];
-}
-
-static BOOL SGPersistSharedPlist(NSDictionary *plist, NSString *path) {
-    return SGAtomicWritePropertyList(plist, path, 0644, NULL);
-}
 
 static BOOL SGCertificatePEMLooksValid(NSString *pem) {
     if ([pem length] == 0) return NO;
@@ -1090,11 +1078,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     size_t pemLen = strlen(pemKey);
 
     NSInteger profileIdx = [[SGConfiguration sharedConfiguration] activeProfileIndex];
-    NSString *profilePath = SGPath([NSString stringWithFormat:
-        SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
-    NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePath] ?: [NSMutableDictionary dictionary];
-
-    profile[@"device_address"] = deviceAddress;
 
     NSString *pemString = [[NSString alloc] initWithBytes:pemKey
                                                    length:pemLen
@@ -1102,17 +1085,12 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     SGP_ZeroAndFreeKeyMaterial(pemKey, pemLen);
     pemKey = NULL;
 
-    BOOL keyStored = SGKeychain_StorePrivateKeyPEM(pemString, profileIdx);
+    BOOL committed = [_stateStore commitRegistrationForProfileAtIndex:profileIdx
+                                                        deviceAddress:deviceAddress
+                                                        privateKeyPEM:pemString];
     [pemString release];
 
-    if (!keyStored) {
-        SGLOGE(SGDaemon, "code=%s profile=%ld result=failed", SGND_REGISTRATION_KEY_WRITE_FAILED, (long)profileIdx);
-        [self handleEvent:SGEventDisconnected payload:nil];
-        return;
-    }
-
-    if (!SGPersistSharedPlist(profile, profilePath)) {
-        SGKeychain_DeletePrivateKey(profileIdx);
+    if (!committed) {
         [self handleEvent:SGEventDisconnected payload:nil];
         return;
     }
@@ -1229,15 +1207,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 - (void)performProfileWipeInline {
     @autoreleasepool {
         NSInteger profileIdx = [[SGConfiguration sharedConfiguration] activeProfileIndex];
-        NSString *profilePath = SGPath([NSString stringWithFormat:
-            SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
-        NSMutableDictionary *profile = [NSMutableDictionary dictionaryWithContentsOfFile:profilePath] ?: [NSMutableDictionary dictionary];
-
-        SGKeychain_DeletePrivateKey(profileIdx);
-
-        [profile removeObjectForKey:@"device_address"];
-        [profile removeObjectForKey:@"privateKey"];
-        SGPersistSharedPlist(profile, profilePath);
+        [_stateStore wipeProfileCredentialsAtIndex:profileIdx];
         [[SGConfiguration sharedConfiguration] reloadFromDisk];
     }
 }
@@ -1258,73 +1228,19 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     if (hasNewCertificate && !SGCertificatePEMLooksValid(certificatePEM)) return NO;
 
     BOOL isActive = ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx);
-    NSString *profilePath = SGPath([NSString stringWithFormat:
-        SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
-    NSMutableDictionary *profile =
-        [NSMutableDictionary dictionaryWithContentsOfFile:profilePath]
-        ?: [NSMutableDictionary dictionary];
 
-    NSString *oldAddress = [profile objectForKey:@"server_address"];
-    NSString *oldCertPath = [profile objectForKey:@"server_pub_key"];
-    NSString *storedCertPath = SGProfileCertificatePathForIndex(profileIdx);
-    NSString *certDiskPath = SGPath(storedCertPath);
-
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *certDir = SGPath(kSGProfileCertificateDirectory);
-    BOOL isDir = NO;
-    if (![fm fileExistsAtPath:certDir isDirectory:&isDir]) {
-        if (![fm createDirectoryAtPath:certDir withIntermediateDirectories:YES attributes:nil error:nil]) {
-            return NO;
-        }
-    } else if (!isDir) {
-        return NO;
-    }
-
-    BOOL certificateChanged = hasNewCertificate;
-    if (hasNewCertificate) {
-        if (![certificatePEM writeToFile:certDiskPath
-                              atomically:YES
-                                encoding:NSUTF8StringEncoding
-                                   error:nil]) {
-            return NO;
-        }
-        chmod([certDiskPath fileSystemRepresentation], 0644);
-    } else if ([oldCertPath length] > 0) {
-        if (![oldCertPath isEqualToString:storedCertPath]) {
-            NSString *oldDiskPath = SGPath(oldCertPath);
-            if (![fm fileExistsAtPath:oldDiskPath]) {
-                return NO;
-            }
-            [fm removeItemAtPath:certDiskPath error:nil];
-            if (![fm copyItemAtPath:oldDiskPath toPath:certDiskPath error:nil]) {
-                return NO;
-            }
-        } else if (![fm fileExistsAtPath:certDiskPath]) {
-            return NO;
-        }
-    } else {
-        return NO;
-    }
-
-    BOOL addressChanged = (oldAddress && ![oldAddress isEqualToString:address]);
-
-    [profile setObject:address forKey:@"server_address"];
-    [profile setObject:storedCertPath forKey:@"server_pub_key"];
-
-    if (addressChanged || certificateChanged) {
-        SGKeychain_DeletePrivateKey(profileIdx);
-        [profile removeObjectForKey:@"device_address"];
-        [profile removeObjectForKey:@"privateKey"];
-    }
-
-    if (!SGPersistSharedPlist(profile, profilePath)) {
+    BOOL credentialsInvalidated = NO;
+    if (![_stateStore saveProfileAtIndex:profileIdx
+                           serverAddress:address
+                          certificatePEM:(hasNewCertificate ? certificatePEM : nil)
+                  invalidatedCredentials:&credentialsInvalidated]) {
         return NO;
     }
 
     [[SGConfiguration sharedConfiguration] reloadFromDisk];
 
     if (isActive) {
-        if (addressChanged || certificateChanged) {
+        if (credentialsInvalidated) {
             [[SGDatabaseManager sharedManager] clearAllTokens];
             [[SGDatabaseManager sharedManager] clearAllDNSCache];
         }
@@ -1339,28 +1255,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     if (profileIdx < 1 || profileIdx > 5) return NO;
 
     BOOL wasActive = ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx);
-    NSString *profilePath = SGPath([NSString stringWithFormat:
-        SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
-    NSString *certPath = SGPath(SGProfileCertificatePathForIndex(profileIdx));
-    NSFileManager *fm = [NSFileManager defaultManager];
 
-    /* Delete the keychain entry first.  If the plist write fails afterward
-     * we'd have a no-key + no-plist state, which is fine — the slot is
-     * just gone.  The reverse order would risk a no-key + intact-plist
-     * state where the daemon thinks the slot is registered but can't auth. */
-    SGKeychain_DeletePrivateKey(profileIdx);
-    if ([fm fileExistsAtPath:certPath]) {
-        [fm removeItemAtPath:certPath error:nil];
-    }
-
-    if ([fm fileExistsAtPath:profilePath]) {
-        NSError *err = nil;
-        if (![fm removeItemAtPath:profilePath error:&err]) {
-            SGLOGE(SGDaemon, "profile-delete: plist removal failed idx=%ld errno=%d",
-                   (long)profileIdx, (int)[err code]);
-            return NO;
-        }
-    }
+    if (![_stateStore removeProfileAtIndex:profileIdx]) return NO;
 
     if (![[SGDatabaseManager sharedManager] clearOperationalStateForProfile:profileIdx]) {
         SGLOGE(SGDaemon, "profile-delete: database cleanup failed idx=%ld",

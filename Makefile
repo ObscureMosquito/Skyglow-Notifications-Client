@@ -23,7 +23,8 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/net/SGReachabilityMonitor.m \
     Skyglow-Notifications-Daemon/core/SGDaemon.m \
     Skyglow-Notifications-Daemon/platform/SGAvailability.m \
-    Skyglow-Notifications-Daemon/state/SGStorage.m \
+    Skyglow-Notifications-Daemon/state/SGAtomicFile.m \
+    Skyglow-Notifications-Daemon/state/SGDurableInbox.m \
     Skyglow-Notifications-Daemon/state/SGStateStore.m \
     Skyglow-Notifications-Daemon/net/SGControlAuthorization.m \
     Skyglow-Notifications-Daemon/net/SGControlChannel.m \

@@ -17,6 +17,52 @@
  */
 - (BOOL)updateMainPreferences:(void (^)(NSMutableDictionary *preferences))mutation;
 
+#pragma mark - Profile-slot persistence choke points
+
+/*
+ * Everything below is serialized on the store lock: profile plists and their
+ * pinned-certificate files have exactly one writer.  SGDaemon keeps the
+ * orchestration around these calls (validation, config reload, FSM events,
+ * operational-DB cleanup) but owns no profile bytes on disk.
+ */
+
+/**
+ * Commits a completed server registration: stores the private key in the
+ * keychain, then persists the issued device address.  The key is removed
+ * again if the plist write fails, so a half-committed registration never
+ * survives.
+ */
+- (BOOL)commitRegistrationForProfileAtIndex:(NSInteger)profileIdx
+                              deviceAddress:(NSString *)deviceAddress
+                              privateKeyPEM:(NSString *)privateKeyPEM;
+
+/**
+ * Deletes the slot's private key and strips its issued credentials
+ * (device_address / legacy privateKey) from the profile plist.
+ */
+- (BOOL)wipeProfileCredentialsAtIndex:(NSInteger)profileIdx;
+
+/**
+ * Persists a validated server address and (optionally) a new pinned
+ * certificate for the slot.  The certificate is published with the same
+ * fsync+rename discipline as the plists and rolled back if the plist commit
+ * fails.  When the address or certificate changes, issued credentials are
+ * invalidated (plist entries removed, keychain key deleted) and
+ * *outInvalidatedCredentials is set so the caller can clear operational
+ * state.  Pass nil certificatePEM to keep the existing certificate.
+ */
+- (BOOL)saveProfileAtIndex:(NSInteger)profileIdx
+             serverAddress:(NSString *)serverAddress
+            certificatePEM:(NSString *)certificatePEM
+    invalidatedCredentials:(BOOL *)outInvalidatedCredentials;
+
+/**
+ * Removes the slot entirely: keychain key first (a no-key + intact-plist
+ * state would look registered but be unable to auth; the reverse is just an
+ * empty slot), then the certificate file, then the profile plist.
+ */
+- (BOOL)removeProfileAtIndex:(NSInteger)profileIdx;
+
 /**
  * Applies one platform-neutral per-app intent from live IPC.  Mints a token
  * when enabling, syncs the DB mute flag, and writes the durable appStatus
