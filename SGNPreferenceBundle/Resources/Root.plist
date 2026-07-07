@@ -48,15 +48,14 @@
 			<key>detail</key>
 			<string>SNAppListController</string>
 		</dict>
-		<dict>
+		<!--dict>
 			<key>cell</key>
 			<string>PSLinkCell</string>
 			<key>label</key>
 			<string>Other Settings</string>
 			<key>action</key>
 			<string>pushCustomizationView</string>
-		</dict>
-
+		</dict-->
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>

@@ -60,5 +60,5 @@ include $(THEOS_MAKE_PATH)/tool.mk
 
 SUBPROJECTS += SGNPreferenceBundle
 SUBPROJECTS += SGNSpringboard
-SUBPROJECTS += SGNSettings
+#SUBPROJECTS += SGNSettings
 include $(THEOS_MAKE_PATH)/aggregate.mk

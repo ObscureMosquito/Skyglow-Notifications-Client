@@ -1148,21 +1148,14 @@ static void SGN_InstallTokenGuard(void) {
 #pragma mark - Constructor
 
 %ctor {
-    /* Install subscripting + environ stubs before any Foundation calls.
-     * No-op on iOS 6+.  (Also runs via the file's __attribute__((constructor));
-     * this explicit call is defensive coverage against constructor ordering.) */
     SGNInstallCompatibilityShim();
 
     StartSpringBoardControlChannel();
     StartDaemonControlChannelClient();
     SGNScheduleInstalledApplicationReconciliation();
 
-    /* Status bar dot — lives in SGNStatusBarIndicator.m, subscribes to the
-     * daemon's STATE_CHANGED + CONFIG_RELOADED events on the channel we
-     * just started, and creates/destroys the libstatusbar item per the
-     * customization toggle in prefs. */
-    extern void SGNStatusBarIndicator_Start(SGControlChannel *daemonClient);
-    SGNStatusBarIndicator_Start(gSGCDaemonClient);
+    //extern void SGNStatusBarIndicator_Start(SGControlChannel *daemonClient);
+    //SGNStatusBarIndicator_Start(gSGCDaemonClient);
 
     if (SGN_IS_PRE_IOS_8) {
         %init(HookUninstall_Classic);

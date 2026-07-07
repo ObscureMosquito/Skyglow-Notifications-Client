@@ -118,9 +118,6 @@
     NSString *key = [specifier propertyForKey:@"key"];
     if (!key) return;
 
-    /* Root.plist currently has a single writable setting. Keep this explicit
-     * so adding another specifier cannot accidentally reintroduce a second
-     * preferences writer. */
     if ([key isEqualToString:@"enabled"]) {
         PSSpecifier *specifierCopy = [specifier retain];
         [SNChannelGateway setEnabled:[value boolValue]
