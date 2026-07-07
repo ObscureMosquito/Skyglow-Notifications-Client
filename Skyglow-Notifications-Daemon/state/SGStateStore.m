@@ -105,6 +105,8 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
                               privateKeyPEM:(NSString *)privateKeyPEM {
     if (!SGProfileIndexIsValid(profileIdx) ||
         ![deviceAddress length] || ![privateKeyPEM length]) {
+        SGLOGE(SGStateStore, "code=%s profile=%ld result=rejected reason=invalid_input",
+               SGND_REGISTRATION_KEY_WRITE_FAILED, (long)profileIdx);
         return NO;
     }
     @synchronized(self) {
@@ -167,19 +169,9 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
                 [certificatePEM dataUsingEncoding:NSUTF8StringEncoding];
             if (!SGAtomicWriteData(pemData, certDiskPath, 0644, NULL)) return NO;
             certFileReplaced = YES;
-        } else if ([oldCertPath length] > 0) {
-            if (![oldCertPath isEqualToString:storedCertPath]) {
-                NSData *migrated =
-                    [NSData dataWithContentsOfFile:SGPath(oldCertPath)];
-                if (!migrated) return NO;
-                if (!SGAtomicWriteData(migrated, certDiskPath, 0644, NULL)) {
-                    return NO;
-                }
-                certFileReplaced = YES;
-            } else if (access([certDiskPath fileSystemRepresentation],
-                              F_OK) != 0) {
-                return NO;
-            }
+        } else if ([oldCertPath isEqualToString:storedCertPath] &&
+                   access([certDiskPath fileSystemRepresentation],
+                          F_OK) == 0) {
         } else {
             return NO;
         }
@@ -298,21 +290,6 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
             return NO;
         }
 
-        if (enabled) {
-            /* A committed enable proves the app exists right now and
-             * supersedes any queued missed-uninstall record (daemon down at
-             * uninstall, or the delete's ack was lost).  Purge them under the
-             * store lock so a later drain cannot replay a stale delete_app
-             * over this fresh registration. */
-            NSUInteger purged = SGDurableEventPurgeForBundleIdentifier(
-                SGPath(SG_DURABLE_EVENT_INBOX_PATH), bundleID);
-            if (purged > 0) {
-                SGLOGI(SGStateStore, "code=%s bundle=%s count=%lu",
-                       SGND_DURABLE_EVENT_PURGED, [bundleID UTF8String],
-                       (unsigned long)purged);
-            }
-        }
-
         SGP_FlushActiveTopicFilter();
         return YES;
     }
@@ -412,10 +389,12 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
                  * without blocking an unrelated app's uninstall cleanup. */
                 if ([blockedBundles containsObject:bundleID]) continue;
 
-                /* The envelope was listed before we got here; a live enable
-                 * may have purged the file since.  Re-check existence under
-                 * the store lock (purge and apply both hold it) so a
-                 * superseded event is never applied from the cached copy. */
+                /* The envelope was listed before we got here; SpringBoard
+                 * purges superseded records when an installed app re-enables
+                 * (it is the only component that can prove the app exists).
+                 * Re-check existence under the store lock so a purged event
+                 * is never applied from the cached copy, whichever side of
+                 * the listing the unlink landed on. */
                 BOOL applied = NO;
                 BOOL superseded = NO;
                 @synchronized(self) {

@@ -18,6 +18,16 @@ static void SGApplyMobileOwnershipIfAvailable(NSString *path) {
 #endif
 }
 
+static void SGApplyPrivateDirectoryProtection(NSString *path) {
+    struct stat st;
+    if (stat([path fileSystemRepresentation], &st) != 0 ||
+        !S_ISDIR(st.st_mode)) {
+        return;
+    }
+    chmod([path fileSystemRepresentation], 0700);
+    SGApplyMobileOwnershipIfAvailable(path);
+}
+
 void SGEnsureRuntimeDirectories(void) {
     NSArray *dirs = [NSArray arrayWithObjects:
         [SGPath(SG_LOG_PATH) stringByDeletingLastPathComponent],
@@ -41,10 +51,8 @@ void SGEnsureRuntimeDirectories(void) {
   withIntermediateDirectories:YES
                    attributes:privateDirAttributes
                         error:NULL];
-    chmod([stateDir fileSystemRepresentation], 0700);
-    chmod([inboxDir fileSystemRepresentation], 0700);
-    SGApplyMobileOwnershipIfAvailable(stateDir);
-    SGApplyMobileOwnershipIfAvailable(inboxDir);
+    SGApplyPrivateDirectoryProtection(stateDir);
+    SGApplyPrivateDirectoryProtection(inboxDir);
 }
 
 /* Scrubs a private-key buffer before releasing it so the PEM never lingers in

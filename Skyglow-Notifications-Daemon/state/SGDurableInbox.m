@@ -169,7 +169,8 @@ NSUInteger SGDurableEventPurgeForBundleIdentifier(NSString *inboxPath,
             ![eventBundle isEqualToString:bundleIdentifier]) {
             continue;
         }
-        if (unlink([path fileSystemRepresentation]) == 0 || errno == ENOENT) {
+
+        if (unlink([path fileSystemRepresentation]) == 0) {
             removed++;
         }
     }

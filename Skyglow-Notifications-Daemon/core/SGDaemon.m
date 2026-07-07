@@ -579,12 +579,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             } else if (event == SGEventAuthFailed) {
-                /* Wire registration succeeded but the device address / private
-                 * key could not be persisted (e.g. keychain write or reload
-                 * failed).  The half-registered profile is useless — wipe it and
-                 * back off rather than waiting for the registration watchdog. */
                 strlcpy(_lastErrorDetail, "Registration succeeded but key could not be stored", sizeof(_lastErrorDetail));
-                [self performProfileWipeInline];
                 [self executeFailureBackoff];
             } else if (event == SGEventDisconnected) {
                 strlcpy(_lastErrorDetail, "Disconnected during registration", sizeof(_lastErrorDetail));
@@ -1102,6 +1097,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     RSA *privKey = SG_CryptoGetClientPrivateKey();
     if (!privKey) {
         SGLOGE(SGDaemon, "code=%s profile=%ld action=wipe_profile", SGND_REGISTRATION_KEY_RELOAD_FAILED, (long)profileIdx);
+        [_stateStore wipeProfileCredentialsAtIndex:profileIdx];
+        [[SGConfiguration sharedConfiguration] reloadFromDisk];
         [self handleEvent:SGEventAuthFailed payload:nil];
         return;
     }
@@ -1202,14 +1199,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
      * the enable/disable takes effect immediately (connect or tear down). */
     [self handleConfigurationReloadRequest];
     return YES;
-}
-
-- (void)performProfileWipeInline {
-    @autoreleasepool {
-        NSInteger profileIdx = [[SGConfiguration sharedConfiguration] activeProfileIndex];
-        [_stateStore wipeProfileCredentialsAtIndex:profileIdx];
-        [[SGConfiguration sharedConfiguration] reloadFromDisk];
-    }
 }
 
 - (BOOL)performSaveProfileAtIndex:(NSInteger)profileIdx

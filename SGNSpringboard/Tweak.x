@@ -867,6 +867,12 @@ static BOOL sPassThrough      = NO;
 
     if (buttonIndex == 1) {
         SGNSetRuntimeAppIntent(sPendingBundleId, YES);
+        NSUInteger purgedEvents = SGDurableEventPurgeForBundleIdentifier(
+            SGNPath(SG_DURABLE_EVENT_INBOX_PATH), sPendingBundleId);
+        if (purgedEvents > 0) {
+            NSLog(@"[SGN] Purged %lu stale uninstall record(s) for %@ before re-enabling",
+                  (unsigned long)purgedEvents, sPendingBundleId);
+        }
         SGNSendBundleCommand(SGCMSG_ENABLE_APP,
                              sPendingBundleId,
                              nil);
