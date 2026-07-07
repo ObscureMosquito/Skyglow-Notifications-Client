@@ -213,17 +213,8 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
 - (BOOL)removeProfileAtIndex:(NSInteger)profileIdx {
     if (!SGProfileIndexIsValid(profileIdx)) return NO;
     @synchronized(self) {
-        /* Keychain first: see header comment on removeProfileAtIndex:. */
-        SGKeychain_DeletePrivateKey(profileIdx);
-
-        NSString *certDiskPath =
-            SGPath(SGProfileCertificatePathForIndex(profileIdx));
-        NSFileManager *fm = [NSFileManager defaultManager];
-        if ([fm fileExistsAtPath:certDiskPath]) {
-            [fm removeItemAtPath:certDiskPath error:nil];
-        }
-
         NSString *plistPath = SGProfilePlistPathForIndex(profileIdx);
+        NSFileManager *fm = [NSFileManager defaultManager];
         if ([fm fileExistsAtPath:plistPath]) {
             NSError *err = nil;
             if (![fm removeItemAtPath:plistPath error:&err]) {
@@ -233,6 +224,14 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
                 return NO;
             }
         }
+
+        NSString *certDiskPath =
+            SGPath(SGProfileCertificatePathForIndex(profileIdx));
+        if ([fm fileExistsAtPath:certDiskPath]) {
+            [fm removeItemAtPath:certDiskPath error:nil];
+        }
+
+        SGKeychain_DeletePrivateKey(profileIdx);
         return YES;
     }
 }

@@ -4,9 +4,9 @@
 #import <Foundation/Foundation.h>
 
 /**
- * SGStateStore is the daemon-side persistence coordinator for app/provider
- * intent and missed-uninstall recovery.  It is deliberately not a public
- * read-model publisher and not a SpringBoard adapter.
+ * SGStateStore is the daemon-side persistence coordinator for profile slots,
+ * app/provider intent, and missed-uninstall recovery.  It is deliberately not
+ * a public read-model publisher and not a SpringBoard adapter.
  */
 @interface SGStateStore : NSObject
 
@@ -57,9 +57,9 @@
     invalidatedCredentials:(BOOL *)outInvalidatedCredentials;
 
 /**
- * Removes the slot entirely: keychain key first (a no-key + intact-plist
- * state would look registered but be unable to auth; the reverse is just an
- * empty slot), then the certificate file, then the profile plist.
+ * Removes the slot entirely: visible profile plist first, then credential
+ * sidecars.  A partial failure can leave harmless orphaned sidecars, but not a
+ * visible profile that has already lost its key or certificate.
  */
 - (BOOL)removeProfileAtIndex:(NSInteger)profileIdx;
 
