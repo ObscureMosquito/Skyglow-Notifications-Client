@@ -471,7 +471,6 @@ int main(int argc, char *argv[]) {
         [daemon attachSpringBoardClient:springBoardClient];
 
         [daemon.stateStore drainDurableEventInbox];
-        [daemon.stateStore schedulePublicStateSnapshot];
         [daemon start];
 
         CFRunLoopRun();

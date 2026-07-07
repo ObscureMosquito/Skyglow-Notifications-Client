@@ -50,7 +50,6 @@ const char *SGState_GetName(SGState state) {
         case SGStateDisabled:            return "Disabled";
         case SGStateIdleUnregistered:    return "IdleUnregistered";
         case SGStateResolvingDNS:        return "ResolvingDNS";
-        case SGStateIdleDNSFailed:       return "IdleDNSFailed";
         case SGStateConnecting:          return "Connecting";
         case SGStateAuthenticating:      return "Authenticating";
         case SGStateConnected:           return "Connected";
@@ -59,8 +58,6 @@ const char *SGState_GetName(SGState state) {
         case SGStateIdleCircuitOpen:     return "IdleCircuitOpen";
         case SGStateErrorAuth:           return "ErrorAuth";
         case SGStateErrorBadConfig:      return "ErrorBadConfig";
-        case SGStateError:               return "Error";
-        case SGStateShuttingDown:        return "ShuttingDown";
         case SGStateRegistering:         return "Registering";
         case SGStateErrorVersionMismatch: return "ErrorVersionMismatch";
         default:                         return "Unknown";

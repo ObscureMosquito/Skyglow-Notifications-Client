@@ -43,9 +43,8 @@ typedef NS_ENUM(NSInteger, SGEvent) {
 @interface SGDaemon : NSObject <SGProtocolDelegate>
 
 /**
- * The daemon's single-writer authority over persistent app/event state and the
- * publisher of the read-only public-state snapshot.  IPC handlers route every
- * state mutation (per-app intents, inbox drain) through
+ * The daemon's single-writer authority over persistent app state and
+ * missed-uninstall replay.  IPC handlers route every app-state mutation through
  * this; the daemon itself uses it for the writes behind its config commands.
  */
 @property (nonatomic, readonly) SGStateStore *stateStore;

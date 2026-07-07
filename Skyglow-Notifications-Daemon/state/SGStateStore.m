@@ -63,31 +63,15 @@
     }];
 }
 
-#pragma mark - Pending-deletion + DB cascade
+#pragma mark - Delete-app private helpers
 
-- (BOOL)runDeletionCascadeForBundleIdentifier:(NSString *)bundleID {
+- (BOOL)_runDeletionCascadeForBundleIdentifier:(NSString *)bundleID {
     if (![bundleID length]) return NO;
     return [[SGDatabaseManager sharedManager]
         removeAllStateForBundleIdentifier:bundleID];
 }
 
-- (BOOL)clearPendingDeletionForBundleIdentifier:(NSString *)bundleID {
-    if (![bundleID length]) return NO;
-    return [self clearPendingDeletionsForBundleIdentifiers:@[bundleID]];
-}
-
-- (BOOL)clearPendingDeletionsForBundleIdentifiers:(NSArray *)bundles {
-    if ([bundles count] == 0) return YES;
-    return [self updateMainPreferences:^(NSMutableDictionary *preferences) {
-        NSArray *current = [preferences objectForKey:@"pendingDeletions"];
-        if ([current count] == 0) return;
-        NSMutableArray *next = [NSMutableArray arrayWithArray:current];
-        [next removeObjectsInArray:bundles];
-        [preferences setObject:next forKey:@"pendingDeletions"];
-    }];
-}
-
-#pragma mark - Per-app intents (shared by IPC + durable inbox)
+#pragma mark - Per-app intents (IPC only)
 
 - (BOOL)performSetAppEnabled:(BOOL)enabled
          forBundleIdentifier:(NSString *)bundleID {
@@ -133,105 +117,55 @@
         }
 
         SGP_FlushActiveTopicFilter();
-        [self schedulePublicStateSnapshot];
         return YES;
     }
 }
 
 - (BOOL)performClearAppIntentForBundleIdentifier:(NSString *)bundleID {
     if (!SG_IsIdentifierStringSafe(bundleID)) return NO;
-    BOOL removed = [self _removeAppStatusForBundleIdentifier:bundleID];
-    if (removed) [self schedulePublicStateSnapshot];
-    return removed;
+
+    @synchronized(self) {
+        SGDatabaseManager *database = [SGDatabaseManager sharedManager];
+        if (!database) return NO;
+
+        NSDictionary *preferences = [NSDictionary dictionaryWithContentsOfFile:
+            SGPath(SG_PREFS_PLIST_PATH)] ?: @{};
+        id previousIntent =
+            [[preferences objectForKey:@"appStatus"] objectForKey:bundleID];
+        BOOL rollbackMuted =
+            previousIntent ? ![previousIntent boolValue] : YES;
+
+        BOOL databaseUpdated =
+            [database setMuted:YES forBundleIdentifier:bundleID];
+        BOOL intentRemoved =
+            databaseUpdated &&
+            [self _removeAppStatusForBundleIdentifier:bundleID];
+        if (!intentRemoved) {
+            if (databaseUpdated) {
+                [database setMuted:rollbackMuted forBundleIdentifier:bundleID];
+            }
+            return NO;
+        }
+
+        SGP_FlushActiveTopicFilter();
+        return YES;
+    }
 }
 
 - (BOOL)performDeleteAppStateForBundleIdentifier:(NSString *)bundleID {
     if (!SG_IsIdentifierStringSafe(bundleID)) return NO;
     @synchronized(self) {
-        BOOL databaseClean = [self runDeletionCascadeForBundleIdentifier:bundleID];
-        BOOL pendingCleared =
-            [self clearPendingDeletionForBundleIdentifier:bundleID];
+        BOOL databaseClean = [self _runDeletionCascadeForBundleIdentifier:bundleID];
         BOOL intentRemoved =
             [self _removeAppStatusForBundleIdentifier:bundleID];
-        if (!(databaseClean && pendingCleared && intentRemoved)) return NO;
+        if (!(databaseClean && intentRemoved)) return NO;
 
         SGP_FlushActiveTopicFilter();
-        [self schedulePublicStateSnapshot];
         return YES;
     }
 }
 
-#pragma mark - Public read-model snapshot
-
-- (BOOL)_writePublicStateSnapshot {
-    NSDictionary *preferences = [NSDictionary dictionaryWithContentsOfFile:
-        SGPath(SG_PREFS_PLIST_PATH)] ?: @{};
-    NSDictionary *previous = [NSDictionary dictionaryWithContentsOfFile:
-        SGPath(SG_PUBLIC_STATE_PATH)];
-    unsigned long long generation =
-        [[previous objectForKey:@"generation"] unsignedLongLongValue] + 1;
-
-    NSMutableDictionary *snapshot = [NSMutableDictionary dictionary];
-    [snapshot setObject:[NSNumber numberWithInteger:1] forKey:@"formatVersion"];
-    [snapshot setObject:[NSNumber numberWithUnsignedLongLong:generation]
-                 forKey:@"generation"];
-    [snapshot setObject:[NSNumber numberWithDouble:
-        ([[NSDate date] timeIntervalSince1970])] forKey:@"updatedAt"];
-
-    for (NSString *key in @[
-            @"enabled", @"activeProfile", @"logLevel", @"appStatus"]) {
-        id value = [preferences objectForKey:key];
-        if (value) [snapshot setObject:value forKey:key];
-    }
-
-    NSArray *registered = [[[[SGDatabaseManager sharedManager]
-        registeredBundleIdentifiers] allObjects]
-        sortedArrayUsingSelector:@selector(compare:)];
-    [snapshot setObject:registered ?: @[] forKey:@"registeredBundleIDs"];
-
-    SGStatusPayload status;
-    memset(&status, 0, sizeof(status));
-    SGStatusServer_Current(&status);
-    NSString *serverIP = [NSString stringWithUTF8String:status.serverIP] ?: @"";
-    NSString *errorDetail =
-        [NSString stringWithUTF8String:status.errorDetail] ?: @"";
-    NSDictionary *statusDictionary = @{
-        @"state": [NSNumber numberWithUnsignedInt:status.state],
-        @"consecutiveFailures":
-            [NSNumber numberWithUnsignedInt:status.consecutiveFailures],
-        @"currentBackoffSec":
-            [NSNumber numberWithUnsignedInt:status.currentBackoffSec],
-        @"serverIP": serverIP,
-        @"daemonStartTime":
-            [NSNumber numberWithLongLong:status.daemonStartTime],
-        @"lastStateTransitionTime":
-            [NSNumber numberWithLongLong:status.lastStateTransitionTime],
-        @"errorDetail": errorDetail,
-        @"activeProfileIndex":
-            [NSNumber numberWithUnsignedInt:status.activeProfileIndex],
-    };
-    [snapshot setObject:statusDictionary forKey:@"status"];
-
-    NSError *error = nil;
-    BOOL written = SGAtomicWritePropertyList(snapshot,
-        SGPath(SG_PUBLIC_STATE_PATH), 0644, &error);
-    if (!written) {
-        SGLOGE(SGStateStore, "code=%s reason=%s",
-               SGND_PUBLIC_STATE_WRITE_FAILED,
-               [[error description] UTF8String]);
-    }
-    return written;
-}
-
-- (void)schedulePublicStateSnapshot {
-    dispatch_async(_storageQueue, ^{
-        @autoreleasepool {
-            [self _writePublicStateSnapshot];
-        }
-    });
-}
-
-#pragma mark - Durable write-ahead inbox
+#pragma mark - Durable missed-uninstall inbox
 
 - (BOOL)_applyDurableEvent:(NSDictionary *)event {
     if ([[event objectForKey:SGDurableEventFormatVersionKey] integerValue] != 1) {
@@ -244,12 +178,6 @@
         return NO;
     }
 
-    if ([type isEqualToString:SGDurableEventSetAppEnabled]) {
-        NSNumber *enabled = [event objectForKey:SGDurableEventEnabledKey];
-        if (![enabled isKindOfClass:[NSNumber class]]) return NO;
-        return [self performSetAppEnabled:[enabled boolValue]
-                      forBundleIdentifier:bundleID];
-    }
     if ([type isEqualToString:SGDurableEventDeleteApp]) {
         return [self performDeleteAppStateForBundleIdentifier:bundleID];
     }
@@ -267,18 +195,13 @@
                 NSString *bundleID =
                     [event objectForKey:SGDurableEventBundleIdentifierKey];
                 BOOL knownType =
-                    [type isEqualToString:SGDurableEventSetAppEnabled] ||
                     [type isEqualToString:SGDurableEventDeleteApp];
-                BOOL payloadValid =
-                    ![type isEqualToString:SGDurableEventSetAppEnabled] ||
-                    [[event objectForKey:SGDurableEventEnabledKey]
-                        isKindOfClass:[NSNumber class]];
                 BOOL structurallyValid =
                     [[event objectForKey:SGDurableEventFormatVersionKey]
                         integerValue] == 1 &&
                     [type isKindOfClass:[NSString class]] &&
                     SG_IsIdentifierStringSafe(bundleID) &&
-                    knownType && payloadValid;
+                    knownType;
                 if (!structurallyValid) {
                     SGLOGE(SGStateStore, "code=%s file=%s action=quarantine",
                            SGND_DURABLE_EVENT_INVALID,
@@ -288,9 +211,8 @@
                     continue;
                 }
 
-                /* Preserve ordering for repeated choices concerning one app,
-                 * without allowing a temporarily uncommittable registration
-                 * to block an unrelated app's uninstall cleanup. */
+                /* Preserve ordering for repeated uninstall records for one app
+                 * without blocking an unrelated app's uninstall cleanup. */
                 if ([blockedBundles containsObject:bundleID]) continue;
 
                 if ([self _applyDurableEvent:event]) {

@@ -156,9 +156,9 @@ typedef enum : uint8_t {
     SGCMSG_UNREGISTER_INPUT_APP= 0x1A,  /* DEPRECATED — superseded by SGCMSG_DELETE_APP; opcode reserved */
 
     /* Unified per-app state commands sent from the prefs bundle to the
-     * daemon.  Plist remains the user-state SSOT (written by prefs); these
-     * messages tell the daemon to sync its DB + server filter accordingly.
-     * See DOCUMENTATION.md for the full architecture. */
+     * daemon.  The daemon owns the appStatus plist write and the DB/filter
+     * side effects through SGStateStore, so prefs never mutates persistent
+     * per-app state directly.  See DOCUMENTATION.md for the full architecture. */
     SGCMSG_ENABLE_APP          = 0x1B,  /* SGCBundleIdPayload — mint token if absent + clear mute + flush filter */
     SGCMSG_DISABLE_APP         = 0x1C,  /* SGCBundleIdPayload — set mute + flush filter */
     SGCMSG_DELETE_APP          = 0x1D,  /* SGCBundleIdPayload — drop DB row + flush filter + ask SB to natively deregister */
@@ -210,8 +210,9 @@ typedef enum : uint8_t {
     SGCMSG_SET_ENABLED         = 0x24,  /* SGCEnabledPayload */
 
     /* Generic persisted intent emitted by a platform adapter when the user
-     * chooses the platform's native push provider.  This removes appStatus
-     * without invoking any SpringBoard-specific cleanup. */
+     * chooses the platform's native push provider.  This removes appStatus,
+     * mutes any existing DB token row, and flushes the server filter without
+     * invoking SpringBoard-specific cleanup. */
     SGCMSG_CLEAR_APP_INTENT    = 0x25,  /* SGCBundleIdPayload */
 
     /* Responses */

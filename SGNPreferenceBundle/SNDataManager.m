@@ -44,7 +44,6 @@ static inline NSString * SGProfilePath() {
     return SGProfilePathForIndex(SGActiveProfileIndex());
 }
 static inline NSString * SGDBPath()        { return SGPath(SG_DB_PATH); }
-static inline NSString * SGPublicStatePath() { return SGPath(SG_PUBLIC_STATE_PATH); }
 
 static NSString * const kSGNIndicatorPlist  = @"/var/mobile/Library/Preferences/com.skyglow.sndp.indicator.plist";
 static NSString * const kSGNIndicatorKey    = @"enabled";
@@ -134,21 +133,10 @@ static inline NSString * SGIndicatorPrefsPath() { return SGPath(kSGNIndicatorPli
 - (NSString *)dbPath        { return SGDBPath(); }
 
 - (NSDictionary *)mainPrefs { return [NSDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()] ?: @{}; }
-- (NSDictionary *)publicState {
-    NSDictionary *state =
-        [NSDictionary dictionaryWithContentsOfFile:SGPublicStatePath()];
-    return ([[state objectForKey:@"formatVersion"] integerValue] == 1)
-        ? state : @{};
-}
 - (BOOL)isEnabled { return [[[self mainPrefs] objectForKey:@"enabled"] boolValue]; }
 
 - (NSDictionary *)appStatus { return [[self mainPrefs] objectForKey:@"appStatus"] ?: @{}; }
 
-/* Preference-bundle appStatus changes now go through the daemon
- * (ENABLE/DISABLE/DELETE_APP), so this process only reads appStatus and drives
- * user changes through SNChannelGateway. SpringBoard records registration and
- * uninstall intent in the durable inbox, touching this plist only if that
- * write-ahead path itself fails. */
 
 - (NSString *)serverAddressInput {
     return [[self mainPrefs] objectForKey:@"notificationServerAddress"];
@@ -169,36 +157,6 @@ static inline NSString * SGIndicatorPrefsPath() { return SGPath(kSGNIndicatorPli
     if (![ind writeToFile:path atomically:YES]) return NO;
     notify_post(kSGNIndicatorNote);
     return YES;
-}
-
-- (void)clearDNSCache {
-    sqlite3 *db = NULL;
-    if (sqlite3_open([SGDBPath() UTF8String], &db) == SQLITE_OK) {
-        sqlite3_stmt *stmt = NULL;
-        if (sqlite3_prepare_v2(db,
-                "DELETE FROM dns_cache WHERE profile_id = ?",
-                -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, (sqlite3_int64)SGActiveProfileIndex());
-            sqlite3_step(stmt);
-        }
-        if (stmt) sqlite3_finalize(stmt);
-        sqlite3_close(db);
-    }
-}
-
-- (void)clearAllTokens {
-    sqlite3 *db = NULL;
-    if (sqlite3_open([SGDBPath() UTF8String], &db) == SQLITE_OK) {
-        sqlite3_stmt *stmt = NULL;
-        if (sqlite3_prepare_v2(db,
-                "DELETE FROM notifications WHERE profile_id = ?",
-                -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, (sqlite3_int64)SGActiveProfileIndex());
-            sqlite3_step(stmt);
-        }
-        if (stmt) sqlite3_finalize(stmt);
-        sqlite3_close(db);
-    }
 }
 
 - (NSDictionary *)profile { return [NSDictionary dictionaryWithContentsOfFile:SGProfilePath()] ?: @{}; }
@@ -248,20 +206,9 @@ static sqlite3 *openDBReadOnly(void) {
 }
 
 - (NSSet *)registeredBundleIDs {
-    NSArray *snapshotIDs = [[self publicState] objectForKey:@"registeredBundleIDs"];
-    if ([snapshotIDs isKindOfClass:[NSArray class]]) {
-        NSMutableSet *safeIDs = [NSMutableSet set];
-        for (id bundleID in snapshotIDs) {
-            if ([bundleID isKindOfClass:[NSString class]]) {
-                [safeIDs addObject:bundleID];
-            }
-        }
-        return safeIDs;
-    }
-
-    /* Compatibility/recovery fallback for an installation that has not yet
-     * emitted its first public snapshot. This is read-only; debug tooling
-     * intentionally retains its existing direct database inspection paths. */
+    /* Read the registration set directly from the DB (read-only open). SQLite
+     * handles the concurrent daemon writer, so this needs no daemon round-trip
+     * — it is the same query the daemon would run. */
     sqlite3 *db = openDBReadOnly();
     if (!db) return [NSSet set];
     NSMutableSet *ids = [NSMutableSet set];
@@ -281,17 +228,12 @@ static sqlite3 *openDBReadOnly(void) {
 }
 
 - (NSInteger)registeredTokenCount {
-    NSArray *snapshotIDs = [[self publicState] objectForKey:@"registeredBundleIDs"];
-    if ([snapshotIDs isKindOfClass:[NSArray class]]) {
-        return (NSInteger)[snapshotIDs count];
-    }
-
     sqlite3 *db = openDBReadOnly();
     if (!db) return 0;
     NSInteger count = 0;
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db,
-            "SELECT count(*) FROM notifications WHERE profile_id = ?",
+            "SELECT count(DISTINCT bundle_id) FROM notifications WHERE profile_id = ?",
             -1, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(stmt, 1, (sqlite3_int64)SGActiveProfileIndex());
         if (sqlite3_step(stmt) == SQLITE_ROW) count = sqlite3_column_int(stmt, 0);
@@ -575,16 +517,13 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
         case SGStateResolvingDNS:      return @"Resolving DNS…";
         case SGStateBackingOff:        return @"Reconnecting…";
         case SGStateIdleNoNetwork:     return @"No Network";
-        case SGStateIdleDNSFailed:     return @"DNS Failed";
         case SGStateIdleCircuitOpen:   return @"Paused (Too Many Errors)";
         case SGStateIdleUnregistered:  return @"Waiting for Config";
         case SGStateDisabled:          return @"Disabled";
         case SGStateErrorAuth:         return @"Auth Error";
         case SGStateErrorBadConfig:    return @"Bad Config";
         case SGStateErrorVersionMismatch: return @"Update Required";
-        case SGStateError:             return @"Error";
         case SGStateStarting:          return @"Starting…";
-        case SGStateShuttingDown:      return @"Shutting Down";
         case SGStateRegistering:       return @"Registering…";
         default:                       return @"Unknown";
     }
@@ -594,8 +533,8 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
     switch (state) {
         case SGStateConnected: return [UIColor colorWithRed:0.2 green:0.7 blue:0.2 alpha:1.0];
         case SGStateConnecting: case SGStateAuthenticating: case SGStateResolvingDNS: case SGStateBackingOff: case SGStateRegistering: return [UIColor orangeColor];
-        case SGStateIdleNoNetwork: case SGStateIdleCircuitOpen: case SGStateIdleDNSFailed: return [UIColor colorWithRed:0.9 green:0.6 blue:0.1 alpha:1.0];
-        case SGStateErrorAuth: case SGStateErrorBadConfig: case SGStateErrorVersionMismatch: case SGStateError: return [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:1.0];
+        case SGStateIdleNoNetwork: case SGStateIdleCircuitOpen: return [UIColor colorWithRed:0.9 green:0.6 blue:0.1 alpha:1.0];
+        case SGStateErrorAuth: case SGStateErrorBadConfig: case SGStateErrorVersionMismatch: return [UIColor colorWithRed:0.85 green:0.2 blue:0.2 alpha:1.0];
         default: return [UIColor grayColor];
     }
 }
@@ -603,17 +542,13 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
 - (NSString *)recoverySuggestionForState:(SGState)state {
     switch (state) {
         case SGStateErrorAuth:
-            return @"Try re-importing your server certificate.";
+            return @"The server rejected this device's credentials. Re-register the profile to recover.";
         case SGStateErrorBadConfig:
             return @"Check your server address and certificate in profile settings.";
         case SGStateErrorVersionMismatch:
             return @"The server rejected this client because SGN is out of date.";
-        case SGStateIdleDNSFailed:
-            return @"Check your server address or DNS settings.";
         case SGStateIdleCircuitOpen:
             return @"The daemon will retry on network change, or restart it manually.";
-        case SGStateError:
-            return @"Try restarting the daemon from Debug Tools.";
         case SGStateIdleNoNetwork:
             return @"Check your Wi-Fi or cellular connection.";
         default:

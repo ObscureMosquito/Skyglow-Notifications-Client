@@ -6,15 +6,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-NSString * const SGDurableEventFormatVersionKey    = @"formatVersion";
-NSString * const SGDurableEventIdentifierKey       = @"eventID";
-NSString * const SGDurableEventTypeKey             = @"type";
+NSString * const SGDurableEventFormatVersionKey = @"formatVersion";
+NSString * const SGDurableEventIdentifierKey = @"eventID";
+NSString * const SGDurableEventTypeKey = @"type";
 NSString * const SGDurableEventBundleIdentifierKey = @"bundleID";
-NSString * const SGDurableEventEnabledKey          = @"enabled";
-NSString * const SGDurableEventCreatedAtKey        = @"createdAt";
-NSString * const SGDurableEventFilePathKey          = @"_eventFilePath";
-
-NSString * const SGDurableEventSetAppEnabled = @"set_app_enabled";
+NSString * const SGDurableEventCreatedAtKey = @"createdAt";
+NSString * const SGDurableEventFilePathKey = @"_eventFilePath";
 NSString * const SGDurableEventDeleteApp = @"delete_app";
 
 static NSString * const SGStorageErrorDomain = @"com.skyglow.storage";
@@ -131,11 +128,10 @@ BOOL SGAtomicWritePropertyList(id propertyList,
     return YES;
 }
 
-NSString *SGDurableEventEnqueue(NSString *inboxPath,
-                                NSString *type,
-                                NSString *bundleIdentifier,
-                                NSNumber *enabledOrNil,
-                                NSError **outError) {
+static NSString *SGDurableEventEnqueueWithType(NSString *inboxPath,
+                                               NSString *type,
+                                               NSString *bundleIdentifier,
+                                               NSError **outError) {
     if ([inboxPath length] == 0 || [type length] == 0 ||
         [bundleIdentifier length] == 0) {
         SGStorageSetError(outError, 5, EINVAL);
@@ -165,12 +161,16 @@ NSString *SGDurableEventEnqueue(NSString *inboxPath,
               forKey:SGDurableEventBundleIdentifierKey];
     [event setObject:[NSNumber numberWithDouble:unixTime]
               forKey:SGDurableEventCreatedAtKey];
-    if (enabledOrNil) {
-        [event setObject:enabledOrNil forKey:SGDurableEventEnabledKey];
-    }
 
     if (!SGAtomicWritePropertyList(event, eventPath, 0600, outError)) return nil;
     return eventPath;
+}
+
+NSString *SGDurableEventEnqueueDeleteApp(NSString *inboxPath,
+                                         NSString *bundleIdentifier,
+                                         NSError **outError) {
+    return SGDurableEventEnqueueWithType(inboxPath, SGDurableEventDeleteApp,
+                                         bundleIdentifier, outError);
 }
 
 NSArray *SGDurableEventPendingEvents(NSString *inboxPath) {

@@ -19,7 +19,6 @@ typedef enum {
     SectionStats,
     SectionLogs,
     SectionDaemon,
-    SectionMaintenance,
     SectionCount
 } DebugSection;
 
@@ -113,7 +112,6 @@ typedef enum {
         case SectionStats:       return 2;
         case SectionLogs:        return 1;
         case SectionDaemon:      return 1;
-        case SectionMaintenance: return 2;
         default: return 0;
     }
 }
@@ -125,7 +123,6 @@ typedef enum {
         case SectionStats:       return @"Database Statistics";
         case SectionLogs:        return @"Logs";
         case SectionDaemon:      return @"Daemon";
-        case SectionMaintenance: return @"Maintenance";
         default: return nil;
     }
 }
@@ -262,15 +259,6 @@ typedef enum {
         cell.textLabel.text = @"Restart Daemon";
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
         cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
-    } else if (indexPath.section == SectionMaintenance) {
-        cell.textLabel.textAlignment = NSTextAlignmentCenter;
-        if (indexPath.row == 0) {
-            cell.textLabel.text = @"Clear DNS Cache";
-            cell.textLabel.textColor = [UIColor redColor];
-        } else {
-            cell.textLabel.text = @"Clear All Tokens";
-            cell.textLabel.textColor = [UIColor redColor];
-        }
     }
     return cell;
 }
@@ -328,17 +316,6 @@ typedef enum {
     } else if (indexPath.section == SectionDaemon) {
         [self reloadDaemon];
         [self showAlert:@"Done" message:@"Daemon restarted."];
-        
-    } else if (indexPath.section == SectionMaintenance) {
-        if (indexPath.row == 0) {
-            [[SNDataManager shared] clearDNSCache];
-            [self showAlert:@"Done" message:@"DNS cache cleared."];
-        } else {
-            [[SNDataManager shared] clearAllTokens];
-            [self loadStats];
-            [self.tableView reloadData];
-            [self showAlert:@"Done" message:@"All tokens cleared."];
-        }
     }
 }
 

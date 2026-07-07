@@ -13,7 +13,6 @@
 
 /** Main Preferences */
 - (NSDictionary *)mainPrefs;
-- (NSDictionary *)publicState;
 - (BOOL)isEnabled;
 - (NSDictionary *)appStatus;
 - (NSString *)serverAddressInput;
@@ -44,14 +43,13 @@
  *  load by SGCMSG_QUERY_STATUS.  Observe SNDaemonStatusUpdated to react. */
 @property (nonatomic, assign) SGStatusPayload latestPayload;
 
-/** SQLite */
+/** SQLite read model.  These are read-only UI/diagnostic projections; DB
+ * mutations stay in the daemon through SGDatabaseManager/SGStateStore. */
 - (NSArray *)allRegisteredTokens;
 - (NSSet *)registeredBundleIDs;
 - (NSInteger)registeredTokenCount;
 - (unsigned long long)dbFileSize;
 - (NSDictionary *)cachedDNSForServerAddress:(NSString *)serverAddr;
-- (void)clearDNSCache;
-- (void)clearAllTokens;
 
 /** Certificate Parsing */
 - (NSDictionary *)parseCertificatePEM:(NSString *)pem;

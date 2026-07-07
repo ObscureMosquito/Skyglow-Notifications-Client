@@ -8,25 +8,21 @@
 extern "C" {
 #endif
 
-/** SGState Enum */
 typedef enum : uint32_t {
-    SGStateStarting            = 0,
-    SGStateDisabled            = 1,
-    SGStateIdleUnregistered    = 2,
-    SGStateResolvingDNS        = 3,
-    SGStateIdleDNSFailed       = 4,
-    SGStateConnecting          = 5,
-    SGStateAuthenticating      = 6,
-    SGStateConnected           = 7,
-    SGStateBackingOff          = 8,
-    SGStateIdleNoNetwork       = 9,
-    SGStateIdleCircuitOpen     = 10,
-    SGStateErrorAuth           = 11,
-    SGStateErrorBadConfig      = 12,
-    SGStateError               = 13,
-    SGStateShuttingDown        = 14,
-    SGStateRegistering         = 15,
-    SGStateErrorVersionMismatch = 16
+    SGStateStarting             = 0,
+    SGStateDisabled             = 1,
+    SGStateIdleUnregistered     = 2,
+    SGStateResolvingDNS         = 3,
+    SGStateConnecting           = 4,
+    SGStateAuthenticating       = 5,
+    SGStateConnected            = 6,
+    SGStateBackingOff           = 7,
+    SGStateIdleNoNetwork        = 8,
+    SGStateIdleCircuitOpen      = 9,
+    SGStateErrorAuth            = 10,
+    SGStateErrorBadConfig       = 11,
+    SGStateRegistering          = 12,
+    SGStateErrorVersionMismatch = 13
 } SGState;
 
 /**

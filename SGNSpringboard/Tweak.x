@@ -106,23 +106,8 @@ static id SBApp_LookupByIdentifier(NSString *bundleId) {
     return app;
 }
 
-static NSMutableDictionary *SGN_OwnedPlistAt(NSString *path) {
-    NSMutableDictionary *d = [[NSMutableDictionary alloc] initWithContentsOfFile:path];
-    return d ?: [[NSMutableDictionary alloc] init];
-}
-
-static NSMutableDictionary *SGN_OwnedMutableDictForKey(NSDictionary *src, NSString *key) {
-    NSDictionary *inner = [src objectForKey:key];
-    return inner ? [inner mutableCopy] : [[NSMutableDictionary alloc] init];
-}
-
-static NSMutableArray *SGN_OwnedMutableArrayForKey(NSDictionary *src, NSString *key) {
-    NSArray *inner = [src objectForKey:key];
-    return inner ? [inner mutableCopy] : [[NSMutableArray alloc] init];
-}
-
-/* SpringBoard must honor a provider choice immediately, even if the daemon is
- * temporarily unavailable and the durable inbox has not been drained yet.
+/* SpringBoard must honor a provider choice immediately, even if live daemon IPC
+ * has not reached the daemon-owned plist yet.
  * NSNull means "Apple/no Skyglow intent"; any NSNumber means Skyglow owns the
  * registration. The overlay disappears lazily once the daemon-owned plist
  * reflects the same intent. */
@@ -172,74 +157,19 @@ static id SGNEffectiveAppIntent(NSString *bundleId) {
     return [runtime autorelease];
 }
 
-static void SGNApplyLegacyIntentFallback(NSString *type,
-                                         NSString *bundleId,
-                                         NSNumber *enabled) {
-    if (!bundleId.length) return;
-    NSMutableDictionary *prefs = SGN_OwnedPlistAt(kPrefsPlistPath);
-
-    NSMutableDictionary *appStatus = SGN_OwnedMutableDictForKey(prefs, @"appStatus");
-    if ([type isEqualToString:SGDurableEventSetAppEnabled] && enabled) {
-        [appStatus setObject:enabled forKey:bundleId];
-    } else {
-        [appStatus removeObjectForKey:bundleId];
-    }
-    [prefs setObject:appStatus forKey:@"appStatus"];
-    [appStatus release];
-
-    if ([type isEqualToString:SGDurableEventDeleteApp]) {
-        NSMutableArray *pending =
-            SGN_OwnedMutableArrayForKey(prefs, @"pendingDeletions");
-        if (![pending containsObject:bundleId]) {
-            [pending addObject:bundleId];
-        }
-        [prefs setObject:pending forKey:@"pendingDeletions"];
-        [pending release];
-    }
-
-    NSError *writeError = nil;
-    if (!SGAtomicWritePropertyList(prefs, kPrefsPlistPath, 0644, &writeError)) {
-        NSLog(@"[SGN] Last-resort intent fallback failed for %@: %@",
-              bundleId, writeError);
-    }
-    [prefs release];
-}
-
 #pragma mark - Daemon Communication (SGControlChannel client)
 
-static void SGNSendDurableBundleCommand(SGControlMessageType messageType,
-                                        NSString *eventType,
-                                        NSString *bundleId,
-                                        NSNumber *enabled) {
+static void SGNSendBundleCommand(SGControlMessageType messageType,
+                                 NSString *bundleId,
+                                 NSString *inboxEventPathToRemove) {
     if (!bundleId.length) return;
-    if ([eventType isEqualToString:SGDurableEventDeleteApp]) {
-        SGNSetRuntimeAppIntent(bundleId, NO);
-    }
-
-    NSString *eventPath = nil;
-    if (eventType) {
-        NSError *enqueueError = nil;
-        eventPath = SGDurableEventEnqueue(
-            SGNPath(SG_DURABLE_EVENT_INBOX_PATH),
-            eventType, bundleId, enabled, &enqueueError);
-        if (!eventPath) {
-            /* The inbox is the normal write-ahead path. Retain the old shared
-             * plist mutation as a last-resort fallback so a storage/permissions
-             * regression cannot silently discard registration or uninstall
-             * intent. The daemon clears this legacy marker after applying it. */
-            NSLog(@"[SGN] Durable intent enqueue failed for %@: %@; using legacy fallback",
-                  bundleId, enqueueError);
-            SGNApplyLegacyIntentFallback(eventType, bundleId, enabled);
-        }
-    }
-
     if (!gSGCDaemonClient) return;
 
     SGCBundleIdPayload payload;
     memset(&payload, 0, sizeof(payload));
     SGNCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
 
-    NSString *eventPathCopy = [eventPath copy];
+    NSString *eventPathCopy = [inboxEventPathToRemove copy];
     [gSGCDaemonClient sendRequest:messageType
                           payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
                           timeout:SG_CONTROL_DELETE_APP_TIMEOUT_SEC
@@ -249,12 +179,31 @@ static void SGNSendDurableBundleCommand(SGControlMessageType messageType,
             NSDictionary *event = [NSDictionary dictionaryWithObject:eventPathCopy
                 forKey:SGDurableEventFilePathKey];
             if (!SGDurableEventRemove(event)) {
-                NSLog(@"[SGN] Applied intent but could not remove inbox event %@",
+                NSLog(@"[SGN] Applied uninstall but could not remove inbox event %@",
                       [eventPathCopy lastPathComponent]);
             }
         }
         [eventPathCopy release];
     }];
+}
+
+static void SGNSendDeleteAppCommand(NSString *bundleId) {
+    if (!bundleId.length) return;
+    SGNSetRuntimeAppIntent(bundleId, NO);
+
+    NSError *enqueueError = nil;
+    NSString *eventPath = SGDurableEventEnqueueDeleteApp(
+        SGNPath(SG_DURABLE_EVENT_INBOX_PATH),
+        bundleId, &enqueueError);
+    if (!eventPath) {
+        /* The daemon owns persistent app state.  If the missed-uninstall inbox
+         * cannot be recorded, still try live IPC, but do not mutate the daemon
+         * prefs plist from SpringBoard. */
+        NSLog(@"[SGN] Durable uninstall enqueue failed for %@: %@; continuing with live IPC only",
+              bundleId, enqueueError);
+    }
+
+    SGNSendBundleCommand(SGCMSG_DELETE_APP, bundleId, eventPath);
 }
 
 static NSSet *SGNMissingPersistedApplications(void) {
@@ -307,9 +256,7 @@ static void SGNScheduleInstalledApplicationReconciliation(void) {
                 for (NSString *bundleId in firstPass) {
                     if (![secondPass containsObject:bundleId]) continue;
                     NSLog(@"[SGN] Recovering missed uninstall for %@", bundleId);
-                    SGNSendDurableBundleCommand(SGCMSG_DELETE_APP,
-                                                SGDurableEventDeleteApp,
-                                                bundleId, nil);
+                    SGNSendDeleteAppCommand(bundleId);
                 }
             }
             [firstPass release];
@@ -688,9 +635,7 @@ static void StartDaemonControlChannelClient(void) {
         @catch (NSException *e) { bundleId = nil; }
     }
     if (bundleId.length) {
-        SGNSendDurableBundleCommand(SGCMSG_DELETE_APP,
-                                    SGDurableEventDeleteApp,
-                                    bundleId, nil);
+        SGNSendDeleteAppCommand(bundleId);
     }
     %orig;
 }
@@ -705,9 +650,7 @@ static void StartDaemonControlChannelClient(void) {
         bundleId = [application performSelector:@selector(bundleIdentifier)];
     }
     if (bundleId.length) {
-        SGNSendDurableBundleCommand(SGCMSG_DELETE_APP,
-                                    SGDurableEventDeleteApp,
-                                    bundleId, nil);
+        SGNSendDeleteAppCommand(bundleId);
     }
     %orig;
 }
@@ -924,9 +867,9 @@ static BOOL sPassThrough      = NO;
 
     if (buttonIndex == 1) {
         SGNSetRuntimeAppIntent(sPendingBundleId, YES);
-        SGNSendDurableBundleCommand(SGCMSG_ENABLE_APP,
-                                    SGDurableEventSetAppEnabled,
-                                    sPendingBundleId, @YES);
+        SGNSendBundleCommand(SGCMSG_ENABLE_APP,
+                             sPendingBundleId,
+                             nil);
 
         if (sPendingIsModern) {
             SGN_AsyncFetchAndDeliverToken(sPendingBundleId, nil, nil, 0);
@@ -936,9 +879,9 @@ static BOOL sPassThrough      = NO;
         }
     } else {
         SGNSetRuntimeAppIntent(sPendingBundleId, NO);
-        SGNSendDurableBundleCommand(SGCMSG_CLEAR_APP_INTENT,
-                                    nil,
-                                    sPendingBundleId, nil);
+        SGNSendBundleCommand(SGCMSG_CLEAR_APP_INTENT,
+                             sPendingBundleId,
+                             nil);
 
         if (sPendingIsModern) {
             sPassThrough = YES;

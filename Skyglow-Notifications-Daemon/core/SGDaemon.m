@@ -39,8 +39,8 @@ typedef struct { SGState from; SGState to; } SGTransition;
  * watchdog tracks the work it guards rather than being a guessed number:
  *   - single network op (DNS lookup, TCP+TLS connect): one op + scheduling slack
  *   - handshake (auth, register): two network legs (challenge then response)
- * BackingOff / IdleDNSFailed are deliberately absent: their delay is the
- * dynamic computed backoff, armed in the entry action, not a fixed deadline. */
+ * BackingOff is deliberately absent: its delay is the dynamic computed
+ * backoff, armed in the entry action, not a fixed deadline. */
 typedef struct { SGState state; SGEvent onTimeout; uint32_t seconds; } SGStateDeadline;
 
 static const SGStateDeadline kSGStateDeadlines[] = {
@@ -76,9 +76,7 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateStarting,          SGStateDisabled            },
     { SGStateStarting,          SGStateIdleUnregistered    },
     { SGStateStarting,          SGStateResolvingDNS        },
-    { SGStateStarting,          SGStateIdleDNSFailed       },
     { SGStateStarting,          SGStateIdleNoNetwork       },
-    { SGStateStarting,          SGStateError               },
     { SGStateStarting,          SGStateErrorBadConfig      },
 
     { SGStateResolvingDNS,      SGStateResolvingDNS        },
@@ -89,11 +87,6 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateResolvingDNS,      SGStateIdleUnregistered    },
     { SGStateResolvingDNS,      SGStateIdleNoNetwork       },
     { SGStateResolvingDNS,      SGStateDisabled            },
-
-    { SGStateIdleDNSFailed,     SGStateResolvingDNS        },
-    { SGStateIdleDNSFailed,     SGStateIdleUnregistered    },
-    { SGStateIdleDNSFailed,     SGStateDisabled            },
-    { SGStateIdleDNSFailed,     SGStateIdleNoNetwork       },
 
     { SGStateIdleNoNetwork,     SGStateConnecting          },
     { SGStateIdleNoNetwork,     SGStateIdleUnregistered    },
@@ -112,29 +105,34 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateConnecting,        SGStateIdleCircuitOpen     },
     { SGStateConnecting,        SGStateErrorBadConfig      },
 
-    { SGStateRegistering,       SGStateAuthenticating      }, 
-    { SGStateRegistering,       SGStateBackingOff          }, 
-    { SGStateRegistering,       SGStateError               }, 
+    { SGStateRegistering,       SGStateAuthenticating      },
+    { SGStateRegistering,       SGStateBackingOff          },
+    { SGStateRegistering,       SGStateIdleCircuitOpen     },
     { SGStateRegistering,       SGStateIdleNoNetwork       },
     { SGStateRegistering,       SGStateIdleUnregistered    },
     { SGStateRegistering,       SGStateDisabled            },
+    { SGStateRegistering,       SGStateErrorVersionMismatch },
 
     { SGStateAuthenticating,    SGStateResolvingDNS        },
     { SGStateAuthenticating,    SGStateRegistering         },
     { SGStateAuthenticating,    SGStateConnected           },
     { SGStateAuthenticating,    SGStateBackingOff          },
+    { SGStateAuthenticating,    SGStateIdleCircuitOpen     },  /* breaker can trip mid-auth; see executeFailureBackoff */
     { SGStateAuthenticating,    SGStateErrorAuth           },
     { SGStateAuthenticating,    SGStateDisabled            },
     { SGStateAuthenticating,    SGStateIdleNoNetwork       },
     { SGStateAuthenticating,    SGStateIdleUnregistered    },
     { SGStateAuthenticating,    SGStateErrorBadConfig      },
+    { SGStateAuthenticating,    SGStateErrorVersionMismatch },
 
-    { SGStateConnected,         SGStateConnecting          }, 
+    { SGStateConnected,         SGStateConnecting          },
     { SGStateConnected,         SGStateBackingOff          },
+    { SGStateConnected,         SGStateIdleCircuitOpen     },
     { SGStateConnected,         SGStateIdleNoNetwork       },
     { SGStateConnected,         SGStateIdleUnregistered    },
     { SGStateConnected,         SGStateDisabled            },
     { SGStateConnected,         SGStateResolvingDNS        },
+    { SGStateConnected,         SGStateErrorVersionMismatch },
 
     { SGStateBackingOff,        SGStateConnecting          },
     { SGStateBackingOff,        SGStateResolvingDNS        },
@@ -156,16 +154,10 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateErrorBadConfig,    SGStateDisabled            },
     { SGStateErrorBadConfig,    SGStateIdleUnregistered    },
     { SGStateErrorBadConfig,    SGStateResolvingDNS        },
-    { SGStateAuthenticating,    SGStateErrorVersionMismatch },
-    { SGStateRegistering,       SGStateErrorVersionMismatch },
-    { SGStateConnected,         SGStateErrorVersionMismatch },
+
     { SGStateErrorVersionMismatch, SGStateDisabled          },
     { SGStateErrorVersionMismatch, SGStateIdleUnregistered  },
     { SGStateErrorVersionMismatch, SGStateResolvingDNS      },
-
-    { SGStateError,             SGStateDisabled            },
-    { SGStateError,             SGStateIdleUnregistered    },
-    { SGStateError,             SGStateResolvingDNS        },
 
     { SGStateDisabled,          SGStateResolvingDNS        },
     { SGStateDisabled,          SGStateIdleUnregistered    },
@@ -175,7 +167,6 @@ static const SGTransition kLegalTransitions[] = {
 static const size_t kLegalTransitionCount = sizeof(kLegalTransitions) / sizeof(kLegalTransitions[0]);
 
 static BOOL isLegalTransition(SGState from, SGState to) {
-    if (to == SGStateShuttingDown) return YES;
     if (from == SGStateStarting) return YES;
     for (size_t i = 0; i < kLegalTransitionCount; i++) {
         if (kLegalTransitions[i].from == from && kLegalTransitions[i].to == to) return YES;
@@ -299,9 +290,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     if ([[SGConfiguration sharedConfiguration] isEnabled]) {
         [self _enterActiveMode];
     } else {
-        /* Disabled stops network activity, not storage maintenance. In
-         * particular, a legacy pendingDeletions fallback from SpringBoard
-         * still has to be consumed after a disabled daemon restarts. */
+        /* Disabled stops network activity, not storage reconciliation. */
         [self reconcileTokensWithPlist];
     }
 
@@ -423,28 +412,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     NSDictionary *appStatus = [prefs objectForKey:@"appStatus"] ?: @{};
     SGDatabaseManager *db = [SGDatabaseManager sharedManager];
 
-    NSArray *pending = [prefs objectForKey:@"pendingDeletions"] ?: @[];
-    if ([pending count] > 0) {
-        NSMutableArray *completed = [NSMutableArray array];
-        for (NSString *bundleID in pending) {
-            if ([_stateStore runDeletionCascadeForBundleIdentifier:bundleID]) {
-                [completed addObject:bundleID];
-                SGLOGI(SGDaemon,
-                       "code=%s bundle=%s action=recover_pending_deletion",
-                       SGND_DAEMON_PENDING_DELETION_RECOVERED,
-                       [bundleID UTF8String]);
-            } else {
-                SGLOGE(SGDaemon,
-                       "code=%s bundle=%s action=retain_pending_deletion",
-                       SGND_DAEMON_PENDING_DELETION_FAILED,
-                       [bundleID UTF8String]);
-            }
-        }
-        if ([completed count] > 0) {
-            [_stateStore clearPendingDeletionsForBundleIdentifiers:completed];
-        }
-    }
-
     NSMutableSet *plistYes = [NSMutableSet set];
     NSMutableSet *plistNo  = [NSMutableSet set];
     for (NSString *bundleID in appStatus) {
@@ -466,7 +433,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     }
 
     NSString *serverAddr = [[SGConfiguration sharedConfiguration] serverAddress];
-    BOOL mutated = ([pending count] > 0);
+    BOOL mutated = NO;
     if (serverAddr && [serverAddr length] > 0) {
         SGTokenManager *tokenMgr = [[SGTokenManager alloc] init];
         NSMutableSet *allOptedIn = [NSMutableSet setWithSet:plistYes];
@@ -499,7 +466,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     }
     if (mutated) {
         SGP_FlushActiveTopicFilter();
-        [_stateStore schedulePublicStateSnapshot];
     }
 }
 
@@ -524,7 +490,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     if (event == SGEventNetworkDown) {
         if (currentState != SGStateDisabled &&
             currentState != SGStateErrorBadConfig &&
-            currentState != SGStateErrorVersionMismatch) {
+            currentState != SGStateErrorVersionMismatch &&
+            currentState != SGStateErrorAuth) {
             strlcpy(_lastErrorDetail, "No network connection available", sizeof(_lastErrorDetail));
             [self executeTransitionToState:SGStateIdleNoNetwork backoff:0 ip:NULL];
         }
@@ -594,7 +561,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             }
             break;
 
-        case SGStateIdleDNSFailed:
         case SGStateBackingOff:
             if (event == SGEventConfigReloaded) {
                 _consecutiveFailures = 0;
@@ -647,9 +613,15 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 _lastErrorDetail[0] = '\0';
                 [self executeTransitionToState:SGStateConnected backoff:0 ip:NULL];
             } else if (event == SGEventAuthFailed) {
-                strlcpy(_lastErrorDetail, "Server rejected authentication \xe2\x80\x94 key may be revoked", sizeof(_lastErrorDetail));
-                [self performProfileWipeInline];
-                [self executeFailureBackoff];
+                /* Hard stop: the server rejected our credentials, so retrying
+                 * cannot help.  We deliberately do NOT wipe the identity here —
+                 * a transient or buggy AUTH_FAIL must never destroy a
+                 * device_address whose tokens are already distributed to apps
+                 * (re-registering would assign a new address and silently kill
+                 * every outstanding token).  Recovery is a manual config change
+                 * (re-enable / reload / re-register), like any other hard error. */
+                strlcpy(_lastErrorDetail, "Server rejected authentication \xe2\x80\x94 credentials may be revoked; re-register to recover", sizeof(_lastErrorDetail));
+                [self executeTransitionToState:SGStateErrorAuth backoff:0 ip:NULL];
             } else if (event == SGEventAuthTimeout) {
                 strlcpy(_lastErrorDetail, "Authentication timed out (30s)", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
@@ -730,7 +702,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     uint32_t activeProfile = [config hasProfile] ? (uint32_t)[config activeProfileIndex] : 0;
     SGStatusServer_Post(newState, (uint32_t)_consecutiveFailures, backoff,
                         resolvedIP, _lastErrorDetail, activeProfile);
-    [_stateStore schedulePublicStateSnapshot];
     SGLOGD(SGDaemon, "code=%s to=%s generation=%u", SGND_FSM_TRANSITION, SGState_GetName(newState), capturedGen);
 
     if (_controlChannel) {
@@ -791,7 +762,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 [self _scheduleKeepAliveTimer];
                 break;
             case SGStateBackingOff:
-            case SGStateIdleDNSFailed:
                 SGP_AbortConnection();
                 [self scheduleTimerForEvent:SGEventBackoffTimerFired delay:backoff generation:capturedGen];
                 break;
@@ -815,8 +785,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     });
 
     /* Arm this state's watchdog from the unified deadline table.  States with a
-     * dynamic delay (BackingOff / IdleDNSFailed) arm their own timer in the
-     * entry action above and are intentionally not in the table. */
+     * dynamic delay (BackingOff) arms its own timer in the entry action above
+     * and is intentionally not in the table. */
     [self armWatchdogForState:newState generation:capturedGen];
 }
 
@@ -1187,7 +1157,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     [self reconcileTokensWithPlist];
     [self handleEvent:SGEventConfigReloaded payload:nil];
     [_stateStore drainDurableEventInbox];
-    [_stateStore schedulePublicStateSnapshot];
 }
 
 - (void)handleSystemWake {
@@ -1254,7 +1223,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     /* Same reload path RELOAD_CONFIG uses: re-read config and drive the FSM so
      * the enable/disable takes effect immediately (connect or tear down). */
     [self handleConfigurationReloadRequest];
-    [_stateStore schedulePublicStateSnapshot];
     return YES;
 }
 
@@ -1364,7 +1332,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     }
 
     [_stateStore drainDurableEventInbox];
-    [_stateStore schedulePublicStateSnapshot];
     return YES;
 }
 
@@ -1410,8 +1377,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
          * gone (no valid config). */
         [self handleEvent:SGEventConfigReloaded payload:nil];
     }
-
-    [_stateStore schedulePublicStateSnapshot];
     return YES;
 }
 
@@ -1439,8 +1404,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     [self handleEvent:SGEventConfigReloaded payload:nil];
     [self _kickLocalDeliveryDrain];
     [_stateStore drainDurableEventInbox];
-    [_stateStore schedulePublicStateSnapshot];
-
     return YES;
 }
 

@@ -12,8 +12,8 @@
 #define SG_PREFS_PLIST_PATH         @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist"
 #define SG_PROFILE_PLIST_FORMAT     @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile%ld.plist"
 #define SG_DB_PATH                  @"/var/mobile/Library/SkyglowNotifications/sqlite.db"
+/* Mobile-writable directory for one-file-per-missed-uninstall records. */
 #define SG_DURABLE_EVENT_INBOX_PATH @"/var/mobile/Library/SkyglowNotifications/inbox"
-#define SG_PUBLIC_STATE_PATH        @"/var/mobile/Library/SkyglowNotifications/public-state.plist"
 #define SG_LOG_PATH                 @"/var/log/sgn.log"
 #define SG_PID_PATH                 @"/var/run/skyglow_daemon.pid"
 

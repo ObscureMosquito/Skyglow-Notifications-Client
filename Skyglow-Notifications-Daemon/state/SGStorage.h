@@ -8,11 +8,10 @@ extern NSString * const SGDurableEventFormatVersionKey;
 extern NSString * const SGDurableEventIdentifierKey;
 extern NSString * const SGDurableEventTypeKey;
 extern NSString * const SGDurableEventBundleIdentifierKey;
-extern NSString * const SGDurableEventEnabledKey;
 extern NSString * const SGDurableEventCreatedAtKey;
 extern NSString * const SGDurableEventFilePathKey;
 
-extern NSString * const SGDurableEventSetAppEnabled;
+/** On-disk inbox event type.  Only delete_app is accepted. */
 extern NSString * const SGDurableEventDeleteApp;
 
 /**
@@ -26,16 +25,14 @@ BOOL SGAtomicWritePropertyList(id propertyList,
                                NSError **outError);
 
 /**
- * Persists one immutable event file before its IPC attempt. The returned path
- * identifies the event and may be removed after the daemon acknowledges the
- * corresponding command. Events are generic storage-domain intents and do not
- * contain SpringBoard objects or platform-specific implementation details.
+ * Persists one immutable missed-uninstall event before its IPC attempt. The
+ * returned path identifies the event and may be removed after the daemon
+ * acknowledges SGCMSG_DELETE_APP. The payload intentionally contains only a
+ * platform-neutral bundle identifier.
  */
-NSString *SGDurableEventEnqueue(NSString *inboxPath,
-                                NSString *type,
-                                NSString *bundleIdentifier,
-                                NSNumber *enabledOrNil,
-                                NSError **outError);
+NSString *SGDurableEventEnqueueDeleteApp(NSString *inboxPath,
+                                         NSString *bundleIdentifier,
+                                         NSError **outError);
 
 /** Returns valid or malformed .plist event envelopes in filename order. */
 NSArray *SGDurableEventPendingEvents(NSString *inboxPath);

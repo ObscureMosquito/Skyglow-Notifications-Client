@@ -1,6 +1,22 @@
 #import "SGConfiguration.h"
 #import "SGKeychainStore.h"
 #import "SGLog.h"
+#include <TargetConditionals.h>
+#include <pwd.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static void SGApplyMobileOwnershipIfAvailable(NSString *path) {
+#if !TARGET_OS_OSX
+    struct passwd *mobile = getpwnam("mobile");
+    if (mobile) {
+        (void)chown([path fileSystemRepresentation],
+                    mobile->pw_uid, mobile->pw_gid);
+    }
+#else
+    (void)path;
+#endif
+}
 
 void SGEnsureRuntimeDirectories(void) {
     NSArray *dirs = [NSArray arrayWithObjects:
@@ -15,6 +31,20 @@ void SGEnsureRuntimeDirectories(void) {
                        attributes:nil
                             error:NULL];
     }
+
+    NSString *stateDir = [SGPath(SG_DB_PATH) stringByDeletingLastPathComponent];
+    NSString *inboxDir = SGPath(SG_DURABLE_EVENT_INBOX_PATH);
+    NSDictionary *privateDirAttributes = [NSDictionary dictionaryWithObject:
+        [NSNumber numberWithUnsignedLong:0700]
+        forKey:NSFilePosixPermissions];
+    [fm createDirectoryAtPath:inboxDir
+  withIntermediateDirectories:YES
+                   attributes:privateDirAttributes
+                        error:NULL];
+    chmod([stateDir fileSystemRepresentation], 0700);
+    chmod([inboxDir fileSystemRepresentation], 0700);
+    SGApplyMobileOwnershipIfAvailable(stateDir);
+    SGApplyMobileOwnershipIfAvailable(inboxDir);
 }
 
 /* Scrubs a private-key buffer before releasing it so the PEM never lingers in

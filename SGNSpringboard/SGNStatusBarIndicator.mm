@@ -33,18 +33,15 @@ static NSString *SGNImageNameForState(SGState state) {
         case SGStateBackingOff:
         case SGStateRegistering:
             return @"sgn_connecting";
-        case SGStateIdleDNSFailed:
         case SGStateIdleNoNetwork:
         case SGStateIdleCircuitOpen:
         case SGStateErrorAuth:
         case SGStateErrorBadConfig:
         case SGStateErrorVersionMismatch:
-        case SGStateError:
             return @"sgn_error";
         case SGStateStarting:
         case SGStateDisabled:
         case SGStateIdleUnregistered:
-        case SGStateShuttingDown:
         default:
             return @"sgn_off";
     }
