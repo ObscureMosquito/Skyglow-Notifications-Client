@@ -414,6 +414,7 @@ Servers MUST NOT rely on sending frames out of phase for any side-effect. Sendin
 | 0    | Success — notification delivered |
 | 1    | Decryption failure               |
 | 2    | Deserialization failure          |
+| 3    | Expired — the notification's expiry elapsed before it could be delivered |
 
 Acknowledgements are sent immediately if connected. If the connection is down, they are persisted to SQLite and flushed when the connection is restored.
 
@@ -600,28 +601,35 @@ If `retry_after` is present and non-zero on a soft error, the client should wait
 
 ### 9.3. Reconnection Strategy
 
-Clients implement **exponential backoff**:
+Clients implement **exponential backoff with jitter**, bounded by a circuit breaker:
 
 ```
-backoff = 1 second (initial)
-MAX_BACKOFF = 256 seconds
+initial_delay = 2 seconds
+max_delay     = 600 seconds
+max_jitter    = 5 seconds
+max_failures  = 14            // ~67 min of retrying, then stop
 
+failures = 0
 loop:
     result = connect_and_authenticate()
     if result == success:
-        reset backoff to 1
+        failures = 0
         while handle_message() == success:
             continue
 
     disconnect()
-    if server sent retry_after:
-        sleep(retry_after)
-    else:
-        sleep(backoff)
-        backoff = min(backoff * 2, MAX_BACKOFF)
+    failures += 1
+    if failures >= max_failures:
+        open_circuit()          // stop retrying; wait for an external trigger
+        continue
+
+    delay = min(initial_delay * 2^(failures - 1) + rand(0 .. max_jitter), max_delay)
+    if server sent retry_after and retry_after > delay:
+        delay = retry_after
+    sleep(delay)
 ```
 
-The client also detects **rapid disconnection loops** and disables itself to prevent resource exhaustion.
+After `max_failures` consecutive failed attempts (~67 minutes) the client opens a **circuit breaker**: it stops retrying and waits for an external trigger — a network reachability change, a configuration reload, or a system wake from sleep — before attempting again. This bounds battery drain when the server is unreachable for an extended period.
 
 ### 9.4. S_TIME_SYNC (0x1B) Payload
 

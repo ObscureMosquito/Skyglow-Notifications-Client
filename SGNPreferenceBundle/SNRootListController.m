@@ -172,7 +172,7 @@
     self = [super initWithFrame:CGRectZero];
     if (self) {
         _versionLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-        _versionLabel.text = @"Version 1.0";
+        _versionLabel.text = @"Version 3.0";
         _versionLabel.backgroundColor = [UIColor clearColor];
         _versionLabel.textColor = [UIColor colorWithRed:0.3f green:0.34f blue:0.42f alpha:1.0f];
         _versionLabel.shadowColor = [UIColor whiteColor];

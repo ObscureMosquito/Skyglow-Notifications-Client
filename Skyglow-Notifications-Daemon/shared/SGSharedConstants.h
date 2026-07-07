@@ -4,39 +4,17 @@
 #import <CoreFoundation/CoreFoundation.h>
 
 /**
- * Constants shared across all three SGN modules (daemon, SB tweak, prefs
- * bundle).  Anything that has to match across module boundaries file
- * paths, iOS version branches, IPC timeouts lives here so a change is
- * one edit instead of N.
- *
- * All path strings are relative to the system root.  Callers must wrap
- * them in SGPath() (the rootless-aware path helper) before use; SGPath
- * is defined inline in SGConfiguration.h (daemon) and SNDataManager.m
- * (prefs), both implementations are identical, they prepend /var/jb
- * when the rootless marker exists.
+ * Constants shared across all three SGN modules
  */
 
 #pragma mark - File Paths (system-root relative; wrap with SGPath)
 
-/* User-intent SSOT. The daemon is the normal writer. SpringBoard first
- * records registration/uninstall intents in the durable inbox; it writes
- * this plist only as an emergency fallback if the inbox itself is unavailable.
- * All non-debug consumers are read-only. */
 #define SG_PREFS_PLIST_PATH         @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist"
-
-/* Per-profile server config (server address, certificate path, device
- * address, private key path).  Indexed 1-5; format string takes an
- * NSInteger as %ld. */
 #define SG_PROFILE_PLIST_FORMAT     @"/var/mobile/Library/Preferences/com.skyglow.sndp-profile%ld.plist"
-
-/* Operational SSOT: tokens, e2ee keys, routing keys, mute flags, retry
- * queue.  Owned exclusively by the daemon. */
 #define SG_DB_PATH                  @"/var/mobile/Library/SkyglowNotifications/sqlite.db"
 #define SG_DURABLE_EVENT_INBOX_PATH @"/var/mobile/Library/SkyglowNotifications/inbox"
 #define SG_PUBLIC_STATE_PATH        @"/var/mobile/Library/SkyglowNotifications/public-state.plist"
-
-/* Daemon lifecycle. */
-#define SG_LOG_PATH                 @"/var/log/skyglow.log"
+#define SG_LOG_PATH                 @"/var/log/sgn.log"
 #define SG_PID_PATH                 @"/var/run/skyglow_daemon.pid"
 
 #pragma mark - iOS Version Branches
@@ -49,17 +27,14 @@
  * version check is unambiguous at the call site.
  *
  */
-#define SGN_CF_VERSION_IOS_6_0   700.0    /* push delivery path: SBRemoteNotificationServer connection:didReceiveMessageForTopic: vs didReceiveIncomingMessage: */
-#define SGN_CF_VERSION_IOS_7_0   847.20   
-#define SGN_CF_VERSION_IOS_8_0   1140.0   /* uninstall hook: SBApplicationUninstallationOperation (≤7) vs SBApplicationController.uninstallApplication: (≥8) */
-#define SGN_CF_VERSION_IOS_9_0   1200.0   /* registration: classic SBRemoteNotificationServer (≤8) vs UNNotificationRegistrarConnectionListener (≥9) */
+#define SGN_CF_VERSION_IOS_6_0 700.0    /* push delivery path: SBRemoteNotificationServer connection:didReceiveMessageForTopic: vs didReceiveIncomingMessage: */
+#define SGN_CF_VERSION_IOS_7_0 847.20   
+#define SGN_CF_VERSION_IOS_8_0 1140.0   /* uninstall hook: SBApplicationUninstallationOperation (≤7) vs SBApplicationController.uninstallApplication: (≥8) */
+#define SGN_CF_VERSION_IOS_9_0 1200.0   /* registration: classic SBRemoteNotificationServer (≤8) vs UNNotificationRegistrarConnectionListener (≥9) */
 
-/* Convenience predicates read clearer than raw inequalities at the
- * call site.  Use SGN_IS_PRE_IOS_X when the "classic" code path is what
- * runs below the threshold (matches our hooks' code shape). */
-#define SGN_IS_PRE_IOS_6  (kCFCoreFoundationVersionNumber <  SGN_CF_VERSION_IOS_6_0)
-#define SGN_IS_PRE_IOS_7   (kCFCoreFoundationVersionNumber <  SGN_CF_VERSION_IOS_7_0)
-#define SGN_IS_PRE_IOS_8   (kCFCoreFoundationVersionNumber <  SGN_CF_VERSION_IOS_8_0)
-#define SGN_IS_PRE_IOS_9   (kCFCoreFoundationVersionNumber <  SGN_CF_VERSION_IOS_9_0)
+#define SGN_IS_PRE_IOS_6 (kCFCoreFoundationVersionNumber <  SGN_CF_VERSION_IOS_6_0)
+#define SGN_IS_PRE_IOS_7 (kCFCoreFoundationVersionNumber <  SGN_CF_VERSION_IOS_7_0)
+#define SGN_IS_PRE_IOS_8 (kCFCoreFoundationVersionNumber <  SGN_CF_VERSION_IOS_8_0)
+#define SGN_IS_PRE_IOS_9 (kCFCoreFoundationVersionNumber <  SGN_CF_VERSION_IOS_9_0)
 
 #endif

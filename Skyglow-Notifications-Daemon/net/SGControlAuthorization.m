@@ -2,6 +2,7 @@
 
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,8 +18,6 @@ static const char * const kSGCAllowedSenderPaths[] = {
 
 static const char * const kSGCPhysicalPathPrefixes[] = {
     "/var/jb",
-    "/private/var/db/.stash",
-    "/var/db/.stash",
 };
 
 static BOOL SGCResolveSenderName(pid_t pid, char *out, size_t capacity) {
@@ -115,6 +114,24 @@ static BOOL SGCPathMatchesAllowedPath(const char *senderPath,
     return NO;
 }
 
+static BOOL SGCSenderMatchesResolvedAllowed(const char *senderPath) {
+    enum { kSGCAllowedCount = sizeof(kSGCAllowedSenderPaths) /
+                              sizeof(kSGCAllowedSenderPaths[0]) };
+    static char resolved[kSGCAllowedCount][PATH_MAX];
+    static bool resolvedOK[kSGCAllowedCount];
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        for (size_t i = 0; i < kSGCAllowedCount; i++) {
+            resolvedOK[i] =
+                (realpath(kSGCAllowedSenderPaths[i], resolved[i]) != NULL);
+        }
+    });
+    for (size_t i = 0; i < kSGCAllowedCount; i++) {
+        if (resolvedOK[i] && strcmp(senderPath, resolved[i]) == 0) return YES;
+    }
+    return NO;
+}
+
 bool SGControlSenderIsAuthorized(pid_t pid,
                                  uid_t euid,
                                  char *outName,
@@ -136,6 +153,7 @@ bool SGControlSenderIsAuthorized(pid_t pid,
                 return true;
             }
         }
+        if (SGCSenderMatchesResolvedAllowed(outPath)) return true;
         return false;
     }
 

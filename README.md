@@ -10,14 +10,14 @@ Simple Cydia Tweak that will open a low power TCP socket and constantly listen f
 #### Setting up Skyglow Notifications:
 
 1. Download Skyglow Notifications from Cydia, on thru repo https://cydia.skyglow.es or https://cydia.preloading.dev
-2. Enter settings
-3. Enter into the notification server address the server you would like to use. A list of public servers are available below:
+2. Enter its preference panel
+3. Navigate to "profiles", then add a new profile, and aquire the server certificate in your preferred manner
 
-  > [!TIP]
-  > If you see a "Port" field, you are using an outdated version of Skyglow Notifications. Please update your version of skyglow notifications from Cydia
+> [!TIP]
+> If you see a "Port" field, you are using an outdated version of Skyglow Notifications. Please update your version of skyglow notifications from Cydia
 
-4. Hit the register button, after the process, you can see registration details under "Manage Registration"
-5. Toggle the "Enabled" switch.
+4. Hit the register button, after the process, you can see registration details under each profile
+5. Toggle the "Enabled" switch on the main view.
 6. You are all set up!
 
 #### Per App Settings:
@@ -29,7 +29,7 @@ Sometimes you may encounter an app that still works with apple's built in APNS (
 
 ## Features
 
-The best part of this tweak is it simplicity, it can be easily adapted to work with one or multiple services, allowing users to have notifications in their old iDevices easily, by listening for multiple notification for different apps in the same tweak.
+The best part of this daemon is its usage simplicity, it can be easily adapted to work with one or multiple services, allowing users to have notifications in their old iDevices easily, see documentation for an in depth review.
 
 ## Documentation
 

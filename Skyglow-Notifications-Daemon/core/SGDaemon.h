@@ -52,7 +52,7 @@ typedef NS_ENUM(NSInteger, SGEvent) {
 
 /**
  * Attaches the process-wide control channel.  The daemon uses it to publish
- * STATE_CHANGED and CONFIG_RELOADED events to any subscriber.  Owned and
+ * STATE_CHANGED events to any subscriber.  Owned and
  * lifecycle-managed by the caller (main.m); the daemon only retains a
  * reference for the duration it is attached.  Pass nil to detach.
  */

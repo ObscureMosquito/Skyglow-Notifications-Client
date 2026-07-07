@@ -290,9 +290,6 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
         __unsafe_unretained SGDaemon *daemonSelf = self;
         [client setConnectionHandler:^(BOOL connected) {
             if (!connected) return;
-            if (daemonSelf->_controlChannel) {
-                [daemonSelf->_controlChannel postEvent:SGCEVT_SB_RECEIVER_READY payload:nil];
-            }
             [daemonSelf _kickLocalDeliveryDrain];
         }];
     }
@@ -1191,8 +1188,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     [self handleEvent:SGEventConfigReloaded payload:nil];
     [_stateStore drainDurableEventInbox];
     [_stateStore schedulePublicStateSnapshot];
-
-    if (_controlChannel) [_controlChannel postEvent:SGCEVT_CONFIG_RELOADED payload:nil];
 }
 
 - (void)handleSystemWake {

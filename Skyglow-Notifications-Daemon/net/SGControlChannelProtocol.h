@@ -234,8 +234,6 @@ typedef enum : uint8_t {
  */
 typedef enum : uint16_t {
     SGCEVT_STATE_CHANGED      = 1,  /* SGStatusPayload (full snapshot) */
-    SGCEVT_SB_RECEIVER_READY  = 2,  /* (empty data)             */
-    SGCEVT_CONFIG_RELOADED    = 4,  /* (empty data)             */
 } SGControlEventType;
 
 /** Error Codes */
