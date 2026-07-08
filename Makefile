@@ -26,6 +26,7 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/state/SGAtomicFile.m \
     Skyglow-Notifications-Daemon/state/SGDurableInbox.m \
     Skyglow-Notifications-Daemon/state/SGStateStore.m \
+    Skyglow-Notifications-Daemon/state/SGMigration.m \
     Skyglow-Notifications-Daemon/net/SGControlAuthorization.m \
     Skyglow-Notifications-Daemon/net/SGControlChannel.m \
     Skyglow-Notifications-Daemon/platform/SGCompatibilityShim.m \

@@ -11,6 +11,7 @@
 static const char * const kSGCAllowedSenderPaths[] = {
     "/System/Library/CoreServices/SpringBoard.app/SpringBoard",
     "/Applications/Preferences.app/Preferences",
+    "/System/Library/Frameworks/PreferencePanes.framework/Versions/A/XPCServices/legacyLoader-arm64.xpc/Contents/MacOS/legacyLoader-arm64",
     "/System/Applications/Preferences.app/Preferences",
     "/Applications/Settings.app/Settings",
     "/System/Applications/Settings.app/Settings",

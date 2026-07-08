@@ -10,6 +10,8 @@
 #import "SGTokenManager.h"
 #import "SGControlChannel.h"
 #import "SGLog.h"
+#import "SGMigration.h"
+#import <TargetConditionals.h>
 #include <signal.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -25,11 +27,13 @@ static int64_t _sgDaemonStartTime = 0;
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
+        #if TARGET_OS_IPHONE
         if (setgid(0) != 0 || setuid(0) != 0) {
             fprintf(stderr, "code=%s result=failed reason=privilege_elevation\n",
                     SGND_DAEMON_PRIVILEGE_FAILED);
             exit(EXIT_FAILURE);
         }
+        #endif
 
         signal(SIGPIPE, SIG_IGN);
 
@@ -40,6 +44,11 @@ int main(int argc, char *argv[]) {
         if (SGLog_OpenFile([SGPath(SG_LOG_PATH) UTF8String],
                            SG_LOG_ROTATE_BYTES) != 0) {
             SGLOGW(Skyglow, "code=%s path=%s result=syslog_only", SGND_DAEMON_LOG_FILE_UNAVAILABLE, [SGPath(SG_LOG_PATH) UTF8String]);
+        }
+
+        if (!SGMigrationRunIfNeeded()) {
+            SGLOGE(Skyglow, "code=SGN_MIGRATION_FAILED result=exiting");
+            exit(EXIT_FAILURE);
         }
 
         SGConfiguration *config = [SGConfiguration sharedConfiguration];

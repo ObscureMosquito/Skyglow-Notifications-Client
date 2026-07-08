@@ -8,4 +8,4 @@ Author: Requis, Preloading
 Section: Tweaks
 Icon: file:///Library/PreferenceBundles/SGNPreferenceBundle.bundle/icon-settings.png
 Depiction: https://cydia.skyglow.es/depictions/com.skyglow.snd/depictions/index.html
-Depends: firmware (>= 4.0), mobilesubstrate | substitute | ellekit
+Depends: firmware (>= 4.0), mobilesubstrate | substitute | ellekit, preferenceloader

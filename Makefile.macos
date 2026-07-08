@@ -1,16 +1,7 @@
 # Standalone macOS build for the Skyglow Notifications daemon core.
-#
-# This is intentionally separate from the Theos `Makefile` (which builds the
-# real iOS daemon + tweak + prefs and must stay untouched). It compiles ONLY
-# the daemon, natively for macOS, from the exact same source tree — the port is
-# a handful of TARGET_OS_* conditionals in the shared sources, nothing forked.
-#
 #   make -f Makefile.macos            # build build/macos/SkyglowNotificationsDaemon
 #   make -f Makefile.macos run        # build + run (needs sudo for /var paths)
 #   make -f Makefile.macos clean
-#
-# OpenSSL: the vendored libraries/openssl/*.a are iOS slices (armv7/arm64), so
-# macOS links Homebrew's openssl@3 instead. Override with OPENSSL_PREFIX=... .
 
 DAEMON_DIR := Skyglow-Notifications-Daemon
 BUILD_DIR  := build/macos
@@ -37,6 +28,7 @@ OBJC_SRCS := \
 	$(DAEMON_DIR)/state/SGAtomicFile.m \
 	$(DAEMON_DIR)/state/SGDurableInbox.m \
 	$(DAEMON_DIR)/state/SGStateStore.m \
+	$(DAEMON_DIR)/state/SGMigration.m \
 	$(DAEMON_DIR)/net/SGControlAuthorization.m \
 	$(DAEMON_DIR)/net/SGControlChannel.m \
 	$(DAEMON_DIR)/platform/SGCompatibilityShim.m
@@ -48,10 +40,11 @@ C_SRCS := \
 
 OBJS := $(patsubst %,$(BUILD_DIR)/%.o,$(OBJC_SRCS) $(C_SRCS))
 
-# --- OpenSSL (Homebrew) ---------------------------------------------------
 OPENSSL_PREFIX ?= $(shell brew --prefix openssl@3 2>/dev/null)
 ifeq ($(OPENSSL_PREFIX),)
+ifeq ($(filter install uninstall clean,$(MAKECMDGOALS)),)
 $(error Could not locate OpenSSL. Install with 'brew install openssl@3' or pass OPENSSL_PREFIX=/path)
+endif
 endif
 OPENSSL_INC := $(OPENSSL_PREFIX)/include
 OPENSSL_LIB := $(OPENSSL_PREFIX)/lib
@@ -64,9 +57,6 @@ SQLITE_DEFS := \
 	-DSQLITE_ENABLE_LOCKING_STYLE=0 \
 	-DHAVE_GETHOSTUUID=0
 
-# OPENSSL_API_COMPAT keeps the 1.1.x API surface the code was written against
-# available under Homebrew's OpenSSL 3; the deprecation warnings for the few
-# low-level RSA calls are silenced rather than churned.
 COMMON_FLAGS := \
 	-arch $(shell uname -m) \
 	-fno-objc-arc \
@@ -103,7 +93,7 @@ LDFLAGS := \
 	-lz
 
 # --- Rules ----------------------------------------------------------------
-.PHONY: all clean run dirs
+.PHONY: all clean run dirs install uninstall reinstall status
 all: $(BIN)
 
 $(BIN): $(OBJS)
@@ -125,3 +115,78 @@ run: $(BIN)
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+# --- Install as a launchd daemon (root) -----------------------------------
+LAUNCHD_LABEL    := com.skyglow.snd
+LAUNCHD_PLIST    := /Library/LaunchDaemons/$(LAUNCHD_LABEL).plist
+INSTALL_BIN      := /usr/local/bin/SkyglowNotificationsDaemon
+MACOS_ROOT       := /usr/local/var/skyglow
+STDERR_LOG       := $(MACOS_ROOT)/var/log/snd-err.log
+KEYCHAIN_SERVICE := com.skyglow.daemon.privatekey
+SYSTEM_KEYCHAIN  := /Library/Keychains/System.keychain
+
+define SGN_LAUNCHD_PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>$(LAUNCHD_LABEL)</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>$(INSTALL_BIN)</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/dev/null</string>
+	<key>StandardErrorPath</key>
+	<string>$(STDERR_LOG)</string>
+</dict>
+</plist>
+endef
+export SGN_LAUNCHD_PLIST
+
+install:
+	@test -f "$(BIN)" || { echo "No build at $(BIN) — run 'make -f Makefile.macos' first (as your user)."; exit 1; }
+	@echo "[Skyglow] Installing daemon -> $(INSTALL_BIN)"
+	sudo mkdir -p "$(dir $(INSTALL_BIN))" "$(MACOS_ROOT)/var/log"
+	sudo cp "$(BIN)" "$(INSTALL_BIN)"
+	sudo chown root:wheel "$(INSTALL_BIN)"
+	sudo chmod 755 "$(INSTALL_BIN)"
+	@echo "[Skyglow] Writing $(LAUNCHD_PLIST)"
+	@printf '%s\n' "$$SGN_LAUNCHD_PLIST" | sudo tee "$(LAUNCHD_PLIST)" > /dev/null
+	sudo chown root:wheel "$(LAUNCHD_PLIST)"
+	sudo chmod 644 "$(LAUNCHD_PLIST)"
+	@echo "[Skyglow] (Re)loading via launchd"
+	@# bootout first so a re-run replaces the running job instead of hitting
+	@# 'Bootstrap failed: 5: Input/output error' (launchd's message for a label
+	@# that is already registered). The '-' ignores the not-loaded case.
+	-sudo launchctl bootout system/$(LAUNCHD_LABEL) 2>/dev/null
+	-sudo launchctl enable system/$(LAUNCHD_LABEL)
+	sudo launchctl bootstrap system "$(LAUNCHD_PLIST)"
+	@echo "[Skyglow] Installed and loaded. State: make -f Makefile.macos status"
+	@echo "[Skyglow] Daemon log: $(MACOS_ROOT)/var/log/sgn.log  (launchd stderr: $(STDERR_LOG))"
+
+uninstall:
+	@echo "[Skyglow] Stopping and unloading launchd job"
+	-sudo launchctl bootout system/$(LAUNCHD_LABEL) 2>/dev/null
+	@echo "[Skyglow] Removing plist, binary, and runtime tree"
+	-sudo rm -f "$(LAUNCHD_PLIST)"
+	-sudo rm -f "$(INSTALL_BIN)"
+	-sudo rm -rf "$(MACOS_ROOT)"
+	@echo "[Skyglow] Clearing System-keychain private keys"
+	@for i in 1 2 3 4 5; do \
+		sudo security delete-generic-password -s "$(KEYCHAIN_SERVICE)" -a "profile$$i" "$(SYSTEM_KEYCHAIN)" >/dev/null 2>&1 || true; \
+	done
+	@echo "[Skyglow] Uninstalled — no files, launchd job, or keychain items left behind."
+
+reinstall: uninstall all install
+
+status:
+	@echo "[Skyglow] launchd job:"
+	@sudo launchctl print system/$(LAUNCHD_LABEL) 2>/dev/null | grep -E '^\s*(state|pid|runs|last exit code) =' || echo "  (not loaded)"
+	@echo "[Skyglow] $(MACOS_ROOT)/var/log/sgn.log (last 20 lines):"
+	@sudo tail -n 20 "$(MACOS_ROOT)/var/log/sgn.log" 2>/dev/null || echo "  (no log yet)"
