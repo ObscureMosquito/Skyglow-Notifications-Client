@@ -10,20 +10,19 @@ if [ -d /var/jb ]; then
 fi
 
 PLIST_PATH="$JB_PREFIX/Library/LaunchDaemons/com.skyglow.snd.plist"
-KEYS_PATH="$JB_PREFIX/Library/PreferenceBundles/SGNPreferenceBundle.bundle/Keys"
 
-echo "[Skyglow] Using prefix: ${JB_PREFIX:-/}"
+echo "[SGN] Using prefix: ${JB_PREFIX:-/}"
 
 if [ -f "$PLIST_PATH" ]; then
     if command -v launchctl >/dev/null 2>&1; then
-        echo "[Skyglow] Unloading daemon with launchctl"
+        echo "[SGN] Unloading daemon with launchctl"
         launchctl unload "$PLIST_PATH" 2>/dev/null || true
     else
-        echo "[Skyglow] Unloading daemon with launchctl"
+        echo "[SGN] Unloading daemon with launchctl"
         launchctl unload "$PLIST_PATH" 2>/dev/null || true
     fi
 else
-    echo "[Skyglow] Plist not found: $PLIST_PATH"
+    echo "[SGN] Plist not found: $PLIST_PATH"
 fi
 
 # Optional: remove plist file
@@ -32,5 +31,5 @@ fi
 # Optional: remove keys (if you want to wipe state on uninstall)
 # rm -rf "$KEYS_PATH"
 
-echo "[Skyglow] Removal complete"
+echo "[SGN] Removal complete"
 exit 0

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-echo "[Skyglow] Running post-install script"
+echo "[SGN] Running post-install script"
 
 JB_PREFIX=""
 if [ -d /var/jb ]; then
@@ -13,9 +13,9 @@ DAEMON_PATH="$JB_PREFIX/usr/local/bin/SkyglowNotificationsDaemon"
 HELPER_PATH="$JB_PREFIX/Library/PreferenceBundles/SGNPreferenceBundle.bundle/sndrestart"
 STDERR_PATH="/var/mobile/Library/Logs/snd-err.log"
 
-echo "[Skyglow] Using prefix: ${JB_PREFIX:-/}"
+echo "[SGN] Using prefix: ${JB_PREFIX:-/}"
 
-echo "[Skyglow] Writing LaunchDaemon plist"
+echo "[SGN] Writing LaunchDaemon plist"
 mkdir -p "$(dirname "$PLIST_PATH")"
 
 cat > "$PLIST_PATH" << EOF
@@ -54,27 +54,27 @@ chown 501:501 "$STDERR_PATH" 2>/dev/null || chown mobile:mobile "$STDERR_PATH" 2
 chmod 644 "$STDERR_PATH"
 
 if [ -f "$HELPER_PATH" ]; then
-    echo "[Skyglow] Setting SUID for sndrestart helper"
+    echo "[SGN] Setting SUID for sndrestart helper"
     chown root:wheel "$HELPER_PATH"
     chmod 4755 "$HELPER_PATH"
 else
-    echo "[Skyglow] WARNING: Helper tool not found at $HELPER_PATH"
+    echo "[SGN] WARNING: Helper tool not found at $HELPER_PATH"
 fi
 
 if [ -f "$DAEMON_PATH" ]; then
     chown root:wheel "$DAEMON_PATH"
     chmod 6755 "$DAEMON_PATH"
 else
-    echo "[Skyglow] WARNING: daemon binary not found at $DAEMON_PATH"
+    echo "[SGN] WARNING: daemon binary not found at $DAEMON_PATH"
 fi
 
 if command -v launchctl >/dev/null 2>&1; then
-    echo "[Skyglow] Loading daemon with launchctl"
+    echo "[SGN] Loading daemon with launchctl"
     launchctl unload "$PLIST_PATH" 2>/dev/null || true
     launchctl load "$PLIST_PATH"
 fi
 
 killall -9 Preferences 2>/dev/null || true
 
-echo "[Skyglow] Installation complete"
+echo "[SGN] Installation complete"
 exit 0

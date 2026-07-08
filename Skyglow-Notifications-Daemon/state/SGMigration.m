@@ -366,13 +366,17 @@ static BOOL SGMigrateLegacyDatabaseIfNeeded(void) {
         return YES;
     }
 
-    if (applicationID != 0 || schemaVersion != 0 || hasProfileColumn) {
+    if (applicationID != 0 || hasProfileColumn) {
         SGLOGE(SGMigration,
                "code=SGN_MIGRATION_DATABASE_FAILED result=failed reason=unsupported_schema app_id=%d version=%d profile_column=%d",
                applicationID, schemaVersion, hasProfileColumn ? 1 : 0);
         sqlite3_close(db);
         return NO;
     }
+
+    SGLOGI(SGMigration,
+           "code=SGN_MIGRATION_DATABASE_START profile=1 from_version=%d",
+           schemaVersion);
 
     const char *newSchema =
         "CREATE TABLE notifications ("
@@ -424,6 +428,10 @@ static BOOL SGMigrateLegacyDatabaseIfNeeded(void) {
                                        "pending_acks_legacy_migration");
     ok = ok && SGMSQLiteRenameIfExists(db, "settings",
                                        "settings_legacy_migration");
+    ok = ok && SGMSQLiteRenameIfExists(db, "seen_messages",
+                                       "seen_messages_legacy_migration");
+    ok = ok && SGMSQLiteRenameIfExists(db, "local_pending_deliveries",
+                                       "local_pending_deliveries_legacy_migration");
     ok = ok && SGMSQLiteExec(db, newSchema, "create_schema");
     ok = ok && SGMSQLiteExec(db,
         "INSERT OR REPLACE INTO notifications "
@@ -456,11 +464,29 @@ static BOOL SGMigrateLegacyDatabaseIfNeeded(void) {
             "FROM settings_legacy_migration",
             "copy_settings");
     }
+    if (ok && SGMSQLiteTableExists(db, "seen_messages_legacy_migration")) {
+        ok = SGMSQLiteExec(db,
+            "INSERT OR REPLACE INTO seen_messages "
+            "(profile_id, msg_id, expires_at) "
+            "SELECT 1, msg_id, expires_at "
+            "FROM seen_messages_legacy_migration",
+            "copy_seen_messages");
+    }
+    if (ok && SGMSQLiteTableExists(db, "local_pending_deliveries_legacy_migration")) {
+        ok = SGMSQLiteExec(db,
+            "INSERT OR REPLACE INTO local_pending_deliveries "
+            "(profile_id, msg_id, bundle_id, payload, device_seq, expires_at) "
+            "SELECT 1, msg_id, bundle_id, payload, device_seq, expires_at "
+            "FROM local_pending_deliveries_legacy_migration",
+            "copy_local_pending_deliveries");
+    }
 
     ok = ok && SGMSQLiteDropIfExists(db, "notifications_legacy_migration");
     ok = ok && SGMSQLiteDropIfExists(db, "dns_cache_legacy_migration");
     ok = ok && SGMSQLiteDropIfExists(db, "pending_acks_legacy_migration");
     ok = ok && SGMSQLiteDropIfExists(db, "settings_legacy_migration");
+    ok = ok && SGMSQLiteDropIfExists(db, "seen_messages_legacy_migration");
+    ok = ok && SGMSQLiteDropIfExists(db, "local_pending_deliveries_legacy_migration");
     ok = ok && SGMSQLiteExec(db,
         "PRAGMA application_id = 1397182020; PRAGMA user_version = 1;",
         "stamp_schema");
