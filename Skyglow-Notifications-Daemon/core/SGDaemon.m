@@ -12,7 +12,7 @@
 #import "SGReachabilityMonitor.h"
 #import "SGStateStore.h"
 #import "SGLog.h"
-#import "SGNotificationSender.h"
+#import "SGPlatform.h"
 #include <openssl/pem.h>
 #include <stdio.h>
 #include <string.h>
@@ -205,8 +205,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     dispatch_queue_t       _localDeliveryDrainQueue;
     SGStateStore          *_stateStore;
     SGControlChannel      *_controlChannel;
-    SGControlChannel      *_springBoardClient;
-    SGNotificationSender  *_sender;
+    SGPlatform            *_platform;
     SGReachabilityMonitor *_reachability;
     io_connect_t           _powerRootPort;
     io_object_t            _powerNotifier;
@@ -234,8 +233,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     [_seenMessageIDs release];
     [_growthAlgorithm release];
     [_controlChannel release];
-    [_springBoardClient release];
-    [_sender release];
+    [_platform release];
     [_reachability stopMonitoringSystemNetworkChanges];
     [_reachability release];
     [self _stopPowerMonitoring];
@@ -258,30 +256,26 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     _controlChannel = channel;
 }
 
-- (SGControlChannel *)springBoardClient {
-    return _springBoardClient;
+- (void)attachPlatform:(SGPlatform *)platform {
+    if (platform == _platform) return;
+    [platform retain];
+    [_platform release];
+    _platform = platform;
 }
 
-- (void)attachSender:(SGNotificationSender *)sender {
-    if (sender == _sender) return;
-    [sender retain];
-    [_sender release];
-    _sender = sender;
+- (void)kickLocalDeliveryDrain {
+    [self _kickLocalDeliveryDrain];
 }
 
-- (void)attachSpringBoardClient:(SGControlChannel *)client {
-    if (client == _springBoardClient) return;
-    [client retain];
-    [_springBoardClient release];
-    _springBoardClient = client;
+- (void)listRegisteredAppsWithCompletion:(void (^)(SGControlError, NSData *))completion {
+    if (!_platform) { if (completion) completion(SGCERR_UNREACHABLE, nil); return; }
+    [_platform listRegisteredAppsWithCompletion:completion];
+}
 
-    if (client) {
-        __unsafe_unretained SGDaemon *daemonSelf = self;
-        [client setConnectionHandler:^(BOOL connected) {
-            if (!connected) return;
-            [daemonSelf _kickLocalDeliveryDrain];
-        }];
-    }
+- (void)registerInputAppPayload:(NSData *)bundleIdPayload
+                     completion:(void (^)(SGControlError, NSString *))completion {
+    if (!_platform) { if (completion) completion(SGCERR_UNREACHABLE, nil); return; }
+    [_platform registerInputAppPayload:bundleIdPayload completion:completion];
 }
 
 - (void)start {
@@ -997,7 +991,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             goto cleanup_assertion;
         }
 
-        SGLOGI(SGDaemon, "code=%s msg=%s bundle=%s keys=%lu action=send_to_springboard", SGND_DELIVERY_DISPATCHING,
+        SGLOGI(SGDaemon, "code=%s msg=%s bundle=%s keys=%lu action=deliver", SGND_DELIVERY_DISPATCHING,
                     msgHex, [routingData[@"bundleID"] UTF8String], (unsigned long)[parsed count]);
 
         NSNumber *seqNum = messageDict[@"device_seq"];
@@ -1175,32 +1169,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
 - (void)dispatchResetRegistrationForBundleIdentifier:(NSString *)bundleID
                                           completion:(void (^)(SGControlError err))completion {
-    if (![bundleID length]) {
-        if (completion) completion(SGCERR_INVALID_REQUEST);
-        return;
-    }
-#if TARGET_OS_OSX
-    if (completion) completion(SGCERR_OK);
-    return;
-#else
-    if (!_springBoardClient) {
-        if (completion) completion(SGCERR_UNREACHABLE);
-        return;
-    }
-
-    SGCBundleIdPayload payload;
-    memset(&payload, 0, sizeof(payload));
-    strlcpy(payload.bundleID, [bundleID UTF8String], sizeof(payload.bundleID));
-    NSData *data = [NSData dataWithBytes:&payload length:sizeof(payload)];
-
-    [_springBoardClient sendRequest:SGCMSG_RESET_APP_REGISTRATION
-                            payload:data
-                            timeout:0
-                         completion:^(SGControlError err, const SGControlChannelMessage *response) {
-        (void)response;
-        if (completion) completion(err);
-    }];
-#endif
+    if (!_platform) { if (completion) completion(SGCERR_UNREACHABLE); return; }
+    [_platform resetAppRegistrationForBundleID:bundleID completion:completion];
 }
 
 - (BOOL)performSetEnabled:(BOOL)enabled {
@@ -1307,22 +1277,18 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     return YES;
 }
 
-#pragma mark - Notification Delivery (via the platform sender)
+#pragma mark - Notification Delivery (via the platform layer)
 
-/* Hand one decoded notification to SGNotificationSender.  The daemon does not
- * know or care whether it surfaces via the SpringBoard control channel (iOS) or
- * usernoted XPC (macOS) — the transport lives entirely inside the sender.  A
- * failure return leaves the message for the local-pending / inbox retry path. */
 - (kern_return_t)_deliverPushTopic:(NSString *)topic payload:(NSDictionary *)payload {
     if (!topic || [topic length] == 0) return KERN_INVALID_ARGUMENT;
 
-    if (!_sender) {
-        SGLOGW(SGDaemon, "code=%s bundle=%s result=unavailable", SGND_DELIVERY_SPRINGBOARD_UNAVAILABLE,
+    if (!_platform) {
+        SGLOGW(SGDaemon, "code=%s bundle=%s result=unavailable", SGND_DELIVERY_PLATFORM_UNAVAILABLE,
                     [topic length] ? [topic UTF8String] : "none");
         return KERN_FAILURE;
     }
 
-    kern_return_t kr = [_sender sendNotificationForBundleID:topic payload:payload];
+    kern_return_t kr = [_platform sendNotificationForBundleID:topic payload:payload];
     SGLOGI(SGDaemon, "code=%s bundle=%s result=%s", SGND_DELIVERY_DISPATCHING,
                 [topic UTF8String], (kr == KERN_SUCCESS) ? "delivered" : "failed");
     return kr;

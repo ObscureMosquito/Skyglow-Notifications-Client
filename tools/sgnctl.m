@@ -1,15 +1,9 @@
-// sgnctl — terminal control panel for the Skyglow daemon.  The macOS stand-in
-// for the iOS settings UI: register apps, enable/disable, switch profiles, see
-// status and logs — everything driven over the daemon's control channel (plus
-// direct reads for logs/profiles).  Run as root (the daemon authorizes euid 0).
-//
-// Build: make -f tools/Makefile   →   build/sgnctl
 #import <Foundation/Foundation.h>
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
 #import "SGStatusServer.h"
-#import "SGConfiguration.h"     // SGPath, SG_MACOS_ROOT
-#import "SGSharedConstants.h"   // SG_LOG_PATH, SG_PROFILE_PLIST_FORMAT, SG_PREFS_PLIST_PATH
+#import "SGConfiguration.h"
+#import "SGSharedConstants.h"
 
 static const char *StateName(uint32_t s) {
     switch (s) {
@@ -42,11 +36,11 @@ static const char *ErrName(SGControlError e) {
         case SGCERR_INTERNAL: return "internal daemon error";
         case SGCERR_DAEMON_BUSY: return "daemon busy";
         case SGCERR_NOT_FOUND: return "not found";
+        case SGCERR_UNSUPPORTED: return "not supported on this platform";
         default: return "error";
     }
 }
 
-// Send one request; on success invoke onOK(resp).  Returns process exit code.
 static int Send(SGControlMessageType type, NSData *payload,
                 void (^onOK)(const SGControlChannelMessage *resp)) {
     SGControlChannel *c = [SGControlChannel clientForServiceName:SKYGLOW_CONTROL_SERVICE_DAEMON];
@@ -160,7 +154,6 @@ static int CmdSaveProfile(int idx, NSString *address, NSString *pemPath) {
         });
 }
 
-// Reads profile plists directly (no IPC) and marks the active one.
 static int CmdProfiles(void) {
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:SGPath(SG_PREFS_PLIST_PATH)];
     NSInteger active = [[prefs objectForKey:@"activeProfile"] integerValue];
@@ -243,7 +236,6 @@ int main(int argc, char **argv) {
         if ([cmd isEqualToString:@"list-apps"]) {
             return Send(SGCMSG_LIST_PUSH_REGISTERED_APPS, nil, ^(const SGControlChannelMessage *r) {
                 if (!r || r->payloadLength == 0) { printf("(none)\n"); return; }
-                // SGCBundleIdListPayload: back-to-back fixed-size bundle id slots.
                 NSUInteger slot = SG_CONTROL_MAX_BUNDLE_ID_SIZE, count = r->payloadLength / slot;
                 for (NSUInteger i = 0; i < count; i++) {
                     const char *b = (const char *)(r->payload + i * slot);

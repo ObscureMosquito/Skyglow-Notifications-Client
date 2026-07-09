@@ -6,7 +6,7 @@
 #import "SGStatusServer.h"
 #import "SGControlChannelProtocol.h"
 
-@class SGNotificationSender;
+@class SGPlatform;
 
 /** State Machine Timing Constants */
 #define SG_INITIAL_BACKOFF_SECONDS        2
@@ -15,14 +15,11 @@
 #define SG_MAX_JITTER_SECONDS             5
 
 typedef NS_ENUM(NSInteger, SGEvent) {
-    // External Triggers
     SGEventStartRequested,
     SGEventStopRequested,
     SGEventConfigReloaded,
     SGEventNetworkUp,
     SGEventNetworkDown,
-    
-    // Asynchronous Internal Results
     SGEventDNSResolved,
     SGEventDNSFailed,
     SGEventConnectSuccess,
@@ -33,10 +30,8 @@ typedef NS_ENUM(NSInteger, SGEvent) {
     SGEventDisconnected,
     SGEventVersionMismatch,
     SGEventBackoffTimerFired,
-
-    // System Power
-    SGEventSystemDidWake,   // Device woke from deep sleep — retry if circuit-open
-    SGEventAuthTimeout      // Auth timer expired (not an explicit server rejection)
+    SGEventSystemDidWake,
+    SGEventAuthTimeout
 };
 
 @class SGControlChannel;
@@ -59,17 +54,17 @@ typedef NS_ENUM(NSInteger, SGEvent) {
  */
 - (void)attachControlChannel:(SGControlChannel *)channel;
 
-/* The daemon's single outlet for surfacing a decoded notification */
-- (void)attachSender:(SGNotificationSender *)sender;
+/* The daemon's single handle to the platform layer (delivery + app-registration
+ * ops).
+ */
+- (void)attachPlatform:(SGPlatform *)platform;
 
-/**
- * Attaches the SGControlChannel client to the SpringBoard tweak */
-- (void)attachSpringBoardClient:(SGControlChannel *)client;
-
-/* Exposed so the daemon's IPC entry points can proxy prefs-bundle requests
- * to SpringBoard.  Prefs no longer holds its own SB channel, its only
- * persistent connection is to the daemon, which always stays warm. */
-- (SGControlChannel *)springBoardClient;
+/* Retry pending local deliveries — called when the iOS presentation channel
+ * (re)connects. No-op if there is nothing pending. */
+- (void)kickLocalDeliveryDrain;
+- (void)listRegisteredAppsWithCompletion:(void (^)(SGControlError err, NSData *listPayload))completion;
+- (void)registerInputAppPayload:(NSData *)bundleIdPayload
+                     completion:(void (^)(SGControlError err, NSString *detail))completion;
 
 /**
  * Starts the daemon's connection state machine.

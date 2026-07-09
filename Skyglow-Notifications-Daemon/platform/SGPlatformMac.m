@@ -1,12 +1,8 @@
-// macOS SGNotificationSender: post a banner by talking raw XPC to the per-user
-// usernoted (crossing the session boundary from the root daemon). See
-// SGNotificationSender.h.  XPC objects are plain C pointers here (manual
-// retain/release), so this #define must precede all headers.
 #ifndef OS_OBJECT_USE_OBJC
 #define OS_OBJECT_USE_OBJC 0
 #endif
 
-#import "SGNotificationSender.h"
+#import "SGPlatform.h"
 
 #if TARGET_OS_OSX
 
@@ -14,6 +10,8 @@
 #import <dlfcn.h>
 #import <mach/mach.h>
 #import <SystemConfiguration/SystemConfiguration.h>
+#import "SGControlChannelProtocol.h"
+#import "SGDatabaseManager.h"
 
 extern mach_port_t bootstrap_port;
 extern kern_return_t bootstrap_look_up_per_user(mach_port_t, const char *, uid_t, mach_port_t *);
@@ -21,8 +19,11 @@ typedef xpc_object_t (*SGEndpointFromPortFn)(mach_port_t);
 
 static const char *const kUsernotedService = "com.apple.usernoted.client";
 
-typedef NS_ENUM(NSInteger, SGUsernotedEra) { SGUsernotedEraModern = 0 };
-
+static void SGCloseConnection(xpc_connection_t conn) {
+    xpc_connection_set_event_handler(conn, ^(xpc_object_t event) { (void)event; });
+    xpc_connection_cancel(conn);
+    xpc_release(conn);
+}
 
 @interface SGUNArchiveShim : NSObject <NSCoding>
 
@@ -45,45 +46,32 @@ typedef NS_ENUM(NSInteger, SGUsernotedEra) { SGUsernotedEraModern = 0 };
 }
 @end
 
-@implementation SGNotificationSender {
+@implementation SGPlatform {
+    dispatch_queue_t _cacheQueue;
     NSMutableDictionary *_conns;
     NSMutableDictionary *_endpoints;
-    SGUsernotedEra _era;
     uid_t _connsUID;
     BOOL _haveConnsUID;
     SGEndpointFromPortFn _endpointFn;
     BOOL _resolvedEndpointFn;
 }
 
-- (instancetype)initWithSpringBoardChannel:(SGControlChannel *)channel {
+- (instancetype)initWithControlChannel:(SGControlChannel *)channel {
     (void)channel;
     if ((self = [super init])) {
         _conns = [[NSMutableDictionary alloc] init];
         _endpoints = [[NSMutableDictionary alloc] init];
-        _era = [[self class] _era];
+        _cacheQueue = dispatch_queue_create("com.skyglow.daemon.usernoted", DISPATCH_QUEUE_SERIAL);
     }
     return self;
 }
 
 - (void)dealloc {
-    [self _closeAll];
+    dispatch_sync(_cacheQueue, ^{ [self _closeAll]; });
+    dispatch_release(_cacheQueue);
     [_conns release];
     [_endpoints release];
     [super dealloc];
-}
-
-+ (SGUsernotedEra)_era {
-    NSDictionary *sv = [NSDictionary dictionaryWithContentsOfFile:
-        @"/System/Library/CoreServices/SystemVersion.plist"];
-    NSString *ver = [sv objectForKey:@"ProductVersion"];
-    NSInteger major = 0, minor = 0;
-    if ([ver isKindOfClass:[NSString class]]) {
-        NSArray *p = [ver componentsSeparatedByString:@"."];
-        if (p.count >= 1) major = [[p objectAtIndex:0] integerValue];
-        if (p.count >= 2) minor = [[p objectAtIndex:1] integerValue];
-    }
-    (void)major; (void)minor;
-    return SGUsernotedEraModern;
 }
 
 - (NSData *)_archiveTitle:(NSString *)title subtitle:(NSString *)subtitle
@@ -178,10 +166,12 @@ typedef NS_ENUM(NSInteger, SGUsernotedEra) { SGUsernotedEraModern = 0 };
     xpc_connection_t conn = [self _newConnForUID:uid endpointOut:&endpoint];
     if (!conn) return NULL;
 
-    __unsafe_unretained SGNotificationSender *uself = self;
+    __unsafe_unretained SGPlatform *uself = self;
+    dispatch_queue_t cacheQueue = _cacheQueue;
     NSString *bundleCopy = [[bundleID copy] autorelease];
     xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
-        if (xpc_get_type(event) == XPC_TYPE_ERROR) [uself _dropBundle:bundleCopy];
+        if (xpc_get_type(event) == XPC_TYPE_ERROR)
+            dispatch_async(cacheQueue, ^{ [uself _dropBundle:bundleCopy]; });
     });
     xpc_connection_resume(conn);
 
@@ -197,8 +187,7 @@ typedef NS_ENUM(NSInteger, SGUsernotedEra) { SGUsernotedEraModern = 0 };
 - (void)_dropBundle:(NSString *)bundleID {
     NSValue *boxed = [_conns objectForKey:bundleID];
     if (boxed) {
-        xpc_connection_cancel((xpc_connection_t)[boxed pointerValue]);
-        xpc_release((xpc_connection_t)[boxed pointerValue]);
+        SGCloseConnection((xpc_connection_t)[boxed pointerValue]);
         [_conns removeObjectForKey:bundleID];
     }
     NSValue *ep = [_endpoints objectForKey:bundleID];
@@ -206,10 +195,7 @@ typedef NS_ENUM(NSInteger, SGUsernotedEra) { SGUsernotedEraModern = 0 };
 }
 
 - (void)_closeAll {
-    for (NSValue *b in [_conns allValues]) {
-        xpc_connection_cancel((xpc_connection_t)[b pointerValue]);
-        xpc_release((xpc_connection_t)[b pointerValue]);
-    }
+    for (NSValue *b in [_conns allValues]) SGCloseConnection((xpc_connection_t)[b pointerValue]);
     [_conns removeAllObjects];
     for (NSValue *ep in [_endpoints allValues]) xpc_release((xpc_object_t)[ep pointerValue]);
     [_endpoints removeAllObjects];
@@ -238,17 +224,52 @@ typedef NS_ENUM(NSInteger, SGUsernotedEra) { SGUsernotedEraModern = 0 };
     }
     if (!title && !subtitle && !body) return KERN_FAILURE;
 
-    xpc_connection_t conn = [self _connForBundle:bundleID];
-    if (!conn) return KERN_FAILURE;
     NSData *archive = [self _archiveTitle:title subtitle:subtitle body:body sound:sound];
     if (!archive.length) return KERN_FAILURE;
 
-    xpc_object_t deliver = [self _newDeliver:archive];
-    xpc_connection_send_message(conn, deliver);
-    xpc_release(deliver);
-    return KERN_SUCCESS;
+    __block kern_return_t kr = KERN_FAILURE;
+    dispatch_sync(_cacheQueue, ^{
+        xpc_connection_t conn = [self _connForBundle:bundleID];
+        if (!conn) return;
+        xpc_object_t deliver = [self _newDeliver:archive];
+        xpc_connection_send_message(conn, deliver);
+        xpc_release(deliver);
+        kr = KERN_SUCCESS;
+    });
+    return kr;
+}
+
+#pragma mark - Registration ops (no SpringBoard on macOS)
+
+- (void)resetAppRegistrationForBundleID:(NSString *)bundleID
+                             completion:(void (^)(SGControlError))completion {
+    if (completion) completion([bundleID length] ? SGCERR_OK : SGCERR_INVALID_REQUEST);
+}
+
+- (void)listRegisteredAppsWithCompletion:(void (^)(SGControlError, NSData *))completion {
+    NSMutableData *out = [NSMutableData data];
+    uint16_t count = 0;
+    [out appendBytes:&count length:sizeof(count)];
+    for (NSDictionary *reg in [[SGDatabaseManager sharedManager] allBundleRegistrations]) {
+        NSString *b = [reg objectForKey:@"bundleID"];
+        NSData *utf8 = [b isKindOfClass:[NSString class]] ? [b dataUsingEncoding:NSUTF8StringEncoding] : nil;
+        if (!utf8.length || utf8.length > 0xFFFF) continue;
+        if (out.length + sizeof(uint16_t) + utf8.length > SG_CONTROL_MAX_PAYLOAD) break;
+        uint16_t len = (uint16_t)utf8.length;
+        [out appendBytes:&len length:sizeof(len)];
+        [out appendData:utf8];
+        count++;
+    }
+    [out replaceBytesInRange:NSMakeRange(0, sizeof(count)) withBytes:&count];
+    if (completion) completion(SGCERR_OK, out);
+}
+
+- (void)registerInputAppPayload:(NSData *)payload
+                     completion:(void (^)(SGControlError, NSString *))completion {
+    (void)payload;
+    if (completion) completion(SGCERR_UNSUPPORTED, @"input-app registration is iOS-only");
 }
 
 @end
 
-#endif  // TARGET_OS_OSX
+#endif

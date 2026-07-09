@@ -11,7 +11,7 @@
 #import "SGControlChannel.h"
 #import "SGLog.h"
 #import "SGMigration.h"
-#import "SGNotificationSender.h"
+#import "SGPlatform.h"
 #import <TargetConditionals.h>
 #include <signal.h>
 #include <errno.h>
@@ -408,23 +408,12 @@ int main(int argc, char *argv[]) {
         [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                           SGControlReplyBlock reply,
                                           SGControlReplyErrorBlock replyError) {
-            SGControlChannel *sb = [daemon springBoardClient];
-            if (!sb) { replyError(SGCERR_UNREACHABLE, @"SpringBoard channel not attached"); return; }
             SGControlReplyBlock      replyCopy      = [reply copy];
             SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
-            [sb sendRequest:SGCMSG_LIST_PUSH_REGISTERED_APPS
-                    payload:nil
-                    timeout:0
-                 completion:^(SGControlError err, const SGControlChannelMessage *response) {
-                if (err == SGCERR_OK && response) {
-                    NSData *body = [NSData dataWithBytes:response->payload
-                                                  length:response->payloadLength];
-                    replyCopy(SGCMSG_BUNDLE_ID_LIST, body);
-                } else {
-                    replyErrorCopy(err, (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
-                        ? @"SpringBoard did not respond"
-                        : @"SpringBoard rejected the list request");
-                }
+            [daemon listRegisteredAppsWithCompletion:^(SGControlError err, NSData *listPayload) {
+                if (err == SGCERR_OK) replyCopy(SGCMSG_BUNDLE_ID_LIST, listPayload);
+                else replyErrorCopy(err, (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                        ? @"presenter did not respond" : @"list request rejected");
                 [replyCopy release];
                 [replyErrorCopy release];
             }];
@@ -437,33 +426,12 @@ int main(int argc, char *argv[]) {
                 replyError(SGCERR_INVALID_REQUEST, @"register-input payload too short");
                 return;
             }
-            SGControlChannel *sb = [daemon springBoardClient];
-            if (!sb) { replyError(SGCERR_UNREACHABLE, @"SpringBoard channel not attached"); return; }
             NSData *payloadCopy = [NSData dataWithBytes:req->payload length:req->payloadLength];
             SGControlReplyBlock      replyCopy      = [reply copy];
             SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
-            [sb sendRequest:SGCMSG_REGISTER_INPUT_APP
-                    payload:payloadCopy
-                    timeout:0
-                 completion:^(SGControlError err, const SGControlChannelMessage *response) {
-                if (err == SGCERR_OK) {
-                    replyCopy(SGCMSG_GENERIC_ACK, nil);
-                } else {
-                    NSString *detail = nil;
-                    if (response && response->messageType == SGCMSG_ERROR_RESPONSE &&
-                        response->payloadLength >= sizeof(SGCErrorResponsePayload)) {
-                        SGCErrorResponsePayload *ep = (SGCErrorResponsePayload *)response->payload;
-                        detail = [[[NSString alloc] initWithBytes:ep->message
-                                                           length:strnlen(ep->message, sizeof(ep->message))
-                                                         encoding:NSUTF8StringEncoding] autorelease];
-                    }
-                    if (!detail.length) {
-                        detail = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
-                            ? @"SpringBoard did not respond"
-                            : @"SpringBoard rejected the register request";
-                    }
-                    replyErrorCopy(err, detail);
-                }
+            [daemon registerInputAppPayload:payloadCopy completion:^(SGControlError err, NSString *detail) {
+                if (err == SGCERR_OK) replyCopy(SGCMSG_GENERIC_ACK, nil);
+                else replyErrorCopy(err, detail.length ? detail : @"register request failed");
                 [replyCopy release];
                 [replyErrorCopy release];
             }];
@@ -475,17 +443,20 @@ int main(int argc, char *argv[]) {
             [daemon attachControlChannel:controlChannel];
         }
 
-        SGControlChannel *springBoardClient = nil;
+        SGControlChannel *platformChannel = nil;
 #if !TARGET_OS_OSX
-        springBoardClient =
+        platformChannel =
             [[SGControlChannel clientForServiceName:SKYGLOW_CONTROL_SERVICE_SPRINGBOARD] retain];
-        [springBoardClient start];
-        [daemon attachSpringBoardClient:springBoardClient];
+        __unsafe_unretained SGDaemon *daemonRef = daemon;
+        [platformChannel setConnectionHandler:^(BOOL connected) {
+            if (connected) [daemonRef kickLocalDeliveryDrain];
+        }];
+        [platformChannel start];
 #endif
-        SGNotificationSender *sender =
-            [[SGNotificationSender alloc] initWithSpringBoardChannel:springBoardClient];
-        [daemon attachSender:sender];
-        [sender release];
+        SGPlatform *platform =
+            [[SGPlatform alloc] initWithControlChannel:platformChannel];
+        [daemon attachPlatform:platform];
+        [platform release];
 
         [daemon.stateStore drainDurableEventInbox];
         [daemon start];
@@ -496,11 +467,10 @@ int main(int argc, char *argv[]) {
         [daemon requestGracefulDisconnect];
 
         [daemon attachControlChannel:nil];
-        [daemon attachSender:nil];
+        [daemon attachPlatform:nil];
 #if !TARGET_OS_OSX
-        [daemon attachSpringBoardClient:nil];
-        [springBoardClient stop];
-        [springBoardClient release];
+        [platformChannel stop];
+        [platformChannel release];
 #endif
         [controlChannel stop];
         [controlChannel release];
