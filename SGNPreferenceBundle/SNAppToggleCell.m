@@ -142,35 +142,27 @@
 - (void)layoutSubviews {
     [super layoutSubviews];
 
-    if ([[_sgnSpecifier propertyForKey:@"sgnHideToggle"] boolValue]) {
-        [self _sgnRemoveStraySwitchesIn:self];
+    BOOL hideToggle = [[_sgnSpecifier propertyForKey:@"sgnHideToggle"] boolValue];
+    [self _sgnRemoveStraySwitchesIn:self];
+    if (!hideToggle && _toggleSwitch && self.accessoryView != _toggleSwitch) {
+        self.accessoryView = _toggleSwitch;
     }
 
     CGFloat h = self.contentView.bounds.size.height;
     CGFloat iconSize = 32.0;
 
     _appIconView.frame = CGRectMake(6, (h - iconSize) / 2.0, iconSize, iconSize);
-    
+
     CGFloat labelX = CGRectGetMaxX(_appIconView.frame) + 11.0;
     _appNameLabel.frame = CGRectMake(labelX, 0,
                                      self.contentView.bounds.size.width - labelX - 20.0, h);
     _appNameLabel.centerY = h / 2.0;
 }
 
-/* iOS 4's PSTableCell init path calls -setControl: to install the
- * default accessory control for switch-style cells (the spec uses
- * cell:PSSwitchCell).  We manage accessoryView ourselves through
- * syncAccessoryState, so swallow the call.  -control is stubbed for
- * symmetry in case anything reads it back. */
+
 - (void)setControl:(id)control {}
 - (id)control { return nil; }
 
-/* iOS 4's PSTableCell hierarchy doesn't implement -controlChanged:, yet the
- * PSSwitchCell spec still wires its framework-installed switch's action to it,
- * so flipping the toggle raised an unrecognized-selector on iOS 4 (CoreAnimation
- * swallowed it, leaving the switch inert).  iOS 5+ never reaches here — our own
- * _toggleSwitch (-> toggleChanged:) is the live accessory — so routing the
- * framework switch into the same handler fixes iOS 4 without affecting newer. */
 - (void)controlChanged:(id)control {
     if ([control isKindOfClass:[UISwitch class]]) {
         [self toggleChanged:(UISwitch *)control];
@@ -194,10 +186,6 @@
     BOOL hideToggle = [[_sgnSpecifier propertyForKey:@"sgnHideToggle"] boolValue];
     self.userInteractionEnabled = !(deleting || toggling);
 
-    /* Both a pending delete and a pending enable/disable show the spinner in
-     * place of the accessory and block further interaction until the daemon
-     * acks.  sgnToggling is kept separate from sgnDeleting so the list
-     * controller's delete bookkeeping isn't confused by an in-flight toggle. */
     if (deleting || toggling) {
         if (!_activityIndicator) {
             _activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleGray];
@@ -220,6 +208,7 @@
         [_toggleSwitch addTarget:self action:@selector(toggleChanged:)
                 forControlEvents:UIControlEventValueChanged];
     }
+    [self _sgnRemoveStraySwitchesIn:self];
     self.accessoryView = _toggleSwitch;
 }
 
@@ -264,10 +253,6 @@
     NSString *bundleId = [_sgnSpecifier propertyForKey:@"bundleId"];
     if (!bundleId) return;
 
-    /* The daemon now owns the plist appStatus write, so the UI no longer writes
-     * it optimistically: show the spinner + block until the daemon acks, then
-     * reflect the change (or revert the switch on failure).  Same confirm-then-
-     * refresh contract the profile operations already use. */
     BOOL desired = sender.isOn;
     [self setTogglePending:YES];
 
@@ -276,10 +261,6 @@
     SNChannelCommandCompletion done = ^(BOOL ok, NSString *message) {
         [requestSpecifier setProperty:@NO forKey:@"sgnToggling"];
 
-        /* The table may have reused this cell while the daemon request was in
-         * flight.  Only touch its visible controls if it still represents the
-         * request's specifier; otherwise configureCellForBundleId: will read
-         * the durable state when that row next appears. */
         if (_sgnSpecifier == requestSpecifier) {
             [self syncAccessoryState];
             if (!ok) {

@@ -40,6 +40,7 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    [self reloadSpecifiers];
     [self _refreshAPNsList];
 }
 
@@ -129,8 +130,6 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
                                                              edit:Nil];
         [spec setProperty:bundleId forKey:@"bundleId"];
         [spec setProperty:[SNAppToggleCell class] forKey:@"cellClass"];
-        [spec setProperty:@"com.skyglow.sndp" forKey:@"defaults"];
-        [spec setProperty:@"appStatus" forKey:@"key"];
         [spec setProperty:kSGNSectionSkyglow forKey:kSGNSectionPropKey];
         if ([self.deletingBundleIDs containsObject:bundleId]) {
             [spec setProperty:@YES forKey:kSGNDeletingPropKey];
@@ -197,8 +196,6 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
                                                              edit:Nil];
         [spec setProperty:bundleId forKey:@"bundleId"];
         [spec setProperty:[SNAppToggleCell class] forKey:@"cellClass"];
-        [spec setProperty:@"com.skyglow.sndp" forKey:@"defaults"];
-        [spec setProperty:@"appStatus" forKey:@"key"];
         [spec setProperty:@YES forKey:@"sgnHideToggle"];
         [spec setProperty:kSGNSectionAPNs forKey:kSGNSectionPropKey];
         if ([self.deletingBundleIDs containsObject:bundleId]) {
