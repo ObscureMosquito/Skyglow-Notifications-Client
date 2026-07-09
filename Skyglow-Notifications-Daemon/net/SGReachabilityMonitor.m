@@ -56,17 +56,6 @@ static void SGReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkRea
         return;
     }
 
-    /**
-     * Use RunLoop scheduling rather than a dispatch queue.
-     * SCNetworkReachabilitySetDispatchQueue fires an immediate "initial state" callback
-     * on assignment — before CFRunLoopRun() is entered — which races with configd's
-     * WiFi state machine on iPod touch (WiFi-only devices). That race manifests as the
-     * Settings WiFi toggle appearing grayed out or showing an inconsistent state when
-     * the daemon is enabled while offline.
-     *
-     * RunLoop scheduling defers all callbacks to CFRunLoopRun(), ensuring they only
-     * fire after startup is fully complete and Settings.app has finished its transition.
-     */
     SCNetworkReachabilityScheduleWithRunLoop(_reachabilityRef, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
 }
 

@@ -40,16 +40,6 @@ static inline BOOL SG_IsIdentifierStringSafe(NSString *str) {
  * envelope is a fully-formed Mach simple message (no port descriptors beyond
  * the reply port carried in msgh_local_port).
  *
- * Two named services define the two roles a process can play.  The daemon
- * advertises SKYGLOW_CONTROL_SERVICE_DAEMON and clients (prefs bundle,
- * SpringBoard tweak) connect to it.  The SpringBoard tweak additionally
- * advertises SKYGLOW_CONTROL_SERVICE_SPRINGBOARD which the daemon connects to
- * when it needs to push a notification — the daemon is a client of the tweak
- * for that one direction.  Either side can subscribe to events from the other
- * once a connection is up; subscriptions live for the connection lifetime.
- *
- * Designed to run unchanged from iOS 3 upward: pure Mach IPC, no XPC, no
- * dispatch sources required at the wire level, no API gated on a later iOS.
  */
 
 /** Mach Service Names */

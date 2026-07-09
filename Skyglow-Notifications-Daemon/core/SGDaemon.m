@@ -12,6 +12,7 @@
 #import "SGReachabilityMonitor.h"
 #import "SGStateStore.h"
 #import "SGLog.h"
+#import "SGNotificationSender.h"
 #include <openssl/pem.h>
 #include <stdio.h>
 #include <string.h>
@@ -205,6 +206,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     SGStateStore          *_stateStore;
     SGControlChannel      *_controlChannel;
     SGControlChannel      *_springBoardClient;
+    SGNotificationSender  *_sender;
     SGReachabilityMonitor *_reachability;
     io_connect_t           _powerRootPort;
     io_object_t            _powerNotifier;
@@ -233,6 +235,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     [_growthAlgorithm release];
     [_controlChannel release];
     [_springBoardClient release];
+    [_sender release];
     [_reachability stopMonitoringSystemNetworkChanges];
     [_reachability release];
     [self _stopPowerMonitoring];
@@ -257,6 +260,13 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
 
 - (SGControlChannel *)springBoardClient {
     return _springBoardClient;
+}
+
+- (void)attachSender:(SGNotificationSender *)sender {
+    if (sender == _sender) return;
+    [sender retain];
+    [_sender release];
+    _sender = sender;
 }
 
 - (void)attachSpringBoardClient:(SGControlChannel *)client {
@@ -1169,6 +1179,10 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         if (completion) completion(SGCERR_INVALID_REQUEST);
         return;
     }
+#if TARGET_OS_OSX
+    if (completion) completion(SGCERR_OK);
+    return;
+#else
     if (!_springBoardClient) {
         if (completion) completion(SGCERR_UNREACHABLE);
         return;
@@ -1186,6 +1200,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         (void)response;
         if (completion) completion(err);
     }];
+#endif
 }
 
 - (BOOL)performSetEnabled:(BOOL)enabled {
@@ -1292,74 +1307,25 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     return YES;
 }
 
-#pragma mark - SpringBoard Push Delivery (via SGControlChannel)
+#pragma mark - Notification Delivery (via the platform sender)
 
+/* Hand one decoded notification to SGNotificationSender.  The daemon does not
+ * know or care whether it surfaces via the SpringBoard control channel (iOS) or
+ * usernoted XPC (macOS) — the transport lives entirely inside the sender.  A
+ * failure return leaves the message for the local-pending / inbox retry path. */
 - (kern_return_t)_deliverPushTopic:(NSString *)topic payload:(NSDictionary *)payload {
-    if (!_springBoardClient) {
+    if (!topic || [topic length] == 0) return KERN_INVALID_ARGUMENT;
+
+    if (!_sender) {
         SGLOGW(SGDaemon, "code=%s bundle=%s result=unavailable", SGND_DELIVERY_SPRINGBOARD_UNAVAILABLE,
                     [topic length] ? [topic UTF8String] : "none");
         return KERN_FAILURE;
     }
-    if (!topic || [topic length] == 0) return KERN_INVALID_ARGUMENT;
 
-    NSData *plistData = nil;
-    if (payload) {
-        plistData = [NSPropertyListSerialization dataWithPropertyList:payload
-                                                               format:NSPropertyListBinaryFormat_v1_0
-                                                              options:0
-                                                                error:NULL];
-    }
-    if (!plistData) plistData = [NSData data];
-
-    if ([plistData length] > SG_CONTROL_MAX_USERINFO_SIZE) {
-        SGLOGE(SGDaemon, "code=%s bundle=%s bytes=%lu max=%d result=failed", SGND_DELIVERY_PAYLOAD_TOO_LARGE,
-                    [topic UTF8String], (unsigned long)[plistData length],
-                    SG_CONTROL_MAX_USERINFO_SIZE);
-        return KERN_RESOURCE_SHORTAGE;
-    }
-
-    SGCPushDeliveryPayload pd;
-    memset(&pd, 0, sizeof(pd));
-    strlcpy(pd.bundleID, [topic UTF8String], sizeof(pd.bundleID));
-    pd.userInfoLength = (uint32_t)[plistData length];
-    if (pd.userInfoLength > 0) memcpy(pd.userInfoData, [plistData bytes], pd.userInfoLength);
-
-    NSUInteger sendLen = offsetof(SGCPushDeliveryPayload, userInfoData) + pd.userInfoLength;
-    NSData *requestPayload = [NSData dataWithBytes:&pd length:sendLen];
-
-    __block int32_t result = (int32_t)KERN_FAILURE;
-    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-    /* The completion may be scheduled after our bounded wait expires.  Give it
-     * an independent semaphore ownership reference so a late signal cannot
-     * touch the caller's released reference. */
-    dispatch_retain(sema);
-    [_springBoardClient sendRequest:SGCMSG_PUSH_DELIVERY
-                            payload:requestPayload
-                            timeout:0
-                         completion:^(SGControlError err, const SGControlChannelMessage *response) {
-        if (err == SGCERR_OK) {
-            OSAtomicCompareAndSwap32Barrier((int32_t)KERN_FAILURE,
-                                            (int32_t)KERN_SUCCESS,
-                                            &result);
-        }
-        dispatch_semaphore_signal(sema);
-        dispatch_release(sema);
-    }];
-    /* Bounded wait — channel default is 5s, give it +1s grace for
-     * dispatch + completion handler scheduling.  If we time out the
-     * semaphore here (channel didn't fire its completion in time, which
-     * shouldn't happen but defensive), `result` stays KERN_FAILURE and
-     * the caller's local-pending-deliveries retry path will pick the
-     * notification up on the next drain. */
-    int64_t waitNs = (int64_t)((SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC + 1.0) * NSEC_PER_SEC);
-    long waitResult = dispatch_semaphore_wait(
-        sema, dispatch_time(DISPATCH_TIME_NOW, waitNs));
-    kern_return_t finalResult = (waitResult == 0)
-        ? (kern_return_t)OSAtomicAdd32Barrier(0, &result)
-        : KERN_FAILURE;
-    dispatch_release(sema);
-
-    return finalResult;
+    kern_return_t kr = [_sender sendNotificationForBundleID:topic payload:payload];
+    SGLOGI(SGDaemon, "code=%s bundle=%s result=%s", SGND_DELIVERY_DISPATCHING,
+                [topic UTF8String], (kr == KERN_SUCCESS) ? "delivered" : "failed");
+    return kr;
 }
 
 #pragma mark - Notification Disposition Helpers

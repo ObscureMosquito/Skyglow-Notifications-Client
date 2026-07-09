@@ -343,9 +343,6 @@ BOOL SGP_BeginFirstTimeRegistration(void) {
     _regTimestamp = SG_GetCorrectedTime();
     uint8_t tsBE[8]; SG_EncodeBE64(_regTimestamp, tsBE);
 
-    /* Wire format (protocol v3): keyLen(2) + pubkey(N) + timestamp(8) + version(4).
-     * The address field is no longer sent — the server assigns it and
-     * returns it in S_REGISTER_OK. */
     NSMutableData *payload = [NSMutableData data];
     uint8_t keyLenBE[2] = {(uint8_t)(pubDerLen >> 8), (uint8_t)(pubDerLen & 0xFF)};
     [payload appendBytes:keyLenBE length:2];

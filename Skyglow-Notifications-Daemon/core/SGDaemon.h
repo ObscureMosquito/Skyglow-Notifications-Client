@@ -6,6 +6,8 @@
 #import "SGStatusServer.h"
 #import "SGControlChannelProtocol.h"
 
+@class SGNotificationSender;
+
 /** State Machine Timing Constants */
 #define SG_INITIAL_BACKOFF_SECONDS        2
 #define SG_MAX_BACKOFF_SECONDS            600
@@ -57,12 +59,11 @@ typedef NS_ENUM(NSInteger, SGEvent) {
  */
 - (void)attachControlChannel:(SGControlChannel *)channel;
 
+/* The daemon's single outlet for surfacing a decoded notification */
+- (void)attachSender:(SGNotificationSender *)sender;
+
 /**
- * Attaches the SGControlChannel client used to deliver pushes to the
- * SpringBoard tweak.  When attached, the daemon routes push delivery
- * through this channel instead of the legacy SGMach_SendPushToAppTopic
- * raw Mach path.  Lifecycle-managed by the caller (main.m).
- */
+ * Attaches the SGControlChannel client to the SpringBoard tweak */
 - (void)attachSpringBoardClient:(SGControlChannel *)client;
 
 /* Exposed so the daemon's IPC entry points can proxy prefs-bundle requests

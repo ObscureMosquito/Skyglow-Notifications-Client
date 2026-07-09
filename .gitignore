@@ -1,6 +1,7 @@
 .theos/
 packages/
 .build/
+build/
 libraries/libstatusbar/lib/
 .DS_Store
 compile_commands.json

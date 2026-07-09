@@ -6,32 +6,9 @@
 #import "SGControlChannelProtocol.h"
 
 /**
- * SGControlChannel — the single class through which every cross-process
- * control message in this project flows.  One instance plays the server role
- * (advertises a Mach service, accepts incoming requests, holds per-client
- * subscription state).  Another instance plays the client role (looks up the
- * service, opens a persistent connection, sends requests, receives events).
- * Same class, two construction paths.
- *
- * Lifecycle is connection-scoped.  When the underlying Mach port to the peer
- * dies — the daemon crashed, SpringBoard restarted, the tweak was unloaded —
- * a dead-name notification fires.  The server cleans up the dead client's
- * subscriptions; the client tears down its pending state.  The next outgoing
- * request attempts a fresh lookup before queueing.  Requests issued while
- * disconnected are replayed if a later request reconnects before they time
- * out; requests in flight at the moment of disconnect complete with
- * SGCERR_UNREACHABLE.
- *
- * Threading:
- *   - One internal pthread per channel runs the blocking mach_msg receive loop.
- *   - All mutation of channel state happens on a serial dispatch queue.
- *   - Public API methods are safe to call from any thread.
- *   - Caller-supplied blocks (handlers, completions) are dispatched to the
- *     global concurrent queue so they cannot deadlock the channel's internals.
- *
- * Memory: implemented in MRC so it can live in the daemon target.  Blocks
- * are Block_copy'd into the channel's internal state and released after they
- * fire or after the channel is stopped.
+ * SGControlChannel, the single class through which every cross-process
+ * control message in this project flows. One instance plays the server role 
+ * Another instance plays the client role.
  */
 
 @class SGControlChannel;
@@ -41,10 +18,8 @@
 /**
  * Server-side handler invoked when a request of the registered messageType
  * arrives.  The handler MUST call exactly one of reply (success) or
- * replyError (failure) before returning or scheduling work — failing to do
- * so leaves the requesting client blocked until its timeout fires.  The
- * request envelope is valid only for the duration of the handler call; copy
- * any fields you need beyond that point.
+ * replyError (failure) before returning or scheduling work, failing to do
+ * so leaves the requesting client blocked until its timeout fires.
  */
 typedef void (^SGControlReplyBlock)(SGControlMessageType type, NSData *payloadOrNil);
 typedef void (^SGControlReplyErrorBlock)(SGControlError error, NSString *detailOrNil);
@@ -79,7 +54,7 @@ typedef void (^SGControlSubscribeCompletion)(SGControlError error, uint64_t subs
  * time bootstrap_look_up succeeds (or on every successful reconnect after a
  * dead-name notification), and with connected=NO when the channel detects
  * the peer has gone away.  Use this to drive work that should only run while
- * the peer is reachable — for example, draining a local-pending queue as
+ * the peer is reachable, for example, draining a local-pending queue as
  * soon as the SpringBoard tweak loads.  Fires on the global concurrent
  * queue; the handler must not assume any particular thread.
  */

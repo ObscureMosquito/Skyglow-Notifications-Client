@@ -14,9 +14,6 @@
 /** Timing (seconds) */
 #define SGP_PONG_TIMEOUT_SEC       15
 #define SGP_CHALLENGE_WINDOW_SEC  300
-/* Bound on a single blocking network operation: the TCP connect wait and the
- * per-read/write socket timeout.  The daemon's FSM watchdogs derive their
- * per-state deadlines from this so both layers share one source of truth. */
 #define SGP_NET_OP_TIMEOUT_SEC      10
 
 /** Fixed Field Lengths (bytes) */
@@ -89,7 +86,6 @@ typedef enum : uint8_t {
     SGP_S_REGISTER_FAIL  = 0x19,
     SGP_S_PING           = 0x1A,
     SGP_S_TIME_SYNC      = 0x1B,
-
     SGP_C_LOGIN          = 0x20,
     SGP_C_LOGIN_RESP     = 0x21,
     SGP_C_POLL           = 0x22,

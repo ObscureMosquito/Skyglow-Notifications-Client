@@ -30,17 +30,10 @@ typedef NS_ENUM(NSInteger, SGCapability) {
  *
  * Every private (and select public) API the daemon uses is probed once
  * at startup, gated by iOS version, and exposed through factory methods
- * that return a working implementation — either the system class or a
- * builtin fallback.  Callers never branch on availability; they just
+ * that return a working implementation, either the system class or a
+ * builtin fallback.  Callers never branch on availability, they just
  * request an object and use it.
  *
- * No NSClassFromString, dlopen, or version checks should appear
- * anywhere outside this class.
- *
- * Usage:
- *   id algo = [[SGAvailability shared]
- *       createGrowthAlgorithmWithInterval:600 minimumInterval:600 maximumInterval:1680];
- *   // Always non-nil — private API or builtin fallback.
  */
 @interface SGAvailability : NSObject
 
@@ -97,7 +90,6 @@ typedef NS_ENUM(NSInteger, SGCapability) {
  * SGKeepAliveStrategy.  The returned object responds to the same
  * selectors in both cases; use the wrapper methods below to interact.
  *
- * Caller owns the returned object (retain count +1).
  */
 - (id)createGrowthAlgorithmWithInterval:(double)interval
                         minimumInterval:(double)minInterval
@@ -105,7 +97,7 @@ typedef NS_ENUM(NSInteger, SGCapability) {
 
 /**
  * Returns the current interval from a growth algorithm instance.
- * Safe to call with any object — returns 0.0 if algo is nil.
+ * Safe to call with any object, returns 0.0 if algo is nil.
  */
 - (double)currentIntervalForGrowthAlgorithm:(id)algo;
 

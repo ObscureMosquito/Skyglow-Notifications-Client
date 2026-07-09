@@ -25,6 +25,7 @@ OBJC_SRCS := \
 	$(DAEMON_DIR)/net/SGReachabilityMonitor.m \
 	$(DAEMON_DIR)/core/SGDaemon.m \
 	$(DAEMON_DIR)/platform/SGAvailability.m \
+	$(DAEMON_DIR)/platform/SGNotificationSenderMac.m \
 	$(DAEMON_DIR)/state/SGAtomicFile.m \
 	$(DAEMON_DIR)/state/SGDurableInbox.m \
 	$(DAEMON_DIR)/state/SGStateStore.m \

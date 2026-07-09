@@ -11,6 +11,7 @@
 #import "SGControlChannel.h"
 #import "SGLog.h"
 #import "SGMigration.h"
+#import "SGNotificationSender.h"
 #import <TargetConditionals.h>
 #include <signal.h>
 #include <errno.h>
@@ -474,10 +475,17 @@ int main(int argc, char *argv[]) {
             [daemon attachControlChannel:controlChannel];
         }
 
-        SGControlChannel *springBoardClient =
+        SGControlChannel *springBoardClient = nil;
+#if !TARGET_OS_OSX
+        springBoardClient =
             [[SGControlChannel clientForServiceName:SKYGLOW_CONTROL_SERVICE_SPRINGBOARD] retain];
         [springBoardClient start];
         [daemon attachSpringBoardClient:springBoardClient];
+#endif
+        SGNotificationSender *sender =
+            [[SGNotificationSender alloc] initWithSpringBoardChannel:springBoardClient];
+        [daemon attachSender:sender];
+        [sender release];
 
         [daemon.stateStore drainDurableEventInbox];
         [daemon start];
@@ -488,9 +496,12 @@ int main(int argc, char *argv[]) {
         [daemon requestGracefulDisconnect];
 
         [daemon attachControlChannel:nil];
+        [daemon attachSender:nil];
+#if !TARGET_OS_OSX
         [daemon attachSpringBoardClient:nil];
         [springBoardClient stop];
         [springBoardClient release];
+#endif
         [controlChannel stop];
         [controlChannel release];
 

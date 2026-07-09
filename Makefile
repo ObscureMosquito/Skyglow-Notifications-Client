@@ -23,6 +23,7 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/net/SGReachabilityMonitor.m \
     Skyglow-Notifications-Daemon/core/SGDaemon.m \
     Skyglow-Notifications-Daemon/platform/SGAvailability.m \
+    Skyglow-Notifications-Daemon/platform/SGNotificationSenderIOS.m \
     Skyglow-Notifications-Daemon/state/SGAtomicFile.m \
     Skyglow-Notifications-Daemon/state/SGDurableInbox.m \
     Skyglow-Notifications-Daemon/state/SGStateStore.m \
