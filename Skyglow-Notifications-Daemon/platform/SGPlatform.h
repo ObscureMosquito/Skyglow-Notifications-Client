@@ -18,7 +18,7 @@
                                      payload:(NSDictionary *)payload;
 - (void)resetAppRegistrationForBundleID:(NSString *)bundleID
                              completion:(void (^)(SGControlError err))completion;
-- (void)listRegisteredAppsWithCompletion:(void (^)(SGControlError err, NSData *listPayload))completion;
+- (void)listNativePushAppsWithCompletion:(void (^)(SGControlError err, NSData *listPayload))completion;
 - (void)registerInputAppPayload:(NSData *)bundleIdPayload
                      completion:(void (^)(SGControlError err, NSString *detail))completion;
 

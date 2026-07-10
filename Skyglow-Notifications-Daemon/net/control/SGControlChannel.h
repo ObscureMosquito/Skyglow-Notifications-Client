@@ -50,13 +50,7 @@ typedef void (^SGControlEventHandler)(SGControlEventType eventType, NSData *data
 typedef void (^SGControlSubscribeCompletion)(SGControlError error, uint64_t subscriptionId);
 
 /**
- * Client-side connection-state observer.  Fires with connected=YES the first
- * time bootstrap_look_up succeeds (or on every successful reconnect after a
- * dead-name notification), and with connected=NO when the channel detects
- * the peer has gone away.  Use this to drive work that should only run while
- * the peer is reachable, for example, draining a local-pending queue as
- * soon as the SpringBoard tweak loads.  Fires on the global concurrent
- * queue; the handler must not assume any particular thread.
+ * Client-side connection-state observer.
  */
 typedef void (^SGControlConnectionHandler)(BOOL connected);
 
@@ -82,9 +76,6 @@ typedef void (^SGControlConnectionHandler)(BOOL connected);
  * Brings the channel up.  For a server: allocates the receive port,
  * registers it with bootstrap, starts the receive loop.  For a client:
  * allocates the reply port, looks up the server, starts the receive loop.
- * Returns NO if the initial bring-up fails terminally (server: port
- * allocation or registration); clients always return YES because reconnect
- * is internal and a missing peer is not a terminal condition.
  */
 - (BOOL)start;
 
@@ -119,10 +110,7 @@ typedef void (^SGControlConnectionHandler)(BOOL connected);
 /**
  * Sends a request to the server and invokes completion with the response or
  * an error.  If the channel is not currently connected, the request is
- * queued and replayed on reconnect — completion fires only after the
- * request has been dispatched and either acknowledged or timed out.
- * timeout is an upper bound including any queue-wait time; pass 0 to use
- * the channel default (5 seconds).  Client role only.
+ * queued and replayed on reconnect.
  */
 - (void)sendRequest:(SGControlMessageType)messageType
             payload:(NSData *)payloadOrNil
@@ -131,11 +119,7 @@ typedef void (^SGControlConnectionHandler)(BOOL connected);
 
 /**
  * Subscribes to server-side events of the given type.  Completion fires
- * once the server acknowledges with a subscription id.  Subsequent events
- * of that type are delivered to handler until -unsubscribe: is called or
- * the connection drops (subscriptions do NOT auto-resubscribe on
- * reconnect — the caller decides whether re-subscription is appropriate
- * for their use case).  Client role only.
+ * once the server acknowledges with a subscription id.
  */
 - (void)subscribeToEvent:(SGControlEventType)eventType
                  handler:(SGControlEventHandler)handler
@@ -143,15 +127,14 @@ typedef void (^SGControlConnectionHandler)(BOOL connected);
 
 /**
  * Cancels a subscription previously created via subscribeToEvent:.  Unknown
- * ids are silently ignored.  Client role only.
+ * ids are silently ignored. Client role only.
  */
 - (void)unsubscribe:(uint64_t)subscriptionId;
 
 /**
  * Installs a single connection-state handler called whenever the underlying
  * Mach connection to the peer transitions between connected and disconnected
- * states.  Replaces any previously installed handler.  Pass nil to remove.
- * Safe to call before or after -start.  Client role only.
+ * states.  Replaces any previously installed handler.
  */
 - (void)setConnectionHandler:(SGControlConnectionHandler)handler;
 
@@ -161,8 +144,7 @@ typedef void (^SGControlConnectionHandler)(BOOL connected);
  * YES if the channel currently has a live connection to the peer.  For a
  * server, YES once -start has succeeded.  For a client, YES once
  * bootstrap_look_up has returned a valid port and no dead-name notification
- * has invalidated it.  Useful for callers that want to gate work on a fresh
- * connection rather than queue through the pending-request machinery.
+ * has invalidated it.
  */
 - (BOOL)isConnected;
 

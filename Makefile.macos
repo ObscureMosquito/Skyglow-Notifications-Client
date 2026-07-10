@@ -30,8 +30,9 @@ OBJC_SRCS := \
 	$(DAEMON_DIR)/state/SGDurableInbox.m \
 	$(DAEMON_DIR)/state/SGStateStore.m \
 	$(DAEMON_DIR)/state/SGMigration.m \
-	$(DAEMON_DIR)/net/SGControlAuthorization.m \
-	$(DAEMON_DIR)/net/SGControlChannel.m \
+	$(DAEMON_DIR)/net/control/SGControlAuthorization.m \
+	$(DAEMON_DIR)/net/control/SGControlChannel.m \
+	$(DAEMON_DIR)/net/control/SGControlCommandRouter.m \
 	$(DAEMON_DIR)/platform/SGCompatibilityShim.m
 
 C_SRCS := \
@@ -65,6 +66,7 @@ COMMON_FLAGS := \
 	-I$(DAEMON_DIR)/core \
 	-I$(DAEMON_DIR)/state \
 	-I$(DAEMON_DIR)/net \
+	-I$(DAEMON_DIR)/net/control \
 	-I$(DAEMON_DIR)/crypto \
 	-I$(DAEMON_DIR)/payload \
 	-I$(DAEMON_DIR)/platform \

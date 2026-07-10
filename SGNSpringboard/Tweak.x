@@ -6,6 +6,7 @@
 #include <bootstrap.h>
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
+#import "SGControlPayloadCodec.h"
 #import "SGSharedConstants.h"
 #import "SGDurableInbox.h"
 #import "SGCompatibilityShim.h"
@@ -557,33 +558,10 @@ static void StartSpringBoardControlChannel(void) {
                                     SGControlReplyErrorBlock replyError) {
         SGControlReplyBlock replyCopy = [reply copy];
         dispatch_async(dispatch_get_main_queue(), ^{
-            NSArray *bundles = SGN_AllNativelyRegisteredBundles();
-
-            NSMutableData *body = [NSMutableData data];
-            uint16_t count = 0;
-            for (NSString *bid in bundles) {
-                const char *bidC = [bid UTF8String];
-                if (!bidC) continue;
-                NSUInteger len = strlen(bidC);
-                if (len == 0 || len > 0xFFFF) continue;
-                NSUInteger projected = offsetof(SGCBundleIdListPayload, data)
-                                      + [body length] + 2 + len;
-                if (projected > SG_CONTROL_MAX_PAYLOAD) break;
-                uint16_t l = (uint16_t)len;
-                [body appendBytes:&l length:sizeof(l)];
-                [body appendBytes:bidC length:len];
-                count++;
-            }
-
-            NSMutableData *out = [NSMutableData dataWithCapacity:
-                offsetof(SGCBundleIdListPayload, data) + [body length]];
-            [out appendBytes:&count length:sizeof(count)];
-            [out appendData:body];
-
-            replyCopy(SGCMSG_BUNDLE_ID_LIST, out);
+            replyCopy(SGCMSG_BUNDLE_ID_LIST, SGCBundleIdListEncode(SGN_AllNativelyRegisteredBundles()));
             [replyCopy release];
         });
-    } forMessageType:SGCMSG_LIST_PUSH_REGISTERED_APPS];
+    } forMessageType:SGCMSG_LIST_NATIVE_PUSH_APPS];
 
     [gSGCSBServer registerHandler:^(const SGControlChannelMessage *req,
                                     SGControlReplyBlock reply,

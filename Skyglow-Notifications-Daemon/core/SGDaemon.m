@@ -267,17 +267,6 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     [self _kickLocalDeliveryDrain];
 }
 
-- (void)listRegisteredAppsWithCompletion:(void (^)(SGControlError, NSData *))completion {
-    if (!_platform) { if (completion) completion(SGCERR_UNREACHABLE, nil); return; }
-    [_platform listRegisteredAppsWithCompletion:completion];
-}
-
-- (void)registerInputAppPayload:(NSData *)bundleIdPayload
-                     completion:(void (^)(SGControlError, NSString *))completion {
-    if (!_platform) { if (completion) completion(SGCERR_UNREACHABLE, nil); return; }
-    [_platform registerInputAppPayload:bundleIdPayload completion:completion];
-}
-
 - (void)start {
     if ([[SGConfiguration sharedConfiguration] isEnabled]) {
         [self _enterActiveMode];
@@ -1165,12 +1154,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     [_stateLock unlock];
 
     [avail scheduleWakeAfterInterval:interval];
-}
-
-- (void)dispatchResetRegistrationForBundleIdentifier:(NSString *)bundleID
-                                          completion:(void (^)(SGControlError err))completion {
-    if (!_platform) { if (completion) completion(SGCERR_UNREACHABLE); return; }
-    [_platform resetAppRegistrationForBundleID:bundleID completion:completion];
 }
 
 - (BOOL)performSetEnabled:(BOOL)enabled {

@@ -54,17 +54,12 @@ typedef NS_ENUM(NSInteger, SGEvent) {
  */
 - (void)attachControlChannel:(SGControlChannel *)channel;
 
-/* The daemon's single handle to the platform layer (delivery + app-registration
- * ops).
- */
+/* The daemon's handle to the platform layer, used only for delivery. */
 - (void)attachPlatform:(SGPlatform *)platform;
 
 /* Retry pending local deliveries — called when the iOS presentation channel
  * (re)connects. No-op if there is nothing pending. */
 - (void)kickLocalDeliveryDrain;
-- (void)listRegisteredAppsWithCompletion:(void (^)(SGControlError err, NSData *listPayload))completion;
-- (void)registerInputAppPayload:(NSData *)bundleIdPayload
-                     completion:(void (^)(SGControlError err, NSString *detail))completion;
 
 /**
  * Starts the daemon's connection state machine.
@@ -98,13 +93,6 @@ typedef NS_ENUM(NSInteger, SGEvent) {
  * on every wake without wasting battery.
  */
 - (void)handleSystemWake;
-
-/**
- * Asks the SpringBoard tweak to reset iOS's view of the bundle's push
- * registration so its next register call hits our hook fresh.
- */
-- (void)dispatchResetRegistrationForBundleIdentifier:(NSString *)bundleID
-                                          completion:(void (^)(SGControlError err))completion;
 
 /**
  * Atomically deletes a profile slot: keychain entry + plist file + any

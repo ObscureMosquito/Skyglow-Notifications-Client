@@ -1,6 +1,7 @@
 #import "SNChannelGateway.h"
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
+#import "SGControlPayloadCodec.h"
 #include <string.h>
 
 @implementation SNChannelGateway
@@ -340,7 +341,7 @@ static void SendBundleCommandWithCompletion(uint8_t messageType, NSString *bundl
 + (void)queryNativelyPushRegisteredBundlesWithCompletion:(SNChannelBundleListCompletion)completion {
     if (!completion) return;
 
-    [DaemonClient() sendRequest:SGCMSG_LIST_PUSH_REGISTERED_APPS
+    [DaemonClient() sendRequest:SGCMSG_LIST_NATIVE_PUSH_APPS
                              payload:nil
                              timeout:0
                           completion:^(SGControlError err, const SGControlChannelMessage *response) {
@@ -350,23 +351,7 @@ static void SendBundleCommandWithCompletion(uint8_t messageType, NSString *bundl
 
         if (ok && response &&
             response->payloadLength >= offsetof(SGCBundleIdListPayload, data)) {
-            SGCBundleIdListPayload *body = (SGCBundleIdListPayload *)response->payload;
-            uint16_t count = body->count;
-            const uint8_t *p   = body->data;
-            const uint8_t *end = (const uint8_t *)response->payload + response->payloadLength;
-
-            for (uint16_t i = 0; i < count; i++) {
-                if ((NSInteger)(end - p) < 2) break;
-                uint16_t len;
-                memcpy(&len, p, sizeof(len));
-                p += 2;
-                if ((NSInteger)(end - p) < (NSInteger)len) break;
-                NSString *bid = [[[NSString alloc] initWithBytes:p
-                                                          length:len
-                                                        encoding:NSUTF8StringEncoding] autorelease];
-                if (bid.length) [out addObject:bid];
-                p += len;
-            }
+            [out addObjectsFromArray:SGCBundleIdListDecode(response->payload, response->payloadLength)];
         } else if (!ok) {
             if (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE) {
                 message = @"Could not communicate with SpringBoard. Try again after respringing.";

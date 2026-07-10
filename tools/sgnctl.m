@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
+#import "SGControlPayloadCodec.h"
 #import "SGStatusServer.h"
 #import "SGConfiguration.h"
 #import "SGSharedConstants.h"
@@ -197,7 +198,7 @@ static void Usage(void) {
         "  disable <bundle>       disable (mute) an app\n"
         "  delete-app <bundle>    drop an app's registration\n"
         "  clear-intent <bundle>  clear app intent (use native provider)\n"
-        "  list-apps              list push-registered apps (iOS only)\n\n"
+        "  list-apps              list Skyglow-registered apps\n\n"
         "  profiles                       list configured profiles + active\n"
         "  save-profile <1-5> <addr> [pem] register a server (address + optional cert PEM)\n"
         "  set-profile <1-5>              switch the active profile\n"
@@ -234,13 +235,10 @@ int main(int argc, char **argv) {
             fprintf(stderr, "sgnctl: use 'daemon on' or 'daemon off'\n"); return 2;
         }
         if ([cmd isEqualToString:@"list-apps"]) {
-            return Send(SGCMSG_LIST_PUSH_REGISTERED_APPS, nil, ^(const SGControlChannelMessage *r) {
-                if (!r || r->payloadLength == 0) { printf("(none)\n"); return; }
-                NSUInteger slot = SG_CONTROL_MAX_BUNDLE_ID_SIZE, count = r->payloadLength / slot;
-                for (NSUInteger i = 0; i < count; i++) {
-                    const char *b = (const char *)(r->payload + i * slot);
-                    if (b[0]) printf("%.*s\n", (int)slot, b);
-                }
+            return Send(SGCMSG_LIST_SKYGLOW_APPS, nil, ^(const SGControlChannelMessage *r) {
+                NSArray *apps = r ? SGCBundleIdListDecode(r->payload, r->payloadLength) : nil;
+                if (!apps.count) { printf("(none)\n"); return; }
+                for (NSString *a in apps) printf("%s\n", a.UTF8String);
             });
         }
 

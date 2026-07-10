@@ -11,7 +11,6 @@
 #import <mach/mach.h>
 #import <SystemConfiguration/SystemConfiguration.h>
 #import "SGControlChannelProtocol.h"
-#import "SGDatabaseManager.h"
 
 extern mach_port_t bootstrap_port;
 extern kern_return_t bootstrap_look_up_per_user(mach_port_t, const char *, uid_t, mach_port_t *);
@@ -56,6 +55,8 @@ static void SGCloseConnection(xpc_connection_t conn) {
     BOOL _resolvedEndpointFn;
 }
 
+#pragma mark - Lifecycle
+
 - (instancetype)initWithControlChannel:(SGControlChannel *)channel {
     (void)channel;
     if ((self = [super init])) {
@@ -73,6 +74,8 @@ static void SGCloseConnection(xpc_connection_t conn) {
     [_endpoints release];
     [super dealloc];
 }
+
+#pragma mark - usernoted archive + envelope
 
 - (NSData *)_archiveTitle:(NSString *)title subtitle:(NSString *)subtitle
                      body:(NSString *)body sound:(NSString *)sound {
@@ -115,6 +118,8 @@ static void SGCloseConnection(xpc_connection_t conn) {
     xpc_dictionary_set_data  (dv, "encoded_notification", [archive bytes], [archive length]);
     return dv;
 }
+
+#pragma mark - Per-user connection cache
 
 + (uid_t)_consoleUID {
     uid_t uid = (uid_t)-1;
@@ -201,6 +206,8 @@ static void SGCloseConnection(xpc_connection_t conn) {
     [_endpoints removeAllObjects];
 }
 
+#pragma mark - Delivery
+
 - (kern_return_t)sendNotificationForBundleID:(NSString *)bundleID payload:(NSDictionary *)payload {
     if (![bundleID isKindOfClass:[NSString class]] || bundleID.length == 0) return KERN_INVALID_ARGUMENT;
 
@@ -246,22 +253,9 @@ static void SGCloseConnection(xpc_connection_t conn) {
     if (completion) completion([bundleID length] ? SGCERR_OK : SGCERR_INVALID_REQUEST);
 }
 
-- (void)listRegisteredAppsWithCompletion:(void (^)(SGControlError, NSData *))completion {
-    NSMutableData *out = [NSMutableData data];
-    uint16_t count = 0;
-    [out appendBytes:&count length:sizeof(count)];
-    for (NSDictionary *reg in [[SGDatabaseManager sharedManager] allBundleRegistrations]) {
-        NSString *b = [reg objectForKey:@"bundleID"];
-        NSData *utf8 = [b isKindOfClass:[NSString class]] ? [b dataUsingEncoding:NSUTF8StringEncoding] : nil;
-        if (!utf8.length || utf8.length > 0xFFFF) continue;
-        if (out.length + sizeof(uint16_t) + utf8.length > SG_CONTROL_MAX_PAYLOAD) break;
-        uint16_t len = (uint16_t)utf8.length;
-        [out appendBytes:&len length:sizeof(len)];
-        [out appendData:utf8];
-        count++;
-    }
-    [out replaceBytesInRange:NSMakeRange(0, sizeof(count)) withBytes:&count];
-    if (completion) completion(SGCERR_OK, out);
+// No native push subsystem on macOS, nothing to enumerate.
+- (void)listNativePushAppsWithCompletion:(void (^)(SGControlError, NSData *))completion {
+    if (completion) completion(SGCERR_UNSUPPORTED, nil);
 }
 
 - (void)registerInputAppPayload:(NSData *)payload

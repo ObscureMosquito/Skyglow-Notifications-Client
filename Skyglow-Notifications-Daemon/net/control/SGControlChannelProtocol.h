@@ -51,13 +51,14 @@ typedef enum : uint8_t {
     SGCMSG_DISABLE_APP         = 0x1C,  /* SGCBundleIdPayload */
     SGCMSG_DELETE_APP          = 0x1D,  /* SGCBundleIdPayload */
     SGCMSG_RESET_APP_REGISTRATION    = 0x1E,  /* SGCBundleIdPayload */
-    SGCMSG_LIST_PUSH_REGISTERED_APPS = 0x1F,  /* (empty) -> SGCMSG_BUNDLE_ID_LIST */
+    SGCMSG_LIST_NATIVE_PUSH_APPS     = 0x1F,  /* (empty) -> SGCMSG_BUNDLE_ID_LIST */
     SGCMSG_QUERY_STATUS        = 0x20,  /* (empty) -> SGCMSG_STATUS_RESPONSE */
     SGCMSG_DELETE_PROFILE      = 0x21,  /* SGCProfileIndexPayload */
     SGCMSG_SAVE_PROFILE        = 0x22,  /* SGCProfileSavePayload */
     SGCMSG_SET_ACTIVE_PROFILE  = 0x23,  /* SGCProfileIndexPayload */
     SGCMSG_SET_ENABLED         = 0x24,  /* SGCEnabledPayload */
     SGCMSG_CLEAR_APP_INTENT    = 0x25,  /* SGCBundleIdPayload */
+    SGCMSG_LIST_SKYGLOW_APPS   = 0x26,  /* (empty) -> SGCMSG_BUNDLE_ID_LIST */
 
     SGCMSG_GENERIC_ACK         = 0x30,  /* (empty) */
     SGCMSG_TOKEN_RESPONSE      = 0x31,  /* SGCTokenResponsePayload */

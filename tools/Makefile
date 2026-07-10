@@ -9,6 +9,7 @@ CC         := xcrun clang
 
 INCLUDES := \
 	-I$(DAEMON_DIR)/net \
+	-I$(DAEMON_DIR)/net/control \
 	-I$(DAEMON_DIR)/shared \
 	-I$(DAEMON_DIR)/platform \
 	-I$(DAEMON_DIR)/core \
@@ -16,8 +17,8 @@ INCLUDES := \
 
 SRCS := \
 	tools/sgnctl.m \
-	$(DAEMON_DIR)/net/SGControlChannel.m \
-	$(DAEMON_DIR)/net/SGControlAuthorization.m \
+	$(DAEMON_DIR)/net/control/SGControlChannel.m \
+	$(DAEMON_DIR)/net/control/SGControlAuthorization.m \
 	$(DAEMON_DIR)/shared/SGLog.m
 
 CFLAGS := -fno-objc-arc -O2 -g -Wno-deprecated-declarations $(INCLUDES)

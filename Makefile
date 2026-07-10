@@ -28,8 +28,9 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/state/SGDurableInbox.m \
     Skyglow-Notifications-Daemon/state/SGStateStore.m \
     Skyglow-Notifications-Daemon/state/SGMigration.m \
-    Skyglow-Notifications-Daemon/net/SGControlAuthorization.m \
-    Skyglow-Notifications-Daemon/net/SGControlChannel.m \
+    Skyglow-Notifications-Daemon/net/control/SGControlAuthorization.m \
+    Skyglow-Notifications-Daemon/net/control/SGControlChannel.m \
+    Skyglow-Notifications-Daemon/net/control/SGControlCommandRouter.m \
     Skyglow-Notifications-Daemon/platform/SGCompatibilityShim.m \
     libraries/sqlite/sqlite3.c
 SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result \
@@ -39,6 +40,7 @@ SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result \
   -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/core \
   -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/state \
   -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/net \
+  -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/net/control \
   -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/crypto \
   -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/payload \
   -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/platform \

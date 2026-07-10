@@ -84,9 +84,9 @@
     }];
 }
 
-- (void)listRegisteredAppsWithCompletion:(void (^)(SGControlError, NSData *))completion {
+- (void)listNativePushAppsWithCompletion:(void (^)(SGControlError, NSData *))completion {
     if (!_channel) { if (completion) completion(SGCERR_UNREACHABLE, nil); return; }
-    [_channel sendRequest:SGCMSG_LIST_PUSH_REGISTERED_APPS
+    [_channel sendRequest:SGCMSG_LIST_NATIVE_PUSH_APPS
                   payload:nil
                   timeout:0
                completion:^(SGControlError err, const SGControlChannelMessage *r) {
