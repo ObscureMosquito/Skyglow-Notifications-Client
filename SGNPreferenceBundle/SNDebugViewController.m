@@ -8,8 +8,7 @@
 #import <mach/mach.h>
 #import <mach/message.h>
 #include <bootstrap.h>
-#import <objc/runtime.h>
-#import <objc/message.h>
+#import "SNAlert.h"
 
 extern char **environ;
 
@@ -22,7 +21,7 @@ typedef enum {
     SectionCount
 } DebugSection;
 
-@interface SNDebugViewController () <UIAlertViewDelegate> {
+@interface SNDebugViewController () {
     NSString       *_appCount;
     NSString       *_dbSize;
     NSMutableArray *_savedApps;   // @[ @{@"bundleID", @"token", @"routingKey"} ]
@@ -381,13 +380,8 @@ typedef enum {
                     [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
                                           withRowAnimation:UITableViewRowAnimationNone];
                 }
-                UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Delete Token"
-                                                             message:message ?: @"The daemon did not respond."
-                                                            delegate:nil
-                                                   cancelButtonTitle:@"OK"
-                                                   otherButtonTitles:nil];
-                [av show];
-                [av release];
+                [self showAlert:@"Could Not Delete Token"
+                        message:message ?: @"The daemon did not respond."];
                 return;
             }
 
@@ -400,35 +394,7 @@ typedef enum {
 }
 
 - (void)showAlert:(NSString *)title message:(NSString *)msg {
-    Class alertControllerClass = NSClassFromString(@"UIAlertController");
-    
-    if (alertControllerClass) {
-        SEL alertCreateSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
-        id (*createAlert)(Class, SEL, id, id, NSInteger) = (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
-        id alert = createAlert(alertControllerClass, alertCreateSel, title, msg, 1);
-        
-        Class alertActionClass = NSClassFromString(@"UIAlertAction");
-        SEL actionCreateSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
-        id (*createAction)(Class, SEL, id, NSInteger, id) = (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
-        id action = createAction(alertActionClass, actionCreateSel, @"OK", 0, nil);
-        
-        SEL addActionSel = NSSelectorFromString(@"addAction:");
-        void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
-        addAction(alert, addActionSel, action);
-        
-        SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
-        void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
-        present(self, presentSel, alert, YES, nil);
-        
-    } else {
-        UIAlertView *av = [[UIAlertView alloc] initWithTitle:title
-                                                     message:msg
-                                                    delegate:nil
-                                           cancelButtonTitle:@"OK"
-                                           otherButtonTitles:nil];
-        [av show];
-        [av release];
-    }
+    [SNAlert presentMessage:msg title:title from:self];
 }
 
 - (void)dealloc {

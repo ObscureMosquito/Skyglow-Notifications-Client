@@ -6,6 +6,7 @@
 #import <Preferences/PSTableCell.h>
 #import <UIKit/UIKit.h>
 #import "SNAppToggleCell.h"
+#import "SNAlert.h"
 
 static NSString * const kSGNSectionPropKey = @"sgnSection";
 static NSString * const kSGNSectionSkyglow = @"skyglow";
@@ -287,13 +288,7 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
         body = [NSString stringWithFormat:@"%@\n\n%@", bundleId, body];
     }
 
-    UIAlertView *av = [[UIAlertView alloc] initWithTitle:title
-                                                 message:body
-                                                delegate:nil
-                                       cancelButtonTitle:@"OK"
-                                       otherButtonTitles:nil];
-    [av show];
-    [av release];
+    [SNAlert presentMessage:body title:title from:self];
 }
 
 - (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {

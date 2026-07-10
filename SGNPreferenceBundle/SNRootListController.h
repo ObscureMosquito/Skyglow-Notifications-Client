@@ -12,9 +12,6 @@
 
 extern char **environ;
 
-@interface SNRootListController : PSListController {
-    UIAlertView *alertView;
-    UIActivityIndicatorView *activityIndicatorView;
-}
+@interface SNRootListController : PSListController
 
 @end

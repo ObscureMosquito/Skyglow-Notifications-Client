@@ -1,5 +1,6 @@
 #import "SNLogViewController.h"
 #import "SNDataManager.h"
+#import "SNAlert.h"
 
 @interface SNLogViewController ()
 @property (nonatomic, strong) UILabel *statusLabel;
@@ -183,14 +184,7 @@
         [msg appendString:suggestion];
     }
 
-    UIAlertView *av = [[UIAlertView alloc]
-                       initWithTitle:@"Status Detail"
-                             message:msg
-                            delegate:nil
-                   cancelButtonTitle:@"OK"
-                   otherButtonTitles:nil];
-    [av show];
-    [av release];
+    [SNAlert presentMessage:msg title:@"Status Detail" from:self];
 }
 
 @end

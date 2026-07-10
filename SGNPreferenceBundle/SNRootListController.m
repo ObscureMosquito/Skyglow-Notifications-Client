@@ -7,6 +7,7 @@
 #import "SNCustomizationViewController.h"
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
+#import "SNAlert.h"
 
 @implementation SNRootListController
 
@@ -124,14 +125,9 @@
                           completion:^(BOOL ok, NSString *message) {
             if (!ok) {
                 [self reloadSpecifier:specifierCopy animated:YES];
-                UIAlertView *alert = [[UIAlertView alloc]
-                    initWithTitle:@"Could Not Update Skyglow"
-                          message:message ?: @"The daemon did not accept the change."
-                         delegate:nil
-                cancelButtonTitle:@"OK"
-                otherButtonTitles:nil];
-                [alert show];
-                [alert release];
+                [SNAlert presentMessage:message ?: @"The daemon did not accept the change."
+                                  title:@"Could Not Update Skyglow"
+                                   from:self];
             }
             [specifierCopy release];
         }];

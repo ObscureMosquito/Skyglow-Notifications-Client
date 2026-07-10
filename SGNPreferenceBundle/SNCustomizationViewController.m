@@ -1,5 +1,6 @@
 #import "SNCustomizationViewController.h"
 #import "SNDataManager.h"
+#import "SNAlert.h"
 
 #pragma mark - Legend cell
 
@@ -247,14 +248,9 @@ typedef enum {
     if ([[SNDataManager shared] setIndicatorEnabled:requestedValue]) return;
 
     [self.indicatorSwitch setOn:!requestedValue animated:YES];
-    UIAlertView *alert = [[UIAlertView alloc]
-        initWithTitle:@"Could Not Update Skyglow"
-              message:@"The status-bar setting could not be saved."
-             delegate:nil
-    cancelButtonTitle:@"OK"
-    otherButtonTitles:nil];
-    [alert show];
-    [alert release];
+    [SNAlert presentMessage:@"The status-bar setting could not be saved."
+                      title:@"Could Not Update Skyglow"
+                       from:self];
 }
 
 - (void)dealloc {

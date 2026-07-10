@@ -4,8 +4,7 @@
 #import "SNChannelGateway.h"
 #import "SNDeferredActivity.h"
 #import <CoreFoundation/CoreFoundation.h>
-#import <objc/runtime.h>
-#import <objc/message.h>
+#import "SNAlert.h"
 
 enum {
     SectionProfiles = 0,
@@ -195,7 +194,7 @@ enum {
         [self.navigationController pushViewController:vc animated:YES];
         [vc release];
     } else {
-        [self _showActionSheetForProfileIndex:idx];
+        [self _showActionSheetForProfileIndex:idx fromView:[tableView cellForRowAtIndexPath:indexPath]];
     }
 }
 
@@ -229,13 +228,9 @@ enum {
             [self _setBackButtonHiddenForBusyState];
 
             if (!ok) {
-                UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Switch Profile"
-                                                             message:message ?: @"The daemon did not respond."
-                                                            delegate:nil
-                                                   cancelButtonTitle:@"OK"
-                                                   otherButtonTitles:nil];
-                [av show];
-                [av release];
+                [SNAlert presentMessage:message ?: @"The daemon did not respond."
+                                  title:@"Could Not Switch Profile"
+                                   from:self];
                 [self.tableView reloadData];
                 return;
             }
@@ -302,13 +297,9 @@ enum {
             [self _setBackButtonHiddenForBusyState];
 
             if (!ok) {
-                UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Delete Profile"
-                                                             message:message ?: @"The daemon did not respond. Try again."
-                                                            delegate:nil
-                                                   cancelButtonTitle:@"OK"
-                                                   otherButtonTitles:nil];
-                [av show];
-                [av release];
+                [SNAlert presentMessage:message ?: @"The daemon did not respond. Try again."
+                                  title:@"Could Not Delete Profile"
+                                   from:self];
                 if (capturedPath.row < (NSInteger)_profileIndices.count) {
                     [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
                                           withRowAnimation:UITableViewRowAnimationNone];
@@ -325,70 +316,24 @@ enum {
 
 #pragma mark - Action sheet for non-active profile
 
-- (void)_showActionSheetForProfileIndex:(NSInteger)idx {
-    Class alertControllerClass = NSClassFromString(@"UIAlertController");
-    if (alertControllerClass) {
-        SEL createSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
-        id (*create)(Class, SEL, id, id, NSInteger) =
-            (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
-        id sheet = create(alertControllerClass, createSel,
-                          [NSString stringWithFormat:@"Profile %ld", (long)idx],
-                          nil, 0 /* ActionSheet */);
-
-        Class actionClass = NSClassFromString(@"UIAlertAction");
-        SEL actionSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
-        id (*makeAction)(Class, SEL, id, NSInteger, id) =
-            (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
-
-        NSInteger capturedIdx = idx;
-
-        id setActiveAction = makeAction(actionClass, actionSel, @"Set Active", 0,
-            ^(id action) {
-                [self _performSetActiveForIndex:capturedIdx];
-            });
-
-        id viewAction = makeAction(actionClass, actionSel, @"View Details", 0,
-            ^(id action) {
-                SNServerInfoViewController *vc =
-                    [[SNServerInfoViewController alloc] initWithProfileIndex:capturedIdx];
-                [self.navigationController pushViewController:vc animated:YES];
-                [vc release];
-            });
-
-        id cancelAction = makeAction(actionClass, actionSel, @"Cancel", 1, nil);
-
-        SEL addSel = NSSelectorFromString(@"addAction:");
-        void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
-        addAction(sheet, addSel, setActiveAction);
-        addAction(sheet, addSel, viewAction);
-        addAction(sheet, addSel, cancelAction);
-
-        SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
-        void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
-        present(self, presentSel, sheet, YES, nil);
-    } else {
-        UIActionSheet *as = [[UIActionSheet alloc]
-                             initWithTitle:[NSString stringWithFormat:@"Profile %ld", (long)idx]
-                                  delegate:(id<UIActionSheetDelegate>)self
-                         cancelButtonTitle:@"Cancel"
-                    destructiveButtonTitle:nil
-                         otherButtonTitles:@"Set Active", @"View Details", nil];
-        as.tag = idx;
-        [as showInView:self.view];
-        [as release];
-    }
-}
-
-- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
-    NSInteger idx = actionSheet.tag;
-    if (buttonIndex == 0) {
-        [self _performSetActiveForIndex:idx];
-    } else if (buttonIndex == 1) {
-        SNServerInfoViewController *vc =
-            [[SNServerInfoViewController alloc] initWithProfileIndex:idx];
-        [self.navigationController pushViewController:vc animated:YES];
-        [vc release];
-    }
+- (void)_showActionSheetForProfileIndex:(NSInteger)idx fromView:(UIView *)sourceView {
+    NSInteger capturedIdx = idx;
+    [SNAlert presentActionSheetTitle:[NSString stringWithFormat:@"Profile %ld", (long)idx]
+                        cancelButton:@"Cancel"
+                   destructiveButton:nil
+                        otherButtons:@[@"Set Active", @"View Details"]
+                                from:self
+                          sourceView:sourceView
+                            onSelect:^(NSString *buttonTitle) {
+        if ([buttonTitle isEqualToString:@"Set Active"]) {
+            [self _performSetActiveForIndex:capturedIdx];
+        } else if ([buttonTitle isEqualToString:@"View Details"]) {
+            SNServerInfoViewController *vc =
+                [[SNServerInfoViewController alloc] initWithProfileIndex:capturedIdx];
+            [self.navigationController pushViewController:vc animated:YES];
+            [vc release];
+        }
+    }];
 }
 
 - (void)dealloc {

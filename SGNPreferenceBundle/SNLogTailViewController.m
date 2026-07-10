@@ -1,5 +1,6 @@
 #import "SNLogTailViewController.h"
 #import "SNDataManager.h"
+#import "SNAlert.h"
 #import "SGSharedConstants.h"
 #include <sys/stat.h>
 
@@ -60,7 +61,7 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
     SNLogScopeStorage  = 4,
 };
 
-@interface SNLogTailViewController () <UITextViewDelegate, UIScrollViewDelegate, UISearchBarDelegate, UIActionSheetDelegate>
+@interface SNLogTailViewController () <UITextViewDelegate, UIScrollViewDelegate, UISearchBarDelegate>
 @property (nonatomic, strong) UITextView          *textView;
 @property (nonatomic, strong) UISegmentedControl  *modeControl;
 @property (nonatomic, strong) UISegmentedControl  *filterControl;
@@ -494,38 +495,30 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
 
 - (void)presentShareSheet:(id)sender {
     NSString *pauseTitle = self.paused ? @"Resume Live Updates" : @"Pause Live Updates";
-    UIActionSheet *sheet = [[UIActionSheet alloc] initWithTitle:@"Daemon Log"
-                                                       delegate:self
-                                              cancelButtonTitle:@"Cancel"
-                                         destructiveButtonTitle:nil
-                                              otherButtonTitles:@"Copy Support Bundle",
-                                                                @"Copy Diagnostic Summary",
-                                                                @"Copy Visible Text",
-                                                                @"Copy Raw Tail",
-                                                                pauseTitle,
-                                                                nil];
-    if (self.pasteboardItem && [sheet respondsToSelector:@selector(showFromBarButtonItem:animated:)]) {
-        [sheet showFromBarButtonItem:self.pasteboardItem animated:YES];
-    } else {
-        [sheet showInView:self.view];
-    }
-    [sheet release];
-}
-
-- (void)actionSheet:(UIActionSheet *)actionSheet clickedButtonAtIndex:(NSInteger)buttonIndex {
-    if (buttonIndex == actionSheet.cancelButtonIndex) return;
-
-    if (buttonIndex == 0) {
-        [self copyTextToPasteboard:[self supportBundleText] message:@"Support bundle copied to clipboard."];
-    } else if (buttonIndex == 1) {
-        [self copyTextToPasteboard:[self diagnosticSummaryTextForCurrentTail] message:@"Diagnostic summary copied to clipboard."];
-    } else if (buttonIndex == 2) {
-        [self copyTextToPasteboard:self.textView.text message:@"Visible log copied to clipboard."];
-    } else if (buttonIndex == 3) {
-        [self copyTextToPasteboard:self.rawTailContent message:@"Raw log tail copied to clipboard."];
-    } else if (buttonIndex == 4) {
-        [self togglePause:nil];
-    }
+    UIView *anchor = [sender isKindOfClass:[UIView class]] ? (UIView *)sender : self.view;
+    [SNAlert presentActionSheetTitle:@"Daemon Log"
+                        cancelButton:@"Cancel"
+                   destructiveButton:nil
+                        otherButtons:@[@"Copy Support Bundle",
+                                       @"Copy Diagnostic Summary",
+                                       @"Copy Visible Text",
+                                       @"Copy Raw Tail",
+                                       pauseTitle]
+                                from:self
+                          sourceView:anchor
+                            onSelect:^(NSString *buttonTitle) {
+        if ([buttonTitle isEqualToString:@"Copy Support Bundle"]) {
+            [self copyTextToPasteboard:[self supportBundleText] message:@"Support bundle copied to clipboard."];
+        } else if ([buttonTitle isEqualToString:@"Copy Diagnostic Summary"]) {
+            [self copyTextToPasteboard:[self diagnosticSummaryTextForCurrentTail] message:@"Diagnostic summary copied to clipboard."];
+        } else if ([buttonTitle isEqualToString:@"Copy Visible Text"]) {
+            [self copyTextToPasteboard:self.textView.text message:@"Visible log copied to clipboard."];
+        } else if ([buttonTitle isEqualToString:@"Copy Raw Tail"]) {
+            [self copyTextToPasteboard:self.rawTailContent message:@"Raw log tail copied to clipboard."];
+        } else if ([buttonTitle isEqualToString:pauseTitle]) {
+            [self togglePause:nil];
+        }
+    }];
 }
 
 - (void)copyTextToPasteboard:(NSString *)text message:(NSString *)message {
@@ -630,15 +623,7 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
 }
 
 - (void)showSilentActionAlert:(NSString *)message {
-    /* UIAlertView is deprecated on iOS 8+ but still functional all the
-     * way down to iOS 2. */
-    UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Daemon Log"
-                                                 message:message
-                                                delegate:nil
-                                       cancelButtonTitle:@"OK"
-                                       otherButtonTitles:nil];
-    [av show];
-    [av release];
+    [SNAlert presentMessage:message title:@"Daemon Log" from:self];
 }
 
 #pragma mark - Filtering

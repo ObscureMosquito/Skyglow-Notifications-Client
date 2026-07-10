@@ -4,8 +4,7 @@
 #import "SNDeferredActivity.h"
 #import "../libraries/SFPFilePicker/include/SFPFilePicker.h"
 #import <CoreFoundation/CoreFoundation.h>
-#import <objc/runtime.h>
-#import <objc/message.h>
+#import "SNAlert.h"
 
 /* SFPFilePicker is a non-PS UIViewController subclass, so iOS 4-5
  * PSRootController hits the same "unrecognized selector" crash on
@@ -44,17 +43,9 @@ typedef enum {
     SectionCount   = 3
 } ServerInfoSection;
 
-static const NSInteger kAlertTagPEMConfirm   = 1;
-static const NSInteger kAlertTagUnregister   = 2;
-static const NSInteger kAlertTagFetchInstall = 3;
-
-
-@interface SNServerInfoViewController () <UIAlertViewDelegate, UITextFieldDelegate, SFPFilePickerDelegate>
+@interface SNServerInfoViewController () <UITextFieldDelegate, SFPFilePickerDelegate>
 
 @property (nonatomic, strong) NSString    *pendingServerAddress;
-@property (nonatomic, strong) NSString    *pendingPEMPath;
-@property (nonatomic, strong) NSString    *pendingFetchedPEM;
-@property (nonatomic, strong) NSString    *pendingFetchedAddress;
 @property (nonatomic, assign) BOOL         autoFetchInProgress;
 @property (nonatomic, assign) BOOL         unregisterInFlight;
 @property (nonatomic, assign) BOOL         unregisterRequestInFlight;
@@ -503,53 +494,22 @@ static const NSInteger kAlertTagFetchInstall = 3;
 }
 
 - (void)filePicker:(SFPFilePickerViewController *)picker didSelectFileAtPath:(NSString *)path {
-    self.pendingPEMPath = path;
     NSString *filename  = [path lastPathComponent];
     NSString *message   = [NSString stringWithFormat:
                            @"Import \"%@\" as the server certificate for %@?",
                            filename, self.pendingServerAddress];
 
-    Class alertControllerClass = NSClassFromString(@"UIAlertController");
-    if (alertControllerClass) {
-        SEL createSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
-        id (*create)(Class, SEL, id, id, NSInteger) =
-            (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
-        id alert = create(alertControllerClass, createSel,
-                          @"Confirm Certificate", message, 1 /* Alert */);
-
-        Class actionClass = NSClassFromString(@"UIAlertAction");
-        SEL actionSel     = NSSelectorFromString(@"actionWithTitle:style:handler:");
-        id (*makeAction)(Class, SEL, id, NSInteger, id) =
-            (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
-
-        id cancelAction = makeAction(actionClass, actionSel, @"Cancel", 1, nil);
-
-        NSString *capturedAddress = [[self.pendingServerAddress copy] autorelease];
-        NSString *capturedPath    = [[path copy] autorelease];
-        void (^confirmBlock)(id) = ^(id action) {
-            [self _confirmImportFromPath:capturedPath serverAddress:capturedAddress];
-        };
-        id importAction = makeAction(actionClass, actionSel, @"Import", 0, confirmBlock);
-
-        SEL addSel = NSSelectorFromString(@"addAction:");
-        void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
-        addAction(alert, addSel, cancelAction);
-        addAction(alert, addSel, importAction);
-
-        SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
-        void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
-        present(picker, presentSel, alert, YES, nil);
-    } else {
-        UIAlertView *av = [[UIAlertView alloc]
-                           initWithTitle:@"Confirm Certificate"
-                                 message:message
-                                delegate:self
-                       cancelButtonTitle:@"Cancel"
-                       otherButtonTitles:@"Import", nil];
-        av.tag = kAlertTagPEMConfirm;
-        [av show];
-        [av release];
-    }
+    NSString *capturedAddress = [[self.pendingServerAddress copy] autorelease];
+    NSString *capturedPath    = [[path copy] autorelease];
+    [SNAlert presentTitle:@"Confirm Certificate"
+                  message:message
+             cancelButton:@"Cancel"
+            confirmButton:@"Import"
+              destructive:NO
+                     from:picker
+                onConfirm:^{
+        [self _confirmImportFromPath:capturedPath serverAddress:capturedAddress];
+    }];
 }
 
 - (void)_beginAutoFetchCertificate {
@@ -567,13 +527,7 @@ static const NSInteger kAlertTagFetchInstall = 3;
         [self _reloadCertSections];
 
         if (errorMessage) {
-            UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Auto-Fetch Failed"
-                                                         message:errorMessage
-                                                        delegate:nil
-                                               cancelButtonTitle:@"OK"
-                                               otherButtonTitles:nil];
-            [av show];
-            [av release];
+            [SNAlert presentMessage:errorMessage title:@"Auto-Fetch Failed" from:self];
             return;
         }
         [self _confirmInstallFetchedPEM:pem serverAddress:address];
@@ -599,48 +553,17 @@ static const NSInteger kAlertTagFetchInstall = 3;
         @"Server: %@\nSubject: %@\nIssuer: %@\n\nSHA-256:\n%@",
         serverAddress, subject, issuer, fingerprint];
 
-    Class alertControllerClass = NSClassFromString(@"UIAlertController");
-    if (alertControllerClass) {
-        SEL createSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
-        id (*create)(Class, SEL, id, id, NSInteger) =
-            (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
-        id alert = create(alertControllerClass, createSel,
-                          @"Confirm Certificate", message, 1 /* Alert */);
-
-        Class actionClass = NSClassFromString(@"UIAlertAction");
-        SEL actionSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
-        id (*makeAction)(Class, SEL, id, NSInteger, id) =
-            (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
-
-        id cancelAction = makeAction(actionClass, actionSel, @"Cancel", 1, nil);
-        NSString *capturedAddress = serverAddress;
-        NSString *capturedPEM     = pem;
-        void (^installBlock)(id) = ^(id action) {
-            [self _commitInstallFetchedPEM:capturedPEM serverAddress:capturedAddress];
-        };
-        id installAction = makeAction(actionClass, actionSel, @"Install", 0, installBlock);
-
-        SEL addSel = NSSelectorFromString(@"addAction:");
-        void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
-        addAction(alert, addSel, cancelAction);
-        addAction(alert, addSel, installAction);
-
-        SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
-        void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
-        present(self, presentSel, alert, YES, nil);
-    } else {
-        self.pendingFetchedPEM     = pem;
-        self.pendingFetchedAddress = serverAddress;
-        UIAlertView *av = [[UIAlertView alloc]
-                           initWithTitle:@"Confirm Certificate"
-                                 message:message
-                                delegate:self
-                       cancelButtonTitle:@"Cancel"
-                       otherButtonTitles:@"Install", nil];
-        av.tag = kAlertTagFetchInstall;
-        [av show];
-        [av release];
-    }
+    NSString *capturedAddress = serverAddress;
+    NSString *capturedPEM     = pem;
+    [SNAlert presentTitle:@"Confirm Certificate"
+                  message:message
+             cancelButton:@"Cancel"
+            confirmButton:@"Install"
+              destructive:NO
+                     from:self
+                onConfirm:^{
+        [self _commitInstallFetchedPEM:capturedPEM serverAddress:capturedAddress];
+    }];
 }
 
 - (void)_commitInstallFetchedPEM:(NSString *)pem serverAddress:(NSString *)serverAddress {
@@ -659,7 +582,6 @@ static const NSInteger kAlertTagFetchInstall = 3;
 }
 
 - (void)_confirmImportFromPath:(NSString *)path serverAddress:(NSString *)serverAddress {
-    self.pendingPEMPath = nil;
     if (![self _beginProfileSaveActivityWithStatusText:@"Importing\xe2\x80\xa6"
                                        wizardSourceRow:WizardCertRowManual]) {
         return;
@@ -683,14 +605,9 @@ static const NSInteger kAlertTagFetchInstall = 3;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!valid) {
                 [self _finishProfileSaveActivityWithCompletion:^{
-                    UIAlertView *av = [[UIAlertView alloc]
-                                       initWithTitle:@"Import Failed"
-                                             message:@"Could not read the selected .pem file. Make sure the file is a valid PEM certificate."
-                                            delegate:nil
-                                   cancelButtonTitle:@"OK"
-                                   otherButtonTitles:nil];
-                    [av show];
-                    [av release];
+                    [SNAlert presentMessage:@"Could not read the selected .pem file. Make sure the file is a valid PEM certificate."
+                                      title:@"Import Failed"
+                                       from:self];
                 }];
                 [pemResult release];
                 return;
@@ -784,13 +701,9 @@ static const NSInteger kAlertTagFetchInstall = 3;
                               completion:^(BOOL ok, NSString *message) {
         [self _finishProfileSaveActivityWithCompletion:^{
             if (!ok) {
-                UIAlertView *av = [[UIAlertView alloc] initWithTitle:failureTitle ?: @"Save Failed"
-                                                             message:message ?: @"The daemon did not respond."
-                                                            delegate:nil
-                                                   cancelButtonTitle:@"OK"
-                                                   otherButtonTitles:nil];
-                [av show];
-                [av release];
+                [SNAlert presentMessage:message ?: @"The daemon did not respond."
+                                  title:failureTitle ?: @"Save Failed"
+                                   from:self];
                 [self.tableView reloadData];
                 return;
             }
@@ -827,13 +740,9 @@ static const NSInteger kAlertTagFetchInstall = 3;
             self.tableView.allowsSelection = YES;
 
             if (!ok) {
-                UIAlertView *av = [[UIAlertView alloc] initWithTitle:@"Could Not Unregister"
-                                                             message:message ?: @"The daemon did not respond."
-                                                            delegate:nil
-                                                   cancelButtonTitle:@"OK"
-                                                   otherButtonTitles:nil];
-                [av show];
-                [av release];
+                [SNAlert presentMessage:message ?: @"The daemon did not respond."
+                                  title:@"Could Not Unregister"
+                                   from:self];
                 return;
             }
 
@@ -844,74 +753,19 @@ static const NSInteger kAlertTagFetchInstall = 3;
 }
 
 - (void)_showUnregisterConfirmation {
-    NSString *msg = @"This will disable the daemon and delete your cryptographic keys. The server will be disconnected.";
-
-    Class alertControllerClass = NSClassFromString(@"UIAlertController");
-    if (alertControllerClass) {
-        SEL createSel = NSSelectorFromString(@"alertControllerWithTitle:message:preferredStyle:");
-        id (*create)(Class, SEL, id, id, NSInteger) =
-            (id (*)(Class, SEL, id, id, NSInteger))objc_msgSend;
-        id alert = create(alertControllerClass, createSel, @"Unregister?", msg, 1);
-
-        Class actionClass = NSClassFromString(@"UIAlertAction");
-        SEL actionSel = NSSelectorFromString(@"actionWithTitle:style:handler:");
-        id (*makeAction)(Class, SEL, id, NSInteger, id) =
-            (id (*)(Class, SEL, id, NSInteger, id))objc_msgSend;
-
-        id cancelAction = makeAction(actionClass, actionSel, @"Cancel", 1, nil);
-
-        void (^unregBlock)(id) = ^(id action) { [self _performUnregister]; };
-        id unregAction = makeAction(actionClass, actionSel, @"Unregister", 2, unregBlock);
-
-        SEL addSel = NSSelectorFromString(@"addAction:");
-        void (*addAction)(id, SEL, id) = (void (*)(id, SEL, id))objc_msgSend;
-        addAction(alert, addSel, cancelAction);
-        addAction(alert, addSel, unregAction);
-
-        SEL presentSel = NSSelectorFromString(@"presentViewController:animated:completion:");
-        void (*present)(id, SEL, id, BOOL, id) = (void (*)(id, SEL, id, BOOL, id))objc_msgSend;
-        present(self, presentSel, alert, YES, nil);
-    } else {
-        UIAlertView *av = [[UIAlertView alloc]
-                           initWithTitle:@"Unregister?"
-                                 message:msg
-                                delegate:self
-                       cancelButtonTitle:@"Cancel"
-                       otherButtonTitles:@"Unregister", nil];
-        av.tag = kAlertTagUnregister;
-        [av show];
-        [av release];
-    }
-}
-
-- (void)alertView:(UIAlertView *)alertView clickedButtonAtIndex:(NSInteger)buttonIndex {
-    if (alertView.tag == kAlertTagPEMConfirm) {
-        if (buttonIndex == 1) {
-            [self _confirmImportFromPath:self.pendingPEMPath
-                           serverAddress:self.pendingServerAddress];
-        } else {
-            self.pendingPEMPath = nil;
-        }
-    } else if (alertView.tag == kAlertTagFetchInstall) {
-        NSString *pem  = [[self.pendingFetchedPEM retain] autorelease];
-        NSString *addr = [[self.pendingFetchedAddress retain] autorelease];
-        self.pendingFetchedPEM     = nil;
-        self.pendingFetchedAddress = nil;
-        if (buttonIndex == 1 && [pem length] > 0) {
-            [self _commitInstallFetchedPEM:pem serverAddress:addr];
-        }
-    } else if (alertView.tag == kAlertTagUnregister) {
-        if (buttonIndex == 1) {
-            [self _performUnregister];
-        }
-    }
+    [SNAlert presentTitle:@"Unregister?"
+                  message:@"This will disable the daemon and delete your cryptographic keys. The server will be disconnected."
+             cancelButton:@"Cancel"
+            confirmButton:@"Unregister"
+              destructive:YES
+                     from:self
+                onConfirm:^{
+        [self _performUnregister];
+    }];
 }
 
 - (void)dealloc {
     [_pendingServerAddress release];
-    [_pendingPEMPath release];
-    [_pendingFetchedPEM release];
-    [_pendingFetchedAddress release];
     [_profileSaveStatusText release];
     [_unregisterActivity release];
     [_profileSaveActivity release];
