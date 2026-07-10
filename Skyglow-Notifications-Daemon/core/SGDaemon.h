@@ -26,6 +26,7 @@ typedef NS_ENUM(NSInteger, SGEvent) {
     SGEventConnectFailed,
     SGEventAuthSuccess,
     SGEventAuthFailed,
+    SGEventRegistrationRejected,
     SGEventReplaced,
     SGEventDisconnected,
     SGEventVersionMismatch,

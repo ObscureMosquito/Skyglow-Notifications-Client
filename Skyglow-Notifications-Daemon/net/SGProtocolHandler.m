@@ -2,6 +2,7 @@
 #import "SGDatabaseManager.h"
 #import "SGConfiguration.h"
 #import "SGKeepAliveOffload.h"
+#import "SGAvailability.h"
 #import "SGLog.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -328,8 +329,6 @@ void SGP_PrepareRegistrationKeypair(void) {
 BOOL SGP_BeginFirstTimeRegistration(void) {
     if (!SGP_IsConnected()) return NO;
 
-    /* No-op if the keypair was pre-generated during connect; otherwise this
-     * generates it inline as a fallback (e.g. if pre-gen was never kicked). */
     SGP_PrepareRegistrationKeypair();
 
     pthread_mutex_lock(&_regKeyLock);
@@ -781,11 +780,16 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         }
     }
 
+    int result = SGP_OK;
+    uint32_t rxAssertion = 0;
     uint8_t *raw = NULL;
     if (len > 0) {
+        rxAssertion = [[SGAvailability shared]
+            createTimedPowerAssertionWithName:@"com.skyglow.sgn.receive"
+                                      timeout:SG_POWER_ASSERTION_TIMEOUT_SEC];
         raw = malloc(len);
-        if (!raw) return SGP_ERR_IO;
-        if (SG_SSLReadExact(raw, (int)len) != 0) { free(raw); return SGP_ERR_IO; }
+        if (!raw) { result = SGP_ERR_IO; goto cleanup; }
+        if (SG_SSLReadExact(raw, (int)len) != 0) { result = SGP_ERR_IO; goto cleanup; }
     }
 
     switch (type) {
@@ -800,8 +804,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         default:
             break;
     }
-
-    int result = SGP_OK;
 
     switch (type) {
         case SGP_S_HELLO: {
@@ -1033,6 +1035,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
     }
 
 cleanup:
+    if (rxAssertion) [[SGAvailability shared] releasePowerAssertion:rxAssertion];
     free(raw);
     return result;
 }

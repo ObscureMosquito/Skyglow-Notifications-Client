@@ -30,13 +30,15 @@ static int64_t _sgDaemonStartTime = 0;
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
-        #if TARGET_OS_IPHONE
-        if (setgid(0) != 0 || setuid(0) != 0) {
+        if (getuid() != 0 || geteuid() != 0) {
+            setgid(0);
+            setuid(0);
+        }
+        if (geteuid() != 0) {
             fprintf(stderr, "code=%s result=failed reason=privilege_elevation\n",
                     SGND_DAEMON_PRIVILEGE_FAILED);
             exit(EXIT_FAILURE);
         }
-        #endif
 
         signal(SIGPIPE, SIG_IGN);
 

@@ -245,9 +245,9 @@ static void *SGCRecvThreadEntry(void *arg) {
             [_pendingRequests removeAllObjects];
             for (NSNumber *rid in snapshot) {
                 NSDictionary *entry = snapshot[rid];
-                SGControlClientCompletion comp = (SGControlClientCompletion)entry[@"completion"];
-                if (comp) {
-                    SGControlClientCompletion compCopy = SGC_AUTORELEASE([comp copy]);
+                id comp = entry[@"completion"];
+                if (comp && comp != [NSNull null]) {
+                    SGControlClientCompletion compCopy = SGC_AUTORELEASE([(SGControlClientCompletion)comp copy]);
                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                         compCopy(SGCERR_UNREACHABLE, NULL);
                     });

@@ -116,6 +116,9 @@ typedef NS_ENUM(NSInteger, SGCapability) {
 
 #pragma mark - Power Assertion Management
 
+/* Shared backstop for every power assertion we hold across the receive path */
+#define SG_POWER_ASSERTION_TIMEOUT_SEC 25
+
 /**
  * Creates a time-limited power assertion to prevent system sleep
  * during notification processing. Returns an opaque assertion ID

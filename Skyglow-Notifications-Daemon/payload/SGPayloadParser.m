@@ -46,10 +46,8 @@ NSDictionary *SG_PayloadParseBinaryData(const uint8_t *buffer, uint32_t length) 
 SGPayloadFormat SG_PayloadSniffFormat(const uint8_t *buffer, uint32_t length) {
     if (!buffer || length == 0) return SGPayloadFormatUnknown;
 
-    /* Binary plist has a fixed magic and never leads with whitespace. */
     if (length >= 8 && memcmp(buffer, "bplist0", 7) == 0) return SGPayloadFormatPlist;
 
-    /* For the text forms, skip insignificant leading whitespace. */
     uint32_t i = 0;
     while (i < length) {
         uint8_t c = buffer[i];
@@ -59,11 +57,9 @@ SGPayloadFormat SG_PayloadSniffFormat(const uint8_t *buffer, uint32_t length) {
     if (i >= length) return SGPayloadFormatUnknown;
 
     uint8_t c = buffer[i];
-    if (c == '{' || c == '[') return SGPayloadFormatJSON;  /* JSON object/array  */
-    if (c == '<')              return SGPayloadFormatPlist; /* XML plist (<?xml/<plist) */
+    if (c == '{' || c == '[') return SGPayloadFormatJSON;
+    if (c == '<')              return SGPayloadFormatPlist;
 
-    /* TLV opens with a known one-byte field type. These (0x01-0x04) cannot
-     * collide with '{' (0x7B), '[' (0x5B), '<' (0x3C) or 'b' (0x62). */
     if (c == SG_TLV_TYPE_TITLE || c == SG_TLV_TYPE_BODY ||
         c == SG_TLV_TYPE_SOUND || c == SG_TLV_TYPE_CUSTOM_DATA) {
         return SGPayloadFormatTLV;
@@ -73,26 +69,27 @@ SGPayloadFormat SG_PayloadSniffFormat(const uint8_t *buffer, uint32_t length) {
 
 #pragma mark - Canonicalization
 
-/* Recursively rebuilds a parsed graph keeping only property-list-representable
- * values with string keys. Drops NSNull (which JSON can produce but binary
- * plist cannot encode) and anything unexpected, guaranteeing the result
- * survives the NSPropertyListSerialization IPC hop to SpringBoard. Returns nil
- * for a value that should be omitted entirely. */
-static id SG_MakePlistSafe(id obj) {
+#define SG_PLIST_MAX_DEPTH 32
+
+static id SG_MakePlistSafeDepth(id obj, int depth, BOOL *tooDeep) {
     if ([obj isKindOfClass:[NSDictionary class]]) {
+        if (depth > SG_PLIST_MAX_DEPTH) { *tooDeep = YES; return nil; }
         NSMutableDictionary *out = [NSMutableDictionary dictionary];
         NSDictionary *in = (NSDictionary *)obj;
         for (id key in in) {
-            if (![key isKindOfClass:[NSString class]]) continue; /* plist keys must be strings */
-            id safe = SG_MakePlistSafe([in objectForKey:key]);
+            if (![key isKindOfClass:[NSString class]]) continue;
+            id safe = SG_MakePlistSafeDepth([in objectForKey:key], depth + 1, tooDeep);
+            if (*tooDeep) return nil;
             if (safe) [out setObject:safe forKey:key];
         }
         return out;
     }
     if ([obj isKindOfClass:[NSArray class]]) {
+        if (depth > SG_PLIST_MAX_DEPTH) { *tooDeep = YES; return nil; }
         NSMutableArray *out = [NSMutableArray array];
         for (id val in (NSArray *)obj) {
-            id safe = SG_MakePlistSafe(val);
+            id safe = SG_MakePlistSafeDepth(val, depth + 1, tooDeep);
+            if (*tooDeep) return nil;
             if (safe) [out addObject:safe];
         }
         return out;
@@ -103,12 +100,14 @@ static id SG_MakePlistSafe(id obj) {
         [obj isKindOfClass:[NSDate class]]) {
         return obj;
     }
-    return nil; /* NSNull and any non-plist type are dropped */
+    return nil;
 }
 
-/* Promotes the flat TLV dictionary ({title, body, sound, custom_data}) into the
- * canonical APNS userInfo shape so all three encodings converge on one model.
- * Returns nil when there is nothing deliverable. */
+static id SG_MakePlistSafe(id obj) {
+    BOOL tooDeep = NO;
+    return SG_MakePlistSafeDepth(obj, 1, &tooDeep);
+}
+
 static NSDictionary *SG_NormalizeTLVToAPNS(NSDictionary *flat) {
     if (!flat || flat.count == 0) return nil;
 
@@ -127,9 +126,6 @@ static NSDictionary *SG_NormalizeTLVToAPNS(NSDictionary *flat) {
     return result;
 }
 
-/* Validates an already-APNS-shaped graph (from JSON or plist). The top level
- * must be a dictionary; if it carries an "aps" entry that entry must itself be
- * a dictionary. Returns a plist-safe copy, or nil. */
 static NSDictionary *SG_CanonicalizeAPNSDict(id obj) {
     if (![obj isKindOfClass:[NSDictionary class]]) return nil;
     id aps = [(NSDictionary *)obj objectForKey:@"aps"];
@@ -192,10 +188,6 @@ NSData *SG_PayloadInflate(const uint8_t *buffer, uint32_t length, uint32_t maxOu
 NSDictionary *SG_PayloadDecode(const uint8_t *buffer, uint32_t length, uint8_t contentType) {
     if (!buffer || length == 0) return nil;
 
-    /* Cross-check: the declared content_type is the dispatch hint, but the
-     * bytes get the final say. A type that names another format outright is a
-     * lie we reject before parsing; the strict per-format decoder is the real
-     * gate for everything else. */
     SGPayloadFormat sniffed = SG_PayloadSniffFormat(buffer, length);
 
     switch (contentType) {
@@ -208,8 +200,6 @@ NSDictionary *SG_PayloadDecode(const uint8_t *buffer, uint32_t length, uint8_t c
             return SG_DecodePlist(buffer, length);
 
         case SGPayloadFormatTLV:
-            /* TLV may sniff as TLV or Unknown (its body is opaque past the
-             * first field), but never as another structured format. */
             if (sniffed == SGPayloadFormatJSON || sniffed == SGPayloadFormatPlist) return nil;
             return SG_NormalizeTLVToAPNS(SG_PayloadParseBinaryData(buffer, length));
 
@@ -218,6 +208,6 @@ NSDictionary *SG_PayloadDecode(const uint8_t *buffer, uint32_t length, uint8_t c
             return SG_CanonicalizeAPNSDict(SG_STLVDecode(buffer, length));
 
         default:
-            return nil; /* unknown / reserved content type */
+            return nil;
     }
 }

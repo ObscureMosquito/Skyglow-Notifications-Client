@@ -128,8 +128,6 @@ typedef enum : uint8_t {
  */
 - (void)protocolDidAuthenticateSuccessfully;
 
-@optional
-
 /**
  * Called when the server confirms all offline messages have been delivered.
  */

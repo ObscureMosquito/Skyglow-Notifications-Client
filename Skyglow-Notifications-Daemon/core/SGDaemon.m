@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <stdatomic.h>
 #include <libkern/OSAtomic.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <IOKit/IOMessage.h>
@@ -27,7 +28,9 @@ static const int64_t       kSGDrainSafetyIntervalSec              = 300;
 static const int64_t       kSGDrainSafetyLeewaySec                 =  30;
 static const int64_t       kSGLocalPendingFallbackDeadlineSec      = 86400;
 static const NSUInteger    kSGSeenMessageIDCap                     = 200;
-static const NSTimeInterval kSGNotificationProcessingAssertionSec  = 15.0;
+
+_Static_assert(SG_POWER_ASSERTION_TIMEOUT_SEC >= SGP_PONG_TIMEOUT_SEC + 10,
+               "power-assertion backstop must outlast the probe liveness check");
 
 typedef struct { SGState from; SGState to; } SGTransition;
 
@@ -121,6 +124,7 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateConnected,         SGStateIdleUnregistered    },
     { SGStateConnected,         SGStateDisabled            },
     { SGStateConnected,         SGStateResolvingDNS        },
+    { SGStateConnected,         SGStateErrorAuth           },  /* server can revoke credentials mid-session */
     { SGStateConnected,         SGStateErrorVersionMismatch },
 
     { SGStateBackingOff,        SGStateConnecting          },
@@ -210,6 +214,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     io_connect_t           _powerRootPort;
     io_object_t            _powerNotifier;
     IONotificationPortRef  _powerNotifyPort;
+    _Atomic uint32_t       _probeAssertionID;
 }
 
 - (id)init {
@@ -574,6 +579,17 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             } else if (event == SGEventAuthFailed) {
                 strlcpy(_lastErrorDetail, "Registration succeeded but key could not be stored", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
+            } else if (event == SGEventRegistrationRejected) {
+                /* The protocol assigns the server's rejection code no semantics,
+                 * so we cannot tell a transient refusal (capacity) from a
+                 * permanent one (policy).  Back off rather than hard-stopping:
+                 * the circuit breaker bounds a server that rejects forever, and
+                 * a transient refusal recovers without manual intervention. */
+                NSString *reason = [payload isKindOfClass:[NSString class]] ? (NSString *)payload : nil;
+                snprintf(_lastErrorDetail, sizeof(_lastErrorDetail),
+                         "Server rejected registration: %s",
+                         reason ? [reason UTF8String] : "unknown reason");
+                [self executeFailureBackoff];
             } else if (event == SGEventDisconnected) {
                 strlcpy(_lastErrorDetail, "Disconnected during registration", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
@@ -615,6 +631,15 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             } else if (event == SGEventDisconnected) {
                 strlcpy(_lastErrorDetail, "Connection lost", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
+            } else if (event == SGEventAuthFailed) {
+                /* The server can revoke credentials mid-session (S_DISCONNECT
+                 * reason=AUTH_FAIL).  Without this arm the event fell through as
+                 * no_transition: the worker exited, nothing closed the socket,
+                 * SGP_IsConnected() stayed true, and the daemon reported
+                 * Connected forever while delivering nothing.  Same hard-stop
+                 * semantics (and same no-wipe rule) as failing auth mid-handshake. */
+                strlcpy(_lastErrorDetail, "Server revoked authentication \xe2\x80\x94 re-register to recover", sizeof(_lastErrorDetail));
+                [self executeTransitionToState:SGStateErrorAuth backoff:0 ip:NULL];
             } else if (event == SGEventSystemDidWake || event == SGEventNetworkUp) {
                 SGLOGI(SGDaemon, "code=%s trigger=%s action=probe_liveness", SGND_KEEPALIVE_PROBE,
                        (event == SGEventSystemDidWake) ? "system_wake" : "network_change");
@@ -893,7 +918,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
         uint32_t assertionID = [[SGAvailability shared]
             createTimedPowerAssertionWithName:@"com.skyglow.sgn.processing"
-                                     timeout:kSGNotificationProcessingAssertionSec];
+                                     timeout:SG_POWER_ASSERTION_TIMEOUT_SEC];
 
         NSData *routingKey = messageDict[@"routing_key"];
         NSDictionary *routingData = [db tokenDataForRoutingKey:routingKey];
@@ -1031,6 +1056,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
 
 - (void)protocolDidReceiveKeepAlivePong {
+    [self _releaseProbeAssertion:atomic_load(&_probeAssertionID)];
+
     [_stateLock lock];
     double oldVal = [self _currentKeepAliveInterval];
     [self _processKeepAliveResult:YES];
@@ -1054,6 +1081,13 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     if (llabs(offsetSeconds) > 60) {
         SGLOGW(SGDaemon, "code=%s offset=%llds result=detected", SGND_REGISTRATION_CLOCK_DRIFT, offsetSeconds);
     }
+}
+
+- (void)protocolDidFailRegistrationWithCode:(uint8_t)code reason:(NSString *)reason {
+    const char *reasonUTF8 = [reason UTF8String];
+    SGLOGE(SGDaemon, "code=%s server_code=%u reason=%s action=backoff",
+           SGND_REGISTRATION_SERVER_REJECTED, (unsigned)code, reasonUTF8 ? reasonUTF8 : "unknown");
+    [self handleEvent:SGEventRegistrationRejected payload:reason];
 }
 
 - (void)protocolDidCompleteRegistrationWithAddress:(NSString *)deviceAddress privateKey:(char *)pemKey serverVersion:(uint32_t)serverVersion {
@@ -1472,13 +1506,23 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     [self _scheduleKeepAliveTimer];
 }
 
+- (void)_releaseProbeAssertion:(uint32_t)assertionID {
+    if (!assertionID) return;
+    uint32_t expected = assertionID;
+    if (atomic_compare_exchange_strong(&_probeAssertionID, &expected, 0)) {
+        [[SGAvailability shared] releasePowerAssertion:assertionID];
+    }
+}
+
 - (void)_probeConnectionLiveness {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         if (!SGP_IsConnected()) return;
 
         uint32_t assertionID = [[SGAvailability shared]
             createTimedPowerAssertionWithName:@"com.skyglow.sgn.probe"
-                                      timeout:(NSTimeInterval)(SGP_PONG_TIMEOUT_SEC + 10)];
+                                      timeout:SG_POWER_ASSERTION_TIMEOUT_SEC];
+        uint32_t previous = atomic_exchange(&_probeAssertionID, assertionID);
+        if (previous) [[SGAvailability shared] releasePowerAssertion:previous];
 
         SGP_SendKeepAlivePing();
 
@@ -1492,7 +1536,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 [self _recordKeepAliveFailureFeedback];
                 SGP_AbortConnection();
             }
-            [[SGAvailability shared] releasePowerAssertion:assertionID];
+            [self _releaseProbeAssertion:assertionID];
         });
     });
 }

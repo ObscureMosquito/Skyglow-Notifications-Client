@@ -25,8 +25,6 @@ cat > "$PLIST_PATH" << EOF
     <dict>
         <key>Label</key>
         <string>com.skyglow.snd</string>
-        <key>UserName</key>
-        <string>mobile</string>
         <key>ProgramArguments</key>
         <array>
             <string>$DAEMON_PATH</string>

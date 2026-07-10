@@ -15,6 +15,7 @@ static const char * const kSGCAllowedSenderPaths[] = {
     "/System/Applications/Preferences.app/Preferences",
     "/Applications/Settings.app/Settings",
     "/System/Applications/Settings.app/Settings",
+    "/System/Library/VideoCodecs/SysBins/Applications/Preferences.app/Preferences"
 };
 
 static const char * const kSGCPhysicalPathPrefixes[] = {
