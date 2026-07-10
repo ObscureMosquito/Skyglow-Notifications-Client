@@ -1,4 +1,5 @@
 #import "SGDaemon.h"
+#import "SGConnectionPolicy.h"
 #import "SGConfiguration.h"
 #import "SGDatabaseManager.h"
 #import "SGTokenManager.h"
@@ -32,8 +33,6 @@ static const NSUInteger    kSGSeenMessageIDCap                     = 200;
 _Static_assert(SG_POWER_ASSERTION_TIMEOUT_SEC >= SGP_PONG_TIMEOUT_SEC + 10,
                "power-assertion backstop must outlast the probe liveness check");
 
-typedef struct { SGState from; SGState to; } SGTransition;
-
 /* Per-state watchdog deadlines.  Each transient state gets one bound: if the
  * FSM has not advanced out of it within `seconds`, `onTimeout` is posted.  All
  * values derive from SGP_NET_OP_TIMEOUT_SEC (the transport socket timeout) so a
@@ -62,109 +61,6 @@ static BOOL SGCertificatePEMLooksValid(NSString *pem) {
     if (!cert) return NO;
     X509_free(cert);
     return YES;
-}
-
-static const SGTransition kLegalTransitions[] = {
-    { SGStateStarting,          SGStateDisabled            },
-    { SGStateStarting,          SGStateIdleUnregistered    },
-    { SGStateStarting,          SGStateResolvingDNS        },
-    { SGStateStarting,          SGStateIdleNoNetwork       },
-    { SGStateStarting,          SGStateErrorBadConfig      },
-
-    { SGStateResolvingDNS,      SGStateResolvingDNS        },
-    { SGStateResolvingDNS,      SGStateConnecting          },
-    { SGStateResolvingDNS,      SGStateBackingOff          },
-    { SGStateResolvingDNS,      SGStateIdleCircuitOpen     },
-    { SGStateResolvingDNS,      SGStateErrorBadConfig      },
-    { SGStateResolvingDNS,      SGStateIdleUnregistered    },
-    { SGStateResolvingDNS,      SGStateIdleNoNetwork       },
-    { SGStateResolvingDNS,      SGStateDisabled            },
-
-    { SGStateIdleNoNetwork,     SGStateConnecting          },
-    { SGStateIdleNoNetwork,     SGStateIdleUnregistered    },
-    { SGStateIdleNoNetwork,     SGStateDisabled            },
-    { SGStateIdleNoNetwork,     SGStateResolvingDNS        },
-
-    { SGStateIdleUnregistered,  SGStateResolvingDNS        },
-    { SGStateIdleUnregistered,  SGStateDisabled            },
-
-    { SGStateConnecting,        SGStateResolvingDNS        },
-    { SGStateConnecting,        SGStateAuthenticating      },
-    { SGStateConnecting,        SGStateRegistering         },
-    { SGStateConnecting,        SGStateBackingOff          },
-    { SGStateConnecting,        SGStateIdleNoNetwork       },
-    { SGStateConnecting,        SGStateIdleUnregistered    },
-    { SGStateConnecting,        SGStateIdleCircuitOpen     },
-    { SGStateConnecting,        SGStateErrorBadConfig      },
-
-    { SGStateRegistering,       SGStateAuthenticating      },
-    { SGStateRegistering,       SGStateBackingOff          },
-    { SGStateRegistering,       SGStateIdleCircuitOpen     },
-    { SGStateRegistering,       SGStateIdleNoNetwork       },
-    { SGStateRegistering,       SGStateIdleUnregistered    },
-    { SGStateRegistering,       SGStateDisabled            },
-    { SGStateRegistering,       SGStateErrorVersionMismatch },
-
-    { SGStateAuthenticating,    SGStateResolvingDNS        },
-    { SGStateAuthenticating,    SGStateRegistering         },
-    { SGStateAuthenticating,    SGStateConnected           },
-    { SGStateAuthenticating,    SGStateBackingOff          },
-    { SGStateAuthenticating,    SGStateIdleCircuitOpen     },  /* breaker can trip mid-auth; see executeFailureBackoff */
-    { SGStateAuthenticating,    SGStateErrorAuth           },
-    { SGStateAuthenticating,    SGStateDisabled            },
-    { SGStateAuthenticating,    SGStateIdleNoNetwork       },
-    { SGStateAuthenticating,    SGStateIdleUnregistered    },
-    { SGStateAuthenticating,    SGStateErrorBadConfig      },
-    { SGStateAuthenticating,    SGStateErrorVersionMismatch },
-
-    { SGStateConnected,         SGStateConnecting          },
-    { SGStateConnected,         SGStateBackingOff          },
-    { SGStateConnected,         SGStateIdleCircuitOpen     },
-    { SGStateConnected,         SGStateIdleNoNetwork       },
-    { SGStateConnected,         SGStateIdleUnregistered    },
-    { SGStateConnected,         SGStateDisabled            },
-    { SGStateConnected,         SGStateResolvingDNS        },
-    { SGStateConnected,         SGStateErrorAuth           },  /* server can revoke credentials mid-session */
-    { SGStateConnected,         SGStateErrorVersionMismatch },
-
-    { SGStateBackingOff,        SGStateConnecting          },
-    { SGStateBackingOff,        SGStateResolvingDNS        },
-    { SGStateBackingOff,        SGStateIdleNoNetwork       },
-    { SGStateBackingOff,        SGStateIdleUnregistered    },
-    { SGStateBackingOff,        SGStateIdleCircuitOpen     },
-    { SGStateBackingOff,        SGStateDisabled            },
-
-    { SGStateIdleCircuitOpen,   SGStateConnecting          },
-    { SGStateIdleCircuitOpen,   SGStateIdleNoNetwork       },
-    { SGStateIdleCircuitOpen,   SGStateIdleUnregistered    },
-    { SGStateIdleCircuitOpen,   SGStateDisabled            },
-    { SGStateIdleCircuitOpen,   SGStateResolvingDNS        },
-
-    { SGStateErrorAuth,         SGStateDisabled            },
-    { SGStateErrorAuth,         SGStateIdleUnregistered    },
-    { SGStateErrorAuth,         SGStateResolvingDNS        },
-
-    { SGStateErrorBadConfig,    SGStateDisabled            },
-    { SGStateErrorBadConfig,    SGStateIdleUnregistered    },
-    { SGStateErrorBadConfig,    SGStateResolvingDNS        },
-
-    { SGStateErrorVersionMismatch, SGStateDisabled          },
-    { SGStateErrorVersionMismatch, SGStateIdleUnregistered  },
-    { SGStateErrorVersionMismatch, SGStateResolvingDNS      },
-
-    { SGStateDisabled,          SGStateResolvingDNS        },
-    { SGStateDisabled,          SGStateIdleUnregistered    },
-    { SGStateDisabled,          SGStateErrorBadConfig      },
-};
-
-static const size_t kLegalTransitionCount = sizeof(kLegalTransitions) / sizeof(kLegalTransitions[0]);
-
-static BOOL isLegalTransition(SGState from, SGState to) {
-    if (from == SGStateStarting) return YES;
-    for (size_t i = 0; i < kLegalTransitionCount; i++) {
-        if (kLegalTransitions[i].from == from && kLegalTransitions[i].to == to) return YES;
-    }
-    return NO;
 }
 
 static BOOL isValidPort(NSString *port) {
@@ -200,8 +96,9 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     id                     _growthAlgorithm;
     NSMutableOrderedSet   *_seenMessageIDs;
     uint32_t               _fsmGeneration;
-    BOOL                   _workerActive;
     dispatch_queue_t       _entryActionQueue;
+    dispatch_queue_t       _connectionQueue;
+    dispatch_queue_t       _protocolWorkerQueue;
     id                     _keepAliveTimer;
     BOOL                   _isWiFi;
     char                   _lastErrorDetail[128];
@@ -224,6 +121,8 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
         _fsmGeneration       = 0;
         _seenMessageIDs      = [[NSMutableOrderedSet alloc] initWithCapacity:kSGSeenMessageIDCap];
         _entryActionQueue    = dispatch_queue_create("com.skyglow.daemon.entry", DISPATCH_QUEUE_SERIAL);
+        _connectionQueue     = dispatch_queue_create("com.skyglow.daemon.connect", DISPATCH_QUEUE_SERIAL);
+        _protocolWorkerQueue = dispatch_queue_create("com.skyglow.daemon.protocol", DISPATCH_QUEUE_SERIAL);
         _localDeliveryDrainQueue = dispatch_queue_create("com.skyglow.daemon.drain", DISPATCH_QUEUE_SERIAL);
         _stateStore = [[SGStateStore alloc] init];
         _powerRootPort       = MACH_PORT_NULL;
@@ -245,6 +144,8 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     if (_keepAliveTimer) { [_keepAliveTimer invalidate]; [_keepAliveTimer release]; }
     [self _stopLocalDeliveryRetryTimer];
     dispatch_release(_entryActionQueue);
+    dispatch_release(_connectionQueue);
+    dispatch_release(_protocolWorkerQueue);
     if (_localDeliveryDrainQueue) dispatch_release(_localDeliveryDrainQueue);
     [_stateStore release];
     [super dealloc];
@@ -464,8 +365,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     
     SGLOGD(SGDaemon, "code=%s event=%ld state=%s", SGND_FSM_EVENT, (long)event, SGState_GetName(currentState));
 
-    if (event == SGEventStopRequested ||
-       (event == SGEventConfigReloaded && ![[SGConfiguration sharedConfiguration] isEnabled])) {
+    if (event == SGEventStopRequested) {
         _consecutiveFailures = 0;
         strlcpy(_lastErrorDetail, "Daemon is disabled", sizeof(_lastErrorDetail));
         [self executeTransitionToState:SGStateDisabled backoff:0 ip:NULL];
@@ -473,8 +373,35 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         return;
     }
 
+    if (event == SGEventStartRequested || event == SGEventConfigReloaded) {
+        SGConfiguration *config = [SGConfiguration sharedConfiguration];
+        SGState target = SGConnectionStateForConfiguration(
+            [config isEnabled], [config hasProfile], [config isValid], currentState);
+
+        _consecutiveFailures = 0;
+        switch (target) {
+            case SGStateDisabled:
+                strlcpy(_lastErrorDetail, "Daemon is disabled", sizeof(_lastErrorDetail));
+                break;
+            case SGStateIdleUnregistered:
+                strlcpy(_lastErrorDetail, "No profile configured", sizeof(_lastErrorDetail));
+                break;
+            case SGStateErrorBadConfig:
+                strlcpy(_lastErrorDetail, "Missing server address or certificate", sizeof(_lastErrorDetail));
+                break;
+            default:
+                _lastErrorDetail[0] = '\0';
+                break;
+        }
+
+        [self executeTransitionToState:target backoff:0 ip:NULL];
+        [_stateLock unlock];
+        return;
+    }
+
     if (event == SGEventNetworkDown) {
         if (currentState != SGStateDisabled &&
+            currentState != SGStateIdleUnregistered &&
             currentState != SGStateErrorBadConfig &&
             currentState != SGStateErrorVersionMismatch &&
             currentState != SGStateErrorAuth) {
@@ -508,22 +435,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         case SGStateErrorBadConfig:
         case SGStateErrorVersionMismatch:
         case SGStateIdleUnregistered:
-            if (event == SGEventStartRequested || event == SGEventConfigReloaded) {
-                _consecutiveFailures = 0;
-                if (![[SGConfiguration sharedConfiguration] isEnabled]) {
-                    strlcpy(_lastErrorDetail, "Daemon is disabled", sizeof(_lastErrorDetail));
-                    [self executeTransitionToState:SGStateDisabled backoff:0 ip:NULL];
-                } else if ([[SGConfiguration sharedConfiguration] isValid]) {
-                    _lastErrorDetail[0] = '\0';
-                    [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
-                } else if (![[SGConfiguration sharedConfiguration] hasProfile]) {
-                    strlcpy(_lastErrorDetail, "No profile configured", sizeof(_lastErrorDetail));
-                    [self executeTransitionToState:SGStateIdleUnregistered backoff:0 ip:NULL];
-                } else {
-                    strlcpy(_lastErrorDetail, "Missing server address or certificate", sizeof(_lastErrorDetail));
-                    [self executeTransitionToState:SGStateErrorBadConfig backoff:0 ip:NULL];
-                }
-            }
             break;
 
         case SGStateIdleNoNetwork:
@@ -533,10 +444,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             break;
 
         case SGStateResolvingDNS:
-            if (event == SGEventConfigReloaded) {
-                _consecutiveFailures = 0;
-                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
-            } else if (event == SGEventDNSResolved) {
+            if (event == SGEventDNSResolved) {
                 NSDictionary *txt = (NSDictionary *)payload;
                 [[SGConfiguration sharedConfiguration] setServerIPAddress:txt[@"tcp_addr"]];
                 [[SGConfiguration sharedConfiguration] setServerPort:txt[@"tcp_port"]];
@@ -548,10 +456,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             break;
 
         case SGStateBackingOff:
-            if (event == SGEventConfigReloaded) {
-                _consecutiveFailures = 0;
-                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
-            } else if (event == SGEventBackoffTimerFired || event == SGEventNetworkUp) {
+            if (event == SGEventBackoffTimerFired || event == SGEventNetworkUp) {
                 if (event == SGEventNetworkUp) _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             } else if (event == SGEventSystemDidWake) {
@@ -561,10 +466,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             break;
 
         case SGStateConnecting:
-            if (event == SGEventConfigReloaded) {
-                _consecutiveFailures = 0;
-                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
-            } else if (event == SGEventConnectSuccess) {
+            if (event == SGEventConnectSuccess) {
                 [self executeTransitionToState:SGStateAuthenticating backoff:0 ip:NULL];
             } else if (event == SGEventConnectFailed || event == SGEventDisconnected) {
                 strlcpy(_lastErrorDetail, "Connection to server failed", sizeof(_lastErrorDetail));
@@ -573,10 +475,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             break;
 
         case SGStateRegistering:
-            if (event == SGEventConfigReloaded) {
-                _consecutiveFailures = 0;
-                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
-            } else if (event == SGEventAuthFailed) {
+            if (event == SGEventAuthFailed) {
                 strlcpy(_lastErrorDetail, "Registration succeeded but key could not be stored", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
             } else if (event == SGEventRegistrationRejected) {
@@ -597,10 +496,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             break;
 
         case SGStateAuthenticating:
-            if (event == SGEventConfigReloaded) {
-                _consecutiveFailures = 0;
-                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
-            } else if (event == SGEventAuthSuccess) {
+            if (event == SGEventAuthSuccess) {
                 _consecutiveFailures = 0;
                 _lastErrorDetail[0] = '\0';
                 [self executeTransitionToState:SGStateConnected backoff:0 ip:NULL];
@@ -624,11 +520,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             break;
 
         case SGStateConnected:
-            if (event == SGEventConfigReloaded) {
-                _consecutiveFailures = 0;
-                _lastErrorDetail[0] = '\0';
-                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
-            } else if (event == SGEventDisconnected) {
+            if (event == SGEventDisconnected) {
                 strlcpy(_lastErrorDetail, "Connection lost", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
             } else if (event == SGEventAuthFailed) {
@@ -649,14 +541,10 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             break;
             
         case SGStateErrorAuth:
-            if (event == SGEventConfigReloaded) {
-                _consecutiveFailures = 0;
-                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
-            }
             break;
 
         case SGStateIdleCircuitOpen:
-            if (event == SGEventNetworkUp || event == SGEventConfigReloaded) {
+            if (event == SGEventNetworkUp) {
                 _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             } else if (event == SGEventSystemDidWake) {
@@ -681,7 +569,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 - (void)executeTransitionToState:(SGState)newState backoff:(uint32_t)backoff ip:(const char *)ip {
     SGStatusPayload current;
     SGStatusServer_Current(&current);
-    if (!isLegalTransition((SGState)current.state, newState) && current.state != newState) {
+    if (!SGConnectionTransitionIsLegal((SGState)current.state, newState)) {
         SGLOGE(SGDaemon, "code=%s from=%s to=%s result=rejected", SGND_FSM_TRANSITION_INVALID,
                     SGState_GetName((SGState)current.state), SGState_GetName(newState));
         return;
@@ -770,6 +658,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 SGP_AbortConnection();
                 break;
             case SGStateDisabled:
+            case SGStateIdleUnregistered:
             case SGStateIdleNoNetwork:
             case SGStateErrorBadConfig:
             case SGStateErrorVersionMismatch:
@@ -804,30 +693,23 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
 - (void)executeFailureBackoff {
     _consecutiveFailures++;
-    
-    if (_consecutiveFailures >= SG_MAX_CONSECUTIVE_FAILURES) {
-        SGLOGW(SGDaemon, "code=%s failures=%d action=idle_until_network_change", SGND_BACKOFF_CIRCUIT_OPEN, SG_MAX_CONSECUTIVE_FAILURES);
-        strlcpy(_lastErrorDetail, "Too many consecutive failures \xe2\x80\x94 paused", sizeof(_lastErrorDetail));
-        [self executeTransitionToState:SGStateIdleCircuitOpen backoff:0 ip:NULL];
-    } 
-    else {
-        uint32_t baseDelay = (uint32_t)SG_INITIAL_BACKOFF_SECONDS * ((uint32_t)1 << (_consecutiveFailures - 1));
-        uint32_t jitter = arc4random_uniform(SG_MAX_JITTER_SECONDS + 1);
-        uint32_t finalDelay = baseDelay + jitter;
-        if (finalDelay > SG_MAX_BACKOFF_SECONDS) {
-            finalDelay = SG_MAX_BACKOFF_SECONDS;
-        }
 
-        uint32_t serverHint = SGP_GetLastDisconnectRetryAfter();
-        if (serverHint > finalDelay) {
-            finalDelay = serverHint;
-            SGLOGI(SGDaemon, "code=%s retry_after=%u action=honor", SGND_BACKOFF_RETRY_AFTER, serverHint);
-        }
+    uint32_t jitter = arc4random_uniform(SG_MAX_JITTER_SECONDS + 1);
+    uint32_t serverHint = SGP_GetLastDisconnectRetryAfter();
+    uint32_t finalDelay = SGConnectionRetryDelay(
+        (unsigned int)_consecutiveFailures, jitter, serverHint);
 
-        SGLOGI(SGDaemon, "code=%s delay=%u failure=%d max=%d", SGND_BACKOFF_SCHEDULED,
-                    finalDelay, _consecutiveFailures, SG_MAX_CONSECUTIVE_FAILURES);
-        [self executeTransitionToState:SGStateBackingOff backoff:finalDelay ip:NULL];
+    if (serverHint > finalDelay) {
+        SGLOGW(SGDaemon, "code=%s retry_after=%u capped=%u action=cap_for_liveness",
+               SGND_BACKOFF_RETRY_AFTER, serverHint, finalDelay);
+    } else if (serverHint > 0) {
+        SGLOGI(SGDaemon, "code=%s retry_after=%u action=honor",
+               SGND_BACKOFF_RETRY_AFTER, serverHint);
     }
+
+    SGLOGI(SGDaemon, "code=%s delay=%u failure=%d action=retry_forever",
+           SGND_BACKOFF_SCHEDULED, finalDelay, _consecutiveFailures);
+    [self executeTransitionToState:SGStateBackingOff backoff:finalDelay ip:NULL];
 }
 
 - (void)protocolDidReceiveWelcomeChallenge {
@@ -1258,10 +1140,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     [[SGConfiguration sharedConfiguration] reloadFromDisk];
 
     if (wasActive) {
-        /* Bump the FSM to act on the now-missing profile.  ConfigReloaded
-         * is the existing reload-driven event; the FSM handler maps it to
-         * Disabled when the user-intent is unchanged but the profile is
-         * gone (no valid config). */
         [self handleEvent:SGEventConfigReloaded payload:nil];
     }
     return YES;
@@ -1607,7 +1485,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     NSString *certCopy = [cert copy];
     int port = [portStr intValue];
 
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    dispatch_async(_connectionQueue, ^{
         @autoreleasepool {
             [self->_stateLock lock];
             BOOL isStale = (self->_fsmGeneration != gen);
@@ -1648,15 +1526,22 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 }
 
 - (void)startConnectionScopedWorker {
-    if (_workerActive) return;
-    _workerActive = YES;
+    uint64_t connectionGeneration = SGP_GetConnectionGeneration();
 
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        SGLOGI(SGDaemon, "code=%s result=started", SGND_PROTOCOL_WORKER_STARTED);
+    dispatch_async(_protocolWorkerQueue, ^{
+        if (!SGP_IsConnected() ||
+            SGP_GetConnectionGeneration() != connectionGeneration) {
+            return;
+        }
+
+        SGLOGI(SGDaemon, "code=%s generation=%llu result=started",
+               SGND_PROTOCOL_WORKER_STARTED,
+               (unsigned long long)connectionGeneration);
 
         BOOL timerDrivenPings = [SGAvailability shared].persistentTimerAvailable;
 
-        while (SGP_IsConnected()) {
+        while (SGP_IsConnected() &&
+               SGP_GetConnectionGeneration() == connectionGeneration) {
             @autoreleasepool {
                 double pingInterval = 0.0;
                 if (!timerDrivenPings) {
@@ -1668,27 +1553,32 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 int rc = SGP_ProcessNextIncomingMessage(pingInterval);
 
                 if (rc != SGP_OK) {
-                    SGLOGI(SGDaemon, "code=%s rc=%d name=%s result=exited", SGND_PROTOCOL_WORKER_EXITED, rc, SGP_ErrorName(rc));
-                    if (rc == SGP_ERR_TIMEOUT) {
-                        [self _recordKeepAliveFailureFeedback];
-                    }
-                    if (rc == SGP_ERR_AUTH) {
-                        [self handleEvent:SGEventAuthFailed payload:nil];
-                    } else if (rc == SGP_ERR_VERSION_MISMATCH) {
-                        [self handleEvent:SGEventVersionMismatch payload:nil];
-                    } else {
-                        [self handleEvent:SGEventDisconnected payload:nil];
+                    BOOL isCurrentConnection =
+                        (SGP_GetConnectionGeneration() == connectionGeneration);
+                    SGLOGI(SGDaemon, "code=%s generation=%llu rc=%d name=%s current=%s result=exited",
+                           SGND_PROTOCOL_WORKER_EXITED,
+                           (unsigned long long)connectionGeneration,
+                           rc, SGP_ErrorName(rc),
+                           isCurrentConnection ? "yes" : "no");
+                    if (isCurrentConnection) {
+                        if (rc == SGP_ERR_TIMEOUT) {
+                            [self _recordKeepAliveFailureFeedback];
+                        }
+                        if (rc == SGP_ERR_AUTH) {
+                            [self handleEvent:SGEventAuthFailed payload:nil];
+                        } else if (rc == SGP_ERR_VERSION_MISMATCH) {
+                            [self handleEvent:SGEventVersionMismatch payload:nil];
+                        } else {
+                            [self handleEvent:SGEventDisconnected payload:nil];
+                        }
                     }
                     break;
                 }
             }
         }
-        dispatch_async(self->_entryActionQueue, ^{
-            [self->_stateLock lock];
-            self->_workerActive = NO;
-            [self->_stateLock unlock];
-        });
-        SGLOGI(SGDaemon, "code=%s result=stopped", SGND_PROTOCOL_WORKER_STOPPED);
+        SGLOGI(SGDaemon, "code=%s generation=%llu result=stopped",
+               SGND_PROTOCOL_WORKER_STOPPED,
+               (unsigned long long)connectionGeneration);
     });
 }
 

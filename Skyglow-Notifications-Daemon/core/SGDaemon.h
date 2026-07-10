@@ -8,12 +8,6 @@
 
 @class SGPlatform;
 
-/** State Machine Timing Constants */
-#define SG_INITIAL_BACKOFF_SECONDS        2
-#define SG_MAX_BACKOFF_SECONDS            600
-#define SG_MAX_CONSECUTIVE_FAILURES       14    // ~67 min total retry then stop
-#define SG_MAX_JITTER_SECONDS             5
-
 typedef NS_ENUM(NSInteger, SGEvent) {
     SGEventStartRequested,
     SGEventStopRequested,
@@ -89,9 +83,8 @@ typedef NS_ENUM(NSInteger, SGEvent) {
 
 /**
  * Called by the IOKit power notification callback when the system has fully
- * woken from deep sleep. Only acts if the FSM is in SGStateIdleCircuitOpen —
- * it is a no-op from all other states, so it is safe to call unconditionally
- * on every wake without wasting battery.
+ * woken from deep sleep. Safe to call in every state; connected sessions probe
+ * liveness and backoff/legacy-circuit states retry immediately.
  */
 - (void)handleSystemWake;
 

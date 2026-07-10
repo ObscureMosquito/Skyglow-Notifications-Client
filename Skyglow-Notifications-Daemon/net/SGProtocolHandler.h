@@ -183,6 +183,13 @@ void SGP_SetDelegate(id<SGProtocolDelegate> delegate);
 BOOL SGP_IsConnected(void);
 
 /**
+ * Monotonically increasing identifier for the current connection attempt.
+ * Receive workers capture this value and ignore results after a newer attempt
+ * has replaced their transport.
+ */
+uint64_t SGP_GetConnectionGeneration(void);
+
+/**
  * Forcefully closes the socket to unblock any pending I/O without freeing SSL state.
  */
 void SGP_AbortConnection(void);

@@ -18,6 +18,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <stdatomic.h>
 #include <time.h>
 #include <mach/mach_time.h>
 #include <arpa/inet.h>
@@ -26,6 +27,7 @@ static id<SGProtocolDelegate> _delegate = nil;
 static SSL *_ssl = NULL;
 static SSL_CTX *_sslctx = NULL;
 static int _sock = -1;
+static _Atomic uint64_t _connectionGeneration = 0;
 static pthread_mutex_t _sendLock = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_rwlock_t _sslLock = PTHREAD_RWLOCK_INITIALIZER;
@@ -365,6 +367,7 @@ void SGP_ZeroAndFreeKeyMaterial(char *pemBuf, size_t len) {
 
 void SGP_SetDelegate(id<SGProtocolDelegate> delegate) { _delegate = delegate; }
 BOOL SGP_IsConnected(void) { return (_ssl != NULL && _sock >= 0); }
+uint64_t SGP_GetConnectionGeneration(void) { return atomic_load(&_connectionGeneration); }
 
 int SGP_GetSocketFD(void) { return _sock; }
 uint32_t SGP_GetLastDisconnectRetryAfter(void) { return _lastRetryHint; }
@@ -441,6 +444,7 @@ void SGP_DisconnectFromServer(void) {
 
 int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     signal(SIGPIPE, SIG_IGN);
+    atomic_fetch_add(&_connectionGeneration, 1);
     SGP_DisconnectFromServer();
     _lastRetryHint = 0;
     _lastFrameReceivedAt = 0.0;
