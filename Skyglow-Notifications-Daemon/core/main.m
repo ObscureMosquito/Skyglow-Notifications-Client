@@ -14,7 +14,6 @@
 #import "SGLog.h"
 #import "SGMigration.h"
 #import "SGPlatform.h"
-#import <TargetConditionals.h>
 #include <signal.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -96,18 +95,11 @@ int main(int argc, char *argv[]) {
         SGControlChannel *controlChannel =
             [[SGControlChannel serverWithServiceName:SKYGLOW_CONTROL_SERVICE_DAEMON] retain];
 
-        SGControlChannel *platformChannel = nil;
-#if !TARGET_OS_OSX
-        platformChannel =
-            [[SGControlChannel clientForServiceName:SKYGLOW_CONTROL_SERVICE_SPRINGBOARD] retain];
         __unsafe_unretained SGDaemon *daemonRef = daemon;
-        [platformChannel setConnectionHandler:^(BOOL connected) {
-            if (connected) [daemonRef kickLocalDeliveryDrain];
-        }];
-        [platformChannel start];
-#endif
-        SGPlatform *platform = [[SGPlatform alloc] initWithControlChannel:platformChannel];
+        SGPlatform *platform = [[SGPlatform alloc]
+            initWithDeliveryReadyHandler:^{ [daemonRef kickLocalDeliveryDrain]; }];
         [daemon attachPlatform:platform];
+        [platform start];
 
         SGControlCommandRouter *router =
             [[SGControlCommandRouter alloc] initWithDaemon:daemon platform:platform];
@@ -129,10 +121,7 @@ int main(int argc, char *argv[]) {
 
         [daemon attachControlChannel:nil];
         [daemon attachPlatform:nil];
-#if !TARGET_OS_OSX
-        [platformChannel stop];
-        [platformChannel release];
-#endif
+        [platform stop];
         [controlChannel stop];
         [controlChannel release];
         [router release];

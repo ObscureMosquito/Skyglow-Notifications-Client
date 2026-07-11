@@ -13,12 +13,32 @@
     SGControlChannel *_channel;
 }
 
-- (instancetype)initWithControlChannel:(SGControlChannel *)channel {
-    if ((self = [super init])) _channel = [channel retain];
+- (instancetype)initWithDeliveryReadyHandler:(void (^)(void))handler {
+    if ((self = [super init])) {
+        _channel = [[SGControlChannel clientForServiceName:
+            SKYGLOW_CONTROL_SERVICE_SPRINGBOARD] retain];
+        if (handler) {
+            [_channel setConnectionHandler:^(BOOL connected) {
+                if (connected) handler();
+            }];
+        }
+    }
     return self;
 }
 
-- (void)dealloc { [_channel release]; [super dealloc]; }
+- (BOOL)start {
+    return [_channel start];
+}
+
+- (void)stop {
+    [_channel stop];
+}
+
+- (void)dealloc {
+    [self stop];
+    [_channel release];
+    [super dealloc];
+}
 
 - (kern_return_t)sendNotificationForBundleID:(NSString *)topic payload:(NSDictionary *)payload {
     if (!topic || [topic length] == 0) return KERN_INVALID_ARGUMENT;

@@ -597,18 +597,19 @@ The client uses an **adaptive keep-alive algorithm** with three stages:
 - A **soft** error is transient. The client schedules a reconnect via the exponential-backoff strategy described in §9.3, optionally honoring `retry_after`.
 - A **hard** error is terminal. The client transitions to a configuration-error state and stops reconnecting. Only a manual configuration change (toggle disable→enable, configuration reload, or a fresh daemon launch) recovers from a hard error. Use hard errors to refuse clients that cannot succeed by retrying alone — bad credentials, incompatible protocol versions, or other states that require user/operator action.
 
-If `retry_after` is present and non-zero on a soft error, the client should wait at least that many seconds before reconnecting.
+If `retry_after` is present and non-zero on a soft error, the client uses it when
+it is longer than the locally-computed delay, clamped to the same 600-second
+maximum. This prevents a malformed hint from suppressing reconnects indefinitely.
 
 ### 9.3. Reconnection Strategy
 
-Clients implement **exponential backoff with jitter**, bounded by a circuit breaker:
+Clients implement **exponential backoff with jitter** and continue retrying at
+the maximum interval until the connection recovers:
 
 ```
 initial_delay = 2 seconds
 max_delay     = 600 seconds
 max_jitter    = 5 seconds
-max_failures  = 14            // ~67 min of retrying, then stop
-
 failures = 0
 loop:
     result = connect_and_authenticate()
@@ -619,17 +620,15 @@ loop:
 
     disconnect()
     failures += 1
-    if failures >= max_failures:
-        open_circuit()          // stop retrying; wait for an external trigger
-        continue
-
     delay = min(initial_delay * 2^(failures - 1) + rand(0 .. max_jitter), max_delay)
     if server sent retry_after and retry_after > delay:
-        delay = retry_after
+        delay = min(retry_after, max_delay)
     sleep(delay)
 ```
 
-After `max_failures` consecutive failed attempts (~67 minutes) the client opens a **circuit breaker**: it stops retrying and waits for an external trigger — a network reachability change, a configuration reload, or a system wake from sleep — before attempting again. This bounds battery drain when the server is unreachable for an extended period.
+Once exponential growth reaches 600 seconds, the client retries every 600
+seconds indefinitely. Network changes, configuration reloads, and system wakes
+still reset the current backoff and trigger an immediate attempt.
 
 ### 9.4. S_TIME_SYNC (0x1B) Payload
 

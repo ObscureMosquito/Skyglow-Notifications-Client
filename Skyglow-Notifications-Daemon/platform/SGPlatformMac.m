@@ -57,8 +57,8 @@ static void SGCloseConnection(xpc_connection_t conn) {
 
 #pragma mark - Lifecycle
 
-- (instancetype)initWithControlChannel:(SGControlChannel *)channel {
-    (void)channel;
+- (instancetype)initWithDeliveryReadyHandler:(void (^)(void))handler {
+    (void)handler;
     if ((self = [super init])) {
         _conns = [[NSMutableDictionary alloc] init];
         _endpoints = [[NSMutableDictionary alloc] init];
@@ -67,8 +67,11 @@ static void SGCloseConnection(xpc_connection_t conn) {
     return self;
 }
 
+- (BOOL)start { return YES; }
+- (void)stop { dispatch_sync(_cacheQueue, ^{ [self _closeAll]; }); }
+
 - (void)dealloc {
-    dispatch_sync(_cacheQueue, ^{ [self _closeAll]; });
+    [self stop];
     dispatch_release(_cacheQueue);
     [_conns release];
     [_endpoints release];

@@ -3,19 +3,6 @@
 
 #import <Foundation/Foundation.h>
 
-/**
- * Each entry represents one system capability (private or public) that
- * is gated by iOS version in SGAvailability.m.
- *
- * To add a new capability:
- *   1. Add an entry here (before SGCapabilityCount).
- *   2. Add one line to kCapabilityTable in SGAvailability.m.
- *   3. Add factory/wrapper methods in SGAvailability if needed.
- *
- * To disable a capability: set its maxVersion in the table to 0
- *   (effectively below any minVersion).  The builtin fallback — if one
- *   exists — will activate automatically.
- */
 typedef NS_ENUM(NSInteger, SGCapability) {
     SGCapabilityPersistentTimer,
     SGCapabilityGrowthAlgorithm,
@@ -25,16 +12,13 @@ typedef NS_ENUM(NSInteger, SGCapability) {
     SGCapabilityCount  /* sentinel — must be last */
 };
 
-/**
- * SGAvailability — Centralised runtime capability detection and factory.
- *
- * Every private (and select public) API the daemon uses is probed once
- * at startup, gated by iOS version, and exposed through factory methods
- * that return a working implementation, either the system class or a
- * builtin fallback.  Callers never branch on availability, they just
- * request an object and use it.
- *
- */
+/* Version-specific implementation selected centrally for NIC keepalive. */
+typedef NS_ENUM(NSInteger, SGKeepAliveOffloadBackend) {
+    SGKeepAliveOffloadBackendNone = 0,
+    SGKeepAliveOffloadBackendIOS6Broadcom,
+};
+
+/* Centralised runtime capability detection and factory. */
 @interface SGAvailability : NSObject
 
 + (SGAvailability *)shared;
@@ -42,75 +26,50 @@ typedef NS_ENUM(NSInteger, SGCapability) {
 /** Version-aware capability check, the single source of truth. */
 - (BOOL)isCapabilityAvailable:(SGCapability)cap;
 
-/**
- * Marketing OS version as a double ("6.1.3" → 6.1), read once at startup.
- * Synthetic on non-iOS platforms (see SGSystemVersionRead).  Modules that
- * must select between version-specific backends consult this instead of
- * UIKit/UIDevice so version knowledge never originates outside this class.
- */
+/* Marketing OS version as a double */
 @property (nonatomic, readonly) double systemVersion;
 
-/** Convenience, equivalent to [self isCapabilityAvailable:SGCapabilityPersistentTimer]. */
+/* Convenience, equivalent to [self isCapabilityAvailable:SGCapabilityPersistentTimer]. */
 @property (nonatomic, readonly) BOOL persistentTimerAvailable;
 
-/** Convenience, equivalent to [self isCapabilityAvailable:SGCapabilityGrowthAlgorithm]. */
+/* Convenience, equivalent to [self isCapabilityAvailable:SGCapabilityGrowthAlgorithm]. */
 @property (nonatomic, readonly) BOOL growthAlgorithmAvailable;
 
-/** Convenience, equivalent to [self isCapabilityAvailable:SGCapabilityPowerAssertion]. */
+/* Convenience, equivalent to [self isCapabilityAvailable:SGCapabilityPowerAssertion]. */
 @property (nonatomic, readonly) BOOL powerAssertionAvailable;
 
 @property (nonatomic, readonly) BOOL scheduledWakeAvailable;
 
 @property (nonatomic, readonly) BOOL keepAliveOffloadAvailable;
 
+/* Selected version-specific offload implementation, or None. */
+@property (nonatomic, readonly) SGKeepAliveOffloadBackend keepAliveOffloadBackend;
+
 #pragma mark - PCPersistentTimer
 
-/**
- * Creates and returns a PCPersistentTimer configured for keepalive use.
- * Returns nil if the capability is unavailable (no builtin fallback).
- * Caller owns the returned object (retain count +1).
- */
+/* Creates and returns a PCPersistentTimer configured for keepalive use */
 - (id)createPersistentTimerWithInterval:(double)interval
                       serviceIdentifier:(NSString *)sid
                                  target:(id)target
                                selector:(SEL)sel;
 
-/**
- * Schedules a persistent timer in the given run loop.
- */
+/* Schedules a persistent timer in the given run loop */
 - (void)schedulePersistentTimer:(id)timer inRunLoop:(NSRunLoop *)runLoop;
 
 #pragma mark - Growth Algorithm
 
-/**
- * Creates and returns a growth algorithm — always non-nil.
- *
- * Returns the system PCMultiStageGrowthAlgorithm when the capability
- * is available, otherwise a builtin implementation backed by
- * SGKeepAliveStrategy.  The returned object responds to the same
- * selectors in both cases; use the wrapper methods below to interact.
- *
- */
+/* Creates and returns a growth algorithm — always non-nil */
 - (id)createGrowthAlgorithmWithInterval:(double)interval
                         minimumInterval:(double)minInterval
                         maximumInterval:(double)maxInterval;
 
-/**
- * Returns the current interval from a growth algorithm instance.
- * Safe to call with any object, returns 0.0 if algo is nil.
- */
+/* Returns the current interval from a growth algorithm instance */
 - (double)currentIntervalForGrowthAlgorithm:(id)algo;
 
-/**
- * Feeds a success/failure result into a growth algorithm instance.
- */
+/* Feeds a success/failure result into a growth algorithm instance */
 - (void)processResult:(BOOL)success forGrowthAlgorithm:(id)algo;
 
-/**
- * Reinitialises a growth algorithm for a network-type change.
- * Releases the old instance and returns a new one.
- * Caller owns the returned object (retain count +1).
- */
+/* Reinitialises a growth algorithm for a network-type change */
 - (id)reinitializeGrowthAlgorithmForWiFi:(BOOL)isWiFi
                            savedInterval:(double)savedInterval;
 
@@ -121,10 +80,7 @@ typedef NS_ENUM(NSInteger, SGCapability) {
 
 /**
  * Creates a time-limited power assertion to prevent system sleep
- * during notification processing. Returns an opaque assertion ID
- * that must be released with releasePowerAssertion:.
- * A dispatch_after auto-releases after timeout seconds as a safety net.
- * Returns 0 on failure or if the capability is unavailable.
+ * during notification processing. 
  */
 - (uint32_t)createTimedPowerAssertionWithName:(NSString *)name
                                       timeout:(NSTimeInterval)timeout;
@@ -139,10 +95,7 @@ typedef NS_ENUM(NSInteger, SGCapability) {
 
 /**
  * Schedules a hardware RTC wake `seconds` from now (clamped to a sane floor)
- * via IOPMSchedulePowerEvent, replacing any previously-scheduled wake.  Used
- * only pre-iOS-6 (iOS 6+ uses PCPersistentTimer) to send a keepalive ping
- * during uninterrupted deep sleep.  Returns YES if the OS accepted the
- * schedule request.  No-op returning NO when the capability does not apply.
+ * via IOPMSchedulePowerEvent, replacing any previously-scheduled wake. 
  */
 - (BOOL)scheduleWakeAfterInterval:(NSTimeInterval)seconds;
 
