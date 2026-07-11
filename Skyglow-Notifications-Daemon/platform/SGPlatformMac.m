@@ -17,6 +17,7 @@ extern kern_return_t bootstrap_look_up_per_user(mach_port_t, const char *, uid_t
 typedef xpc_object_t (*SGEndpointFromPortFn)(mach_port_t);
 
 static const char *const kUsernotedService = "com.apple.usernoted.client";
+#define SG_USERNOTED_SEND_TIMEOUT_SEC 2
 
 static void SGCloseConnection(xpc_connection_t conn) {
     xpc_connection_set_event_handler(conn, ^(xpc_object_t event) { (void)event; });
@@ -53,6 +54,8 @@ static void SGCloseConnection(xpc_connection_t conn) {
     BOOL _haveConnsUID;
     SGEndpointFromPortFn _endpointFn;
     BOOL _resolvedEndpointFn;
+    NSLock *_connectionStateLock;
+    NSMutableSet *_invalidConnections;
 }
 
 #pragma mark - Lifecycle
@@ -62,6 +65,8 @@ static void SGCloseConnection(xpc_connection_t conn) {
     if ((self = [super init])) {
         _conns = [[NSMutableDictionary alloc] init];
         _endpoints = [[NSMutableDictionary alloc] init];
+        _invalidConnections = [[NSMutableSet alloc] init];
+        _connectionStateLock = [[NSLock alloc] init];
         _cacheQueue = dispatch_queue_create("com.skyglow.daemon.usernoted", DISPATCH_QUEUE_SERIAL);
     }
     return self;
@@ -75,6 +80,8 @@ static void SGCloseConnection(xpc_connection_t conn) {
     dispatch_release(_cacheQueue);
     [_conns release];
     [_endpoints release];
+    [_invalidConnections release];
+    [_connectionStateLock release];
     [super dealloc];
 }
 
@@ -162,6 +169,28 @@ static void SGCloseConnection(xpc_connection_t conn) {
     return conn;
 }
 
+- (void)_markConnectionInvalid:(xpc_connection_t)conn {
+    if (!conn) return;
+    [_connectionStateLock lock];
+    [_invalidConnections addObject:[NSValue valueWithPointer:conn]];
+    [_connectionStateLock unlock];
+}
+
+- (BOOL)_connectionIsInvalid:(xpc_connection_t)conn {
+    if (!conn) return YES;
+    [_connectionStateLock lock];
+    BOOL invalid = [_invalidConnections containsObject:[NSValue valueWithPointer:conn]];
+    [_connectionStateLock unlock];
+    return invalid;
+}
+
+- (void)_forgetConnectionState:(xpc_connection_t)conn {
+    if (!conn) return;
+    [_connectionStateLock lock];
+    [_invalidConnections removeObject:[NSValue valueWithPointer:conn]];
+    [_connectionStateLock unlock];
+}
+
 - (xpc_connection_t)_connForBundle:(NSString *)bundleID {
     uid_t uid = [[self class] _consoleUID];
     if (uid == (uid_t)-1) return NULL;
@@ -173,13 +202,16 @@ static void SGCloseConnection(xpc_connection_t conn) {
     xpc_object_t endpoint = NULL;
     xpc_connection_t conn = [self _newConnForUID:uid endpointOut:&endpoint];
     if (!conn) return NULL;
+    [self _forgetConnectionState:conn];
 
     __unsafe_unretained SGPlatform *uself = self;
     dispatch_queue_t cacheQueue = _cacheQueue;
     NSString *bundleCopy = [[bundleID copy] autorelease];
     xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
-        if (xpc_get_type(event) == XPC_TYPE_ERROR)
+        if (xpc_get_type(event) == XPC_TYPE_ERROR) {
+            [uself _markConnectionInvalid:conn];
             dispatch_async(cacheQueue, ^{ [uself _dropBundle:bundleCopy]; });
+        }
     });
     xpc_connection_resume(conn);
 
@@ -195,7 +227,9 @@ static void SGCloseConnection(xpc_connection_t conn) {
 - (void)_dropBundle:(NSString *)bundleID {
     NSValue *boxed = [_conns objectForKey:bundleID];
     if (boxed) {
-        SGCloseConnection((xpc_connection_t)[boxed pointerValue]);
+        xpc_connection_t conn = (xpc_connection_t)[boxed pointerValue];
+        SGCloseConnection(conn);
+        [self _forgetConnectionState:conn];
         [_conns removeObjectForKey:bundleID];
     }
     NSValue *ep = [_endpoints objectForKey:bundleID];
@@ -207,6 +241,9 @@ static void SGCloseConnection(xpc_connection_t conn) {
     [_conns removeAllObjects];
     for (NSValue *ep in [_endpoints allValues]) xpc_release((xpc_object_t)[ep pointerValue]);
     [_endpoints removeAllObjects];
+    [_connectionStateLock lock];
+    [_invalidConnections removeAllObjects];
+    [_connectionStateLock unlock];
 }
 
 #pragma mark - Delivery
@@ -244,7 +281,25 @@ static void SGCloseConnection(xpc_connection_t conn) {
         xpc_object_t deliver = [self _newDeliver:archive];
         xpc_connection_send_message(conn, deliver);
         xpc_release(deliver);
-        kr = KERN_SUCCESS;
+
+        dispatch_semaphore_t sent = dispatch_semaphore_create(0);
+        dispatch_retain(sent);
+        xpc_connection_send_barrier(conn, ^{
+            dispatch_semaphore_signal(sent);
+            dispatch_release(sent);
+        });
+        long waitResult = dispatch_semaphore_wait(
+            sent,
+            dispatch_time(DISPATCH_TIME_NOW,
+                          (int64_t)SG_USERNOTED_SEND_TIMEOUT_SEC * NSEC_PER_SEC));
+        BOOL invalid = [self _connectionIsInvalid:conn];
+        dispatch_release(sent);
+
+        if (waitResult == 0 && !invalid) {
+            kr = KERN_SUCCESS;
+        } else {
+            [self _dropBundle:bundleID];
+        }
     });
     return kr;
 }

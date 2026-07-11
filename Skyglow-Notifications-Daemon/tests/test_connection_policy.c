@@ -41,6 +41,21 @@ static void test_configuration_routing(void) {
           "offline reload should remain offline");
 }
 
+static void test_active_service_lifetime(void) {
+    CHECK(SGConnectionStateNeedsActiveServices(SGStateResolvingDNS),
+          "DNS resolution needs network services");
+    CHECK(SGConnectionStateNeedsActiveServices(SGStateConnected),
+          "connected state needs keepalive services");
+    CHECK(SGConnectionStateNeedsActiveServices(SGStateIdleNoNetwork),
+          "offline state needs reachability to recover");
+    CHECK(!SGConnectionStateNeedsActiveServices(SGStateDisabled),
+          "disabled state must not consume active services");
+    CHECK(!SGConnectionStateNeedsActiveServices(SGStateIdleUnregistered),
+          "unregistered state must not monitor power/network");
+    CHECK(!SGConnectionStateNeedsActiveServices(SGStateErrorAuth),
+          "terminal auth error must not consume active services");
+}
+
 static void test_retry_never_stops_and_stays_bounded(void) {
     CHECK(SGConnectionRetryDelay(1, 0, 0) == 2, "first retry mismatch");
     CHECK(SGConnectionRetryDelay(1, SG_MAX_JITTER_SECONDS, 0) == 7,
@@ -59,6 +74,7 @@ static void test_retry_never_stops_and_stays_bounded(void) {
 int main(void) {
     test_administrative_states_are_always_reachable();
     test_configuration_routing();
+    test_active_service_lifetime();
     test_retry_never_stops_and_stays_bounded();
 
     if (failures == 0) {

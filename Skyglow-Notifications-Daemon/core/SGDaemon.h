@@ -79,7 +79,12 @@ typedef NS_ENUM(NSInteger, SGEvent) {
 /**
  * Requests a graceful disconnection and loop termination.
  */
-- (void)requestGracefulDisconnect;
+/**
+ * Sends a normal disconnect frame, then stops and drains transport workers.
+ * Returns YES when no connection existed or the frame was written before the
+ * bounded shutdown deadline.
+ */
+- (BOOL)requestGracefulDisconnect;
 
 /**
  * Called by the IOKit power notification callback when the system has fully

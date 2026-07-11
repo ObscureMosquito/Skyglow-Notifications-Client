@@ -1,12 +1,12 @@
 #import "SGDaemon.h"
 #import "SGConnectionPolicy.h"
+#import "SGNotificationProcessor.h"
 #import "SGConfiguration.h"
 #import "SGDatabaseManager.h"
 #import "SGTokenManager.h"
 #import "SGProtocolHandler.h"
 #import "SGKeepAliveOffload.h"
 #import "SGServerLocator.h"
-#import "SGPayloadParser.h"
 #import "SGCryptoEngine.h"
 #import "SGAvailability.h"
 #import "SGControlChannel.h"
@@ -25,22 +25,11 @@
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #include <IOKit/IOMessage.h>
 
-static const int64_t       kSGDrainSafetyIntervalSec              = 300;
-static const int64_t       kSGDrainSafetyLeewaySec                 =  30;
-static const int64_t       kSGLocalPendingFallbackDeadlineSec      = 86400;
-static const NSUInteger    kSGSeenMessageIDCap                     = 200;
+static const int64_t kSGGracefulDisconnectTimeoutSec = 2;
 
 _Static_assert(SG_POWER_ASSERTION_TIMEOUT_SEC >= SGP_PONG_TIMEOUT_SEC + 10,
                "power-assertion backstop must outlast the probe liveness check");
 
-/* Per-state watchdog deadlines.  Each transient state gets one bound: if the
- * FSM has not advanced out of it within `seconds`, `onTimeout` is posted.  All
- * values derive from SGP_NET_OP_TIMEOUT_SEC (the transport socket timeout) so a
- * watchdog tracks the work it guards rather than being a guessed number:
- *   - single network op (DNS lookup, TCP+TLS connect): one op + scheduling slack
- *   - handshake (auth, register): two network legs (challenge then response)
- * BackingOff is deliberately absent: its delay is the dynamic computed
- * backoff, armed in the entry action, not a fixed deadline. */
 typedef struct { SGState state; SGEvent onTimeout; uint32_t seconds; } SGStateDeadline;
 
 static const SGStateDeadline kSGStateDeadlines[] = {
@@ -71,30 +60,17 @@ static BOOL isValidPort(NSString *port) {
     return (p > 0 && p <= 65535);
 }
 
-static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
-    if (!out || outSize == 0) return;
-    out[0] = '\0';
-    if (!msgID || [msgID length] == 0) {
-        strlcpy(out, "none", outSize);
-        return;
-    }
-
-    const uint8_t *bytes = (const uint8_t *)[msgID bytes];
-    NSUInteger len = MIN([msgID length], (NSUInteger)SGP_MSG_ID_LEN);
-    size_t pos = 0;
-    for (NSUInteger i = 0; i < len && pos + 2 < outSize; i++) {
-        int written = snprintf(out + pos, outSize - pos, "%02x", bytes[i]);
-        if (written != 2) break;
-        pos += 2;
-    }
-    out[pos] = '\0';
-}
+@interface SGDaemon ()
+- (kern_return_t)_deliverPushTopic:(NSString *)topic
+                           payload:(NSDictionary *)payload;
+@end
 
 @implementation SGDaemon {
     NSLock                *_stateLock;
     int                    _consecutiveFailures;
     id                     _growthAlgorithm;
-    NSMutableOrderedSet   *_seenMessageIDs;
+    SGNotificationProcessor *_notificationProcessor;
+    BOOL                   _activeModeEntered;
     uint32_t               _fsmGeneration;
     dispatch_queue_t       _entryActionQueue;
     dispatch_queue_t       _connectionQueue;
@@ -102,8 +78,6 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     id                     _keepAliveTimer;
     BOOL                   _isWiFi;
     char                   _lastErrorDetail[128];
-    dispatch_source_t      _localDeliveryRetryTimer;
-    dispatch_queue_t       _localDeliveryDrainQueue;
     SGStateStore          *_stateStore;
     SGControlChannel      *_controlChannel;
     SGPlatform            *_platform;
@@ -112,6 +86,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     io_object_t            _powerNotifier;
     IONotificationPortRef  _powerNotifyPort;
     _Atomic uint32_t       _probeAssertionID;
+    _Atomic bool           _probeInFlight;
 }
 
 - (id)init {
@@ -119,12 +94,16 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
         _stateLock           = [[NSLock alloc] init];
         _consecutiveFailures = 0;
         _fsmGeneration       = 0;
-        _seenMessageIDs      = [[NSMutableOrderedSet alloc] initWithCapacity:kSGSeenMessageIDCap];
         _entryActionQueue    = dispatch_queue_create("com.skyglow.daemon.entry", DISPATCH_QUEUE_SERIAL);
         _connectionQueue     = dispatch_queue_create("com.skyglow.daemon.connect", DISPATCH_QUEUE_SERIAL);
         _protocolWorkerQueue = dispatch_queue_create("com.skyglow.daemon.protocol", DISPATCH_QUEUE_SERIAL);
-        _localDeliveryDrainQueue = dispatch_queue_create("com.skyglow.daemon.drain", DISPATCH_QUEUE_SERIAL);
         _stateStore = [[SGStateStore alloc] init];
+        __unsafe_unretained SGDaemon *daemonSelf = self;
+        _notificationProcessor = [[SGNotificationProcessor alloc]
+            initWithDeliveryHandler:^kern_return_t(NSString *bundleID,
+                                                    NSDictionary *payload) {
+                return [daemonSelf _deliverPushTopic:bundleID payload:payload];
+            }];
         _powerRootPort       = MACH_PORT_NULL;
         _powerNotifier       = MACH_PORT_NULL;
         _powerNotifyPort     = NULL;
@@ -133,8 +112,9 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
 }
 
 - (void)dealloc {
+    [_notificationProcessor suspendPendingDeliveryRetries];
+    [_notificationProcessor release];
     [_stateLock release];
-    [_seenMessageIDs release];
     [_growthAlgorithm release];
     [_controlChannel release];
     [_platform release];
@@ -142,11 +122,9 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     [_reachability release];
     [self _stopPowerMonitoring];
     if (_keepAliveTimer) { [_keepAliveTimer invalidate]; [_keepAliveTimer release]; }
-    [self _stopLocalDeliveryRetryTimer];
     dispatch_release(_entryActionQueue);
     dispatch_release(_connectionQueue);
     dispatch_release(_protocolWorkerQueue);
-    if (_localDeliveryDrainQueue) dispatch_release(_localDeliveryDrainQueue);
     [_stateStore release];
     [super dealloc];
 }
@@ -170,17 +148,11 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
 }
 
 - (void)kickLocalDeliveryDrain {
-    [self _kickLocalDeliveryDrain];
+    [_notificationProcessor kickPendingDeliveryDrain];
 }
 
 - (void)start {
-    if ([[SGConfiguration sharedConfiguration] isEnabled]) {
-        [self _enterActiveMode];
-    } else {
-        /* Disabled stops network activity, not storage reconciliation. */
-        [self reconcileTokensWithPlist];
-    }
-
+    [self reconcileTokensWithPlist];
     [self handleEvent:SGEventStartRequested payload:nil];
 }
 
@@ -200,7 +172,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     }
     [_stateLock unlock];
 
-    [self _kickLocalDeliveryDrain];
+    [_notificationProcessor kickPendingDeliveryDrain];
     [self _startReachabilityMonitor];
     [self _startPowerMonitoring];
 }
@@ -215,9 +187,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
 
     [self _invalidateKeepAliveTimer];
     [[SGAvailability shared] cancelPendingScheduledWake];
-    dispatch_async(_localDeliveryDrainQueue, ^{
-        [self _stopLocalDeliveryRetryTimer];
-    });
+    [_notificationProcessor suspendPendingDeliveryRetries];
     [self _stopReachabilityMonitor];
     [self _stopPowerMonitoring];
 }
@@ -422,10 +392,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         return;
     }
 
-    /* Every handled arm below drives a transition, which bumps _fsmGeneration.
-     * If the generation is unchanged after dispatch the event was a no-op in
-     * this state, surface it instead of letting it vanish silently.  Arms
-     * that intentionally act without transitioning set the flag instead. */
     uint32_t genBeforeDispatch = _fsmGeneration;
     BOOL handledWithoutTransition = NO;
 
@@ -479,11 +445,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 strlcpy(_lastErrorDetail, "Registration succeeded but key could not be stored", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
             } else if (event == SGEventRegistrationRejected) {
-                /* The protocol assigns the server's rejection code no semantics,
-                 * so we cannot tell a transient refusal (capacity) from a
-                 * permanent one (policy).  Back off rather than hard-stopping:
-                 * the circuit breaker bounds a server that rejects forever, and
-                 * a transient refusal recovers without manual intervention. */
                 NSString *reason = [payload isKindOfClass:[NSString class]] ? (NSString *)payload : nil;
                 snprintf(_lastErrorDetail, sizeof(_lastErrorDetail),
                          "Server rejected registration: %s",
@@ -501,14 +462,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 _lastErrorDetail[0] = '\0';
                 [self executeTransitionToState:SGStateConnected backoff:0 ip:NULL];
             } else if (event == SGEventAuthFailed) {
-                /* Hard stop: the server rejected our credentials, so retrying
-                 * cannot help.  We deliberately do NOT wipe the identity here —
-                 * a transient or buggy AUTH_FAIL must never destroy a
-                 * device_address whose tokens are already distributed to apps
-                 * (re-registering would assign a new address and silently kill
-                 * every outstanding token).  Recovery is a manual config change
-                 * (re-enable / reload / re-register), like any other hard error. */
-                strlcpy(_lastErrorDetail, "Server rejected authentication \xe2\x80\x94 credentials may be revoked; re-register to recover", sizeof(_lastErrorDetail));
+                strlcpy(_lastErrorDetail, "Server rejected authentication, credentials may be revoked; re-register to recover", sizeof(_lastErrorDetail));
                 [self executeTransitionToState:SGStateErrorAuth backoff:0 ip:NULL];
             } else if (event == SGEventAuthTimeout) {
                 strlcpy(_lastErrorDetail, "Authentication timed out (30s)", sizeof(_lastErrorDetail));
@@ -524,13 +478,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 strlcpy(_lastErrorDetail, "Connection lost", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
             } else if (event == SGEventAuthFailed) {
-                /* The server can revoke credentials mid-session (S_DISCONNECT
-                 * reason=AUTH_FAIL).  Without this arm the event fell through as
-                 * no_transition: the worker exited, nothing closed the socket,
-                 * SGP_IsConnected() stayed true, and the daemon reported
-                 * Connected forever while delivering nothing.  Same hard-stop
-                 * semantics (and same no-wipe rule) as failing auth mid-handshake. */
-                strlcpy(_lastErrorDetail, "Server revoked authentication \xe2\x80\x94 re-register to recover", sizeof(_lastErrorDetail));
+
+                strlcpy(_lastErrorDetail, "Server revoked authentication, re-register to recover", sizeof(_lastErrorDetail));
                 [self executeTransitionToState:SGStateErrorAuth backoff:0 ip:NULL];
             } else if (event == SGEventSystemDidWake || event == SGEventNetworkUp) {
                 SGLOGI(SGDaemon, "code=%s trigger=%s action=probe_liveness", SGND_KEEPALIVE_PROBE,
@@ -608,8 +557,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
         });
     }
 
-    BOOL leavingDisabled = (current.state == SGStateDisabled && newState != SGStateDisabled);
-    BOOL enteringDisabled = (current.state != SGStateDisabled && newState == SGStateDisabled);
+    BOOL needsActiveServices = SGConnectionStateNeedsActiveServices(newState);
 
     dispatch_async(_entryActionQueue, ^{
         [self->_stateLock lock];
@@ -619,17 +567,17 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
         [self _invalidateKeepAliveTimer];
 
-        if (leavingDisabled) {
+        /* Track actual service lifetime on this serial queue. A prior state's
+         * stale entry action may never have run, so status-to-status deltas are
+         * not sufficient to decide whether setup is still needed. */
+        if (needsActiveServices && !self->_activeModeEntered) {
+            self->_activeModeEntered = YES;
             [self _enterActiveMode];
         }
 
         switch (newState) {
             case SGStateResolvingDNS: {
                 SGP_AbortConnection();
-                /* If this profile has no identity yet it will have to register,
-                 * which needs a fresh RSA-2048 keypair.  Kick keygen now so it
-                 * overlaps DNS + TLS instead of stalling the connection worker
-                 * (and the disable signal) once S_HELLO arrives. */
                 NSString *addr = [[SGConfiguration sharedConfiguration] deviceAddress];
                 if (!addr || addr.length == 0) {
                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -645,8 +593,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
             case SGStateAuthenticating:
                 [self startConnectionScopedWorker];
                 break;
-            /* SGStateRegistering has no entry action of its own — its watchdog,
-             * like every transient state's, is armed from the deadline table. */
             case SGStateConnected:
                 [self _scheduleKeepAliveTimer];
                 break;
@@ -669,14 +615,12 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                 break;
         }
 
-        if (enteringDisabled) {
+        if (!needsActiveServices && self->_activeModeEntered) {
+            self->_activeModeEntered = NO;
             [self _exitActiveMode];
         }
     });
 
-    /* Arm this state's watchdog from the unified deadline table.  States with a
-     * dynamic delay (BackingOff) arms its own timer in the entry action above
-     * and is intentionally not in the table. */
     [self armWatchdogForState:newState generation:capturedGen];
 }
 
@@ -751,7 +695,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     [[SGDatabaseManager sharedManager] pruneExpiredSeenMessagesAsOf:(int64_t)time(NULL)];
 
     [self _attemptKeepAliveOffload];
-    [self _kickLocalDeliveryDrain];
+    [_notificationProcessor kickPendingDeliveryDrain];
 }
 
 - (void)_attemptKeepAliveOffload {
@@ -762,178 +706,7 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 }
 
 - (void)protocolDidReceiveNotification:(NSDictionary *)messageDict {
-    @autoreleasepool {
-        NSData *msgID = messageDict[@"msg_id"];
-        if (!msgID || [msgID length] != SGP_MSG_ID_LEN) return;
-
-        char msgHex[SGP_MSG_ID_LEN * 2 + 1];
-        SGCopyMessageIDHex(msgID, msgHex, sizeof(msgHex));
-
-        SGDatabaseManager *db = [SGDatabaseManager sharedManager];
-
-        if ([db hasSeenMessageID:msgID]) {
-            SGLOGD(SGDaemon, "code=%s msg=%s ack=success action=redeliver_ack_only", SGND_DELIVERY_DUPLICATE, msgHex);
-            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
-            return;
-        }
-        if ([db hasLocalPendingDeliveryForMessageID:msgID]) {
-            SGLOGD(SGDaemon, "code=%s msg=%s action=ignore_pending_retry", SGND_DELIVERY_LOCAL_PENDING_DUPLICATE, msgHex);
-            return;
-        }
-        @synchronized(_seenMessageIDs) {
-            if ([_seenMessageIDs containsObject:msgID]) {
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
-                return;
-            }
-        }
-
-        NSNumber *expiresAtNum = messageDict[@"expires_at"];
-        int64_t expiresAt = expiresAtNum ? [expiresAtNum longLongValue] : 0;
-        int64_t now = (int64_t)time(NULL);
-        if (expiresAt > 0 && now > expiresAt) {
-            SGLOGI(SGDaemon, "code=%s msg=%s age=%llds expires_at=%lld now=%lld ack=expired", SGND_DELIVERY_EXPIRED,
-                        msgHex, now - expiresAt, expiresAt, now);
-            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_EXPIRED);
-            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
-            return;
-        }
-
-        uint32_t assertionID = [[SGAvailability shared]
-            createTimedPowerAssertionWithName:@"com.skyglow.sgn.processing"
-                                     timeout:SG_POWER_ASSERTION_TIMEOUT_SEC];
-
-        NSData *routingKey = messageDict[@"routing_key"];
-        NSDictionary *routingData = [db tokenDataForRoutingKey:routingKey];
-        if (!routingData) {
-            SGLOGW(SGDaemon, "code=%s msg=%s action=drop reason=routing_key_missing", SGND_DELIVERY_ROUTING_MISSING, msgHex);
-            goto cleanup_assertion;
-        }
-
-        if ([db isMutedForRoutingKey:routingKey]) {
-            SGLOGI(SGDaemon, "code=%s msg=%s bundle=%s ack=success action=suppress", SGND_DELIVERY_MUTED,
-                        msgHex, [routingData[@"bundleID"] UTF8String]);
-            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
-            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
-            goto cleanup_assertion;
-        }
-
-        NSData *payloadBytes = messageDict[@"data"];
-        if (!payloadBytes) {
-            SGLOGW(SGDaemon, "code=%s msg=%s ack=parse_failed action=drop", SGND_DELIVERY_PAYLOAD_EMPTY, msgHex);
-            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
-            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
-            goto cleanup_assertion;
-        }
-
-        SGLOGI(SGDaemon, "code=%s msg=%s bundle=%s encrypted=%s bytes=%lu result=received", SGND_DELIVERY_RECEIVED,
-                    msgHex, [routingData[@"bundleID"] UTF8String],
-                    [messageDict[@"is_encrypted"] boolValue] ? "yes" : "no",
-                    (unsigned long)[payloadBytes length]);
-
-        if ([messageDict[@"is_encrypted"] boolValue]) {
-            SGLOGD(SGDaemon, "code=%s msg=%s bytes=%lu action=decrypt", SGND_DELIVERY_PAYLOAD_ENCRYPTED,
-                        msgHex, (unsigned long)[payloadBytes length]);
-            if ([payloadBytes length] < SGP_GCM_TAG_LEN) {
-                SGLOGW(SGDaemon, "code=%s msg=%s bytes=%lu min=%d ack=decrypt_failed action=drop", SGND_DELIVERY_CIPHERTEXT_SHORT,
-                            msgHex, (unsigned long)[payloadBytes length], SGP_GCM_TAG_LEN);
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED);
-                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
-                goto cleanup_assertion;
-            }
-            NSData *iv = messageDict[@"iv"];
-            if (!iv) {
-                SGLOGW(SGDaemon, "code=%s msg=%s ack=decrypt_failed action=drop", SGND_DELIVERY_IV_MISSING, msgHex);
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED);
-                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
-                goto cleanup_assertion;
-            }
-
-            payloadBytes = SG_CryptoDecryptAESGCM(payloadBytes, routingData[@"e2eeKey"], iv, nil);
-            if (!payloadBytes) {
-                SGLOGE(SGDaemon, "code=%s msg=%s ack=decrypt_failed action=drop", SGND_DELIVERY_DECRYPT_FAILED, msgHex);
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED);
-                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
-                goto cleanup_assertion;
-            }
-        } else {
-            SGLOGD(SGDaemon, "code=%s msg=%s bytes=%lu", SGND_DELIVERY_PAYLOAD_PLAINTEXT, msgHex, (unsigned long)[payloadBytes length]);
-        }
-
-        /* Decompress AFTER decrypt (the server compresses then encrypts). The
-         * flag is independent of content_type, so it covers JSON/plist/TLV alike. */
-        if ([messageDict[@"is_compressed"] boolValue]) {
-            NSData *inflated = SG_PayloadInflate((const uint8_t *)payloadBytes.bytes,
-                                                 (uint32_t)payloadBytes.length,
-                                                 SGP_MAX_INFLATED_LEN);
-            if (!inflated) {
-                SGLOGW(SGDaemon, "code=%s msg=%s bytes=%lu ack=parse_failed action=drop", SGND_DELIVERY_INFLATE_FAILED,
-                            msgHex, (unsigned long)[payloadBytes length]);
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
-                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
-                goto cleanup_assertion;
-            }
-            SGLOGD(SGDaemon, "code=%s msg=%s in=%lu out=%lu action=inflate", SGND_DELIVERY_PAYLOAD_INFLATED,
-                        msgHex, (unsigned long)[payloadBytes length], (unsigned long)[inflated length]);
-            payloadBytes = inflated;
-        }
-
-        uint8_t contentType = (uint8_t)[messageDict[@"content_type"] unsignedCharValue];
-        NSDictionary *parsed = SG_PayloadDecode((const uint8_t *)payloadBytes.bytes, (uint32_t)payloadBytes.length, contentType);
-        if (!parsed || parsed.count == 0) {
-            SGLOGW(SGDaemon, "code=%s msg=%s bytes=%lu fmt=%u ack=parse_failed action=drop", SGND_DELIVERY_PARSE_FAILED,
-                        msgHex, (unsigned long)[payloadBytes length], (unsigned)contentType);
-            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
-            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
-            goto cleanup_assertion;
-        }
-
-        SGLOGI(SGDaemon, "code=%s msg=%s bundle=%s keys=%lu action=deliver", SGND_DELIVERY_DISPATCHING,
-                    msgHex, [routingData[@"bundleID"] UTF8String], (unsigned long)[parsed count]);
-
-        NSNumber *seqNum = messageDict[@"device_seq"];
-        int64_t arrivedSeq = seqNum ? [seqNum longLongValue] : 0;
-
-        kern_return_t deliveryKr = [self _deliverPushTopic:routingData[@"bundleID"] payload:parsed];
-        if (deliveryKr == KERN_SUCCESS) {
-            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
-            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
-            [self _advanceLastDeliveredSeqIfNeeded:arrivedSeq];
-
-            [self _kickLocalDeliveryDrain];
-        } else {
-            NSData *serialized = [NSPropertyListSerialization
-                dataFromPropertyList:parsed
-                              format:NSPropertyListBinaryFormat_v1_0
-                    errorDescription:NULL];
-            int64_t effective = (expiresAt > now) ? expiresAt : (now + kSGLocalPendingFallbackDeadlineSec);
-            BOOL queued = serialized &&
-                [db enqueueLocalPendingDeliveryForMessageID:msgID
-                                                   bundleID:routingData[@"bundleID"]
-                                                    payload:serialized
-                                                  deviceSeq:arrivedSeq
-                                                  expiresAt:effective];
-            if (queued) {
-                dispatch_async(_localDeliveryDrainQueue, ^{
-                    [self _startLocalDeliveryRetryTimer];
-                });
-                SGLOGW(SGDaemon, "code=%s msg=%s bundle=%s kr=%d deadline=%s action=queue_local_retry", SGND_DELIVERY_LOCAL_RETRY_QUEUED,
-                            msgHex, [routingData[@"bundleID"] UTF8String], deliveryKr,
-                            (expiresAt > now) ? "wire_expiry" : "fallback");
-            } else if (!serialized) {
-                SGLOGE(SGDaemon, "code=%s msg=%s kr=%d ack=parse_failed action=halt_resends", SGND_DELIVERY_LOCAL_RETRY_BAD_PAYLOAD, msgHex, deliveryKr);
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
-                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
-            } else {
-                SGLOGE(SGDaemon, "code=%s msg=%s kr=%d action=abort_for_redelivery", SGND_DELIVERY_LOCAL_RETRY_ENQUEUE_FAILED, msgHex, deliveryKr);
-                SGP_AbortConnection();
-            }
-        }
-
-        cleanup_assertion:
-        {
-            [[SGAvailability shared] releasePowerAssertion:assertionID];
-        }
-    }
+    [_notificationProcessor processNotification:messageDict];
 }
 
 
@@ -1032,8 +805,50 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     [self handleEvent:SGEventNetworkDown payload:nil];
 }
 
-- (void)requestGracefulDisconnect {
+- (BOOL)requestGracefulDisconnect {
+    BOOL wasConnected = SGP_IsConnected();
+    __block BOOL frameSent = NO;
+    BOOL sendFinished = !wasConnected;
+
+    if (wasConnected) {
+        dispatch_semaphore_t finished = dispatch_semaphore_create(0);
+        dispatch_retain(finished);
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            frameSent = SGP_SendClientDisconnect();
+            dispatch_semaphore_signal(finished);
+            dispatch_release(finished);
+        });
+
+        sendFinished = (dispatch_semaphore_wait(
+            finished,
+            dispatch_time(DISPATCH_TIME_NOW,
+                          kSGGracefulDisconnectTimeoutSec * NSEC_PER_SEC)) == 0);
+        if (!sendFinished) {
+            SGLOGW(SGDaemon, "code=%s result=timeout action=abort", SGND_DAEMON_DISCONNECT_TIMEOUT);
+            SGP_AbortConnection();
+            sendFinished = (dispatch_semaphore_wait(
+                finished,
+                dispatch_time(DISPATCH_TIME_NOW,
+                              kSGGracefulDisconnectTimeoutSec * NSEC_PER_SEC)) == 0);
+        }
+        dispatch_release(finished);
+    }
+
     [self handleEvent:SGEventStopRequested payload:nil];
+
+    dispatch_sync(_entryActionQueue, ^{});
+    SGP_AbortConnection();
+    dispatch_sync(_connectionQueue, ^{});
+    dispatch_sync(_protocolWorkerQueue, ^{});
+    if (sendFinished) SGP_DisconnectFromServer();
+
+    BOOL graceful = !wasConnected || (sendFinished && frameSent);
+    SGLOGI(SGDaemon, "code=%s connected=%s frame=%s result=%s",
+           SGND_DAEMON_DISCONNECT_COMPLETE,
+           wasConnected ? "yes" : "no",
+           frameSent ? "sent" : "not_sent",
+           graceful ? "graceful" : "forced");
+    return graceful;
 }
 
 - (void)handleConfigurationReloadRequest {
@@ -1127,22 +942,26 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 - (BOOL)performDeleteProfileAtIndex:(NSInteger)profileIdx {
     if (profileIdx < 1 || profileIdx > 5) return NO;
 
-    BOOL wasActive = ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx);
+    SGConfiguration *configuration = [SGConfiguration sharedConfiguration];
+    BOOL wasActive = ([configuration activeProfileIndex] == profileIdx);
+    BOOL shouldQuiesce = wasActive && [configuration isEnabled];
 
-    if (![_stateStore removeProfileAtIndex:profileIdx]) return NO;
-
-    if (![[SGDatabaseManager sharedManager] clearOperationalStateForProfile:profileIdx]) {
-        SGLOGE(SGDaemon, "profile-delete: database cleanup failed idx=%ld",
-               (long)profileIdx);
-        return NO;
+    if (shouldQuiesce) {
+        [self handleEvent:SGEventStopRequested payload:nil];
+        dispatch_sync(_entryActionQueue, ^{});
     }
 
-    [[SGConfiguration sharedConfiguration] reloadFromDisk];
+    BOOL removed = [_stateStore removeProfileAtIndex:profileIdx];
 
     if (wasActive) {
+        [configuration reloadFromDisk];
+        [_notificationProcessor resetInMemoryDeduplication];
+        /* Success selects IdleUnregistered; compensated failure reconnects the
+         * restored profile and resumes the runtime that was quiesced above. */
         [self handleEvent:SGEventConfigReloaded payload:nil];
     }
-    return YES;
+
+    return removed;
 }
 
 - (BOOL)performSetActiveProfileAtIndex:(NSInteger)profileIdx {
@@ -1162,12 +981,10 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
     [[SGConfiguration sharedConfiguration] reloadFromDisk];
 
-    @synchronized(_seenMessageIDs) {
-        [_seenMessageIDs removeAllObjects];
-    }
+    [_notificationProcessor resetInMemoryDeduplication];
     [self reconcileTokensWithPlist];
     [self handleEvent:SGEventConfigReloaded payload:nil];
-    [self _kickLocalDeliveryDrain];
+    [_notificationProcessor kickPendingDeliveryDrain];
     [_stateStore drainDurableEventInbox];
     return YES;
 }
@@ -1187,118 +1004,6 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
     SGLOGI(SGDaemon, "code=%s bundle=%s result=%s", SGND_DELIVERY_DISPATCHING,
                 [topic UTF8String], (kr == KERN_SUCCESS) ? "delivered" : "failed");
     return kr;
-}
-
-#pragma mark - Notification Disposition Helpers
-
-- (void)_markMessageDeliveredID:(NSData *)msgID expiresAt:(int64_t)expiresAt {
-    if (!msgID || [msgID length] == 0) return;
-    [[SGDatabaseManager sharedManager] markMessageIDAsSeen:msgID expiresAt:expiresAt];
-    @synchronized(_seenMessageIDs) {
-        if (![_seenMessageIDs containsObject:msgID]) {
-            [_seenMessageIDs addObject:msgID];
-            if ([_seenMessageIDs count] > kSGSeenMessageIDCap) [_seenMessageIDs removeObjectAtIndex:0];
-        }
-    }
-}
-
-- (void)_advanceLastDeliveredSeqIfNeeded:(int64_t)arrivedSeq {
-    if (arrivedSeq <= 0) return;
-    SGDatabaseManager *db = [SGDatabaseManager sharedManager];
-    int64_t currentMax = [db lastDeliveredSeq];
-    if (arrivedSeq > currentMax) [db updateLastDeliveredSeq:arrivedSeq];
-}
-
-#pragma mark - Local Delivery Retry Queue
-
-- (void)_startLocalDeliveryRetryTimer {
-    if (_localDeliveryRetryTimer) return;
-    _localDeliveryRetryTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-        _localDeliveryDrainQueue);
-    dispatch_source_set_timer(_localDeliveryRetryTimer,
-                              dispatch_time(DISPATCH_TIME_NOW, kSGDrainSafetyIntervalSec * NSEC_PER_SEC),
-                              kSGDrainSafetyIntervalSec * NSEC_PER_SEC,
-                              kSGDrainSafetyLeewaySec * NSEC_PER_SEC);
-    dispatch_source_set_event_handler(_localDeliveryRetryTimer, ^{
-        [self _drainLocalPendingDeliveries];
-    });
-    dispatch_resume(_localDeliveryRetryTimer);
-}
-
-- (void)_stopLocalDeliveryRetryTimer {
-    if (!_localDeliveryRetryTimer) return;
-    dispatch_source_cancel(_localDeliveryRetryTimer);
-    dispatch_release(_localDeliveryRetryTimer);
-    _localDeliveryRetryTimer = NULL;
-}
-
-- (void)_kickLocalDeliveryDrain {
-    dispatch_async(_localDeliveryDrainQueue, ^{
-        [self _drainLocalPendingDeliveries];
-    });
-}
-
-- (void)_drainLocalPendingDeliveries {
-    @autoreleasepool {
-        SGDatabaseManager *db = [SGDatabaseManager sharedManager];
-        NSArray *pending = [db allLocalPendingDeliveries];
-        if ([pending count] == 0) {
-            [self _stopLocalDeliveryRetryTimer];
-            return;
-        }
-
-        [self _startLocalDeliveryRetryTimer];
-
-        int64_t now = (int64_t)time(NULL);
-        for (NSDictionary *entry in pending) {
-            @autoreleasepool {
-                NSData   *msgID      = entry[@"msgID"];
-                NSString *bundleID   = entry[@"bundleID"];
-                NSData   *serialized = entry[@"payload"];
-                int64_t   deviceSeq  = [entry[@"deviceSeq"] longLongValue];
-                int64_t   expiresAt  = [entry[@"expiresAt"] longLongValue];
-                char msgHex[SGP_MSG_ID_LEN * 2 + 1];
-                SGCopyMessageIDHex(msgID, msgHex, sizeof(msgHex));
-
-                if (now > expiresAt) {
-                    SGLOGW(SGDaemon, "code=%s msg=%s bundle=%s ack=expired action=remove", SGND_DELIVERY_LOCAL_RETRY_EXPIRED,
-                                msgHex, [bundleID UTF8String]);
-                    SGP_EnqueueAcknowledgement(msgID, SGP_ACK_EXPIRED);
-                    [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
-                    [db removeLocalPendingDeliveryForMessageID:msgID];
-                    continue;
-                }
-
-                NSDictionary *parsed = (NSDictionary *)[NSPropertyListSerialization
-                    propertyListFromData:serialized
-                        mutabilityOption:NSPropertyListImmutable
-                                  format:NULL
-                        errorDescription:NULL];
-                if (![parsed isKindOfClass:[NSDictionary class]]) {
-                    SGLOGE(SGDaemon, "code=%s msg=%s bundle=%s ack=parse_failed action=remove", SGND_DELIVERY_LOCAL_RETRY_BAD_PAYLOAD,
-                                msgHex, [bundleID UTF8String]);
-                    SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
-                    [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
-                    [db removeLocalPendingDeliveryForMessageID:msgID];
-                    continue;
-                }
-
-                kern_return_t kr = [self _deliverPushTopic:bundleID payload:parsed];
-                if (kr == KERN_SUCCESS) {
-                    SGLOGI(SGDaemon, "code=%s msg=%s bundle=%s result=delivered", SGND_DELIVERY_LOCAL_RETRY_SUCCEEDED,
-                                msgHex, [bundleID UTF8String]);
-                    SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
-                    [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
-                    [self _advanceLastDeliveredSeqIfNeeded:deviceSeq];
-                    [db removeLocalPendingDeliveryForMessageID:msgID];
-                }
-            }
-        }
-
-        if ([[db allLocalPendingDeliveries] count] == 0) {
-            [self _stopLocalDeliveryRetryTimer];
-        }
-    }
 }
 
 #pragma mark - Keepalive Algorithm Helpers
@@ -1325,9 +1030,22 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 
     [_stateLock lock];
     double interval = [self _currentKeepAliveInterval];
+    uint32_t generation = _fsmGeneration;
     [_stateLock unlock];
 
     dispatch_async(dispatch_get_main_queue(), ^{
+        [self->_stateLock lock];
+        BOOL stale = (self->_fsmGeneration != generation);
+        [self->_stateLock unlock];
+
+        SGStatusPayload status;
+        SGStatusServer_Current(&status);
+        if (stale || status.state != SGStateConnected || !SGP_IsConnected()) {
+            SGLOGD(SGDaemon, "code=%s generation=%u action=discard",
+                   SGND_KEEPALIVE_TIMER_IGNORED, generation);
+            return;
+        }
+
         if (self->_keepAliveTimer) {
             [self->_keepAliveTimer invalidate];
             [self->_keepAliveTimer release];
@@ -1339,6 +1057,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                            serviceIdentifier:@"com.skyglow.sgn"
                                       target:self
                                     selector:@selector(_keepAliveTimerFired:)];
+
+        if (!self->_keepAliveTimer) return;
 
         [[SGAvailability shared] schedulePersistentTimer:self->_keepAliveTimer inRunLoop:[NSRunLoop mainRunLoop]];
 
@@ -1357,8 +1077,8 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 }
 
 - (void)_keepAliveTimerFired:(id)timer {
-    if (!SGP_IsConnected()) {
-        SGLOGD(SGDaemon, "code=%s reason=not_connected action=ignore", SGND_KEEPALIVE_TIMER_IGNORED);
+    if (timer != _keepAliveTimer || !SGP_IsConnected()) {
+        SGLOGD(SGDaemon, "code=%s reason=stale_or_not_connected action=ignore", SGND_KEEPALIVE_TIMER_IGNORED);
         return;
     }
 
@@ -1393,8 +1113,19 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 }
 
 - (void)_probeConnectionLiveness {
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&_probeInFlight, &expected, true)) {
+        SGLOGD(SGDaemon, "code=%s action=coalesce_existing_probe", SGND_KEEPALIVE_PROBE);
+        return;
+    }
+    uint64_t connectionGeneration = SGP_GetConnectionGeneration();
+
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        if (!SGP_IsConnected()) return;
+        if (!SGP_IsConnected() ||
+            SGP_GetConnectionGeneration() != connectionGeneration) {
+            atomic_store(&self->_probeInFlight, false);
+            return;
+        }
 
         uint32_t assertionID = [[SGAvailability shared]
             createTimedPowerAssertionWithName:@"com.skyglow.sgn.probe"
@@ -1408,13 +1139,17 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
                                      (int64_t)((SGP_PONG_TIMEOUT_SEC + 5) * NSEC_PER_SEC)),
                        dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             double stillPending = SGP_GetPendingPingAgeWallSeconds();
-            if (SGP_IsConnected() && stillPending > (double)SGP_PONG_TIMEOUT_SEC) {
+            BOOL sameConnection =
+                (SGP_GetConnectionGeneration() == connectionGeneration);
+            if (sameConnection && SGP_IsConnected() &&
+                stillPending > (double)SGP_PONG_TIMEOUT_SEC) {
                 SGLOGW(SGDaemon, "code=%s pending=%.0fs action=abort_for_reconnect",
                        SGND_KEEPALIVE_PROBE_FAILED, stillPending);
                 [self _recordKeepAliveFailureFeedback];
                 SGP_AbortConnection();
             }
             [self _releaseProbeAssertion:assertionID];
+            atomic_store(&self->_probeInFlight, false);
         });
     });
 }

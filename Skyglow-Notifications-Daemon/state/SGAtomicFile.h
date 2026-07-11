@@ -23,4 +23,7 @@ BOOL SGAtomicWritePropertyList(id propertyList,
                                mode_t mode,
                                NSError **outError);
 
+/** Removes a file and fsyncs its containing directory. Missing is success. */
+BOOL SGDurableRemoveItem(NSString *path, NSError **outError);
+
 #endif

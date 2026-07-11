@@ -81,6 +81,22 @@ bool SGConnectionTransitionIsLegal(SGState from, SGState to) {
     return false;
 }
 
+bool SGConnectionStateNeedsActiveServices(SGState state) {
+    switch (state) {
+        case SGStateResolvingDNS:
+        case SGStateConnecting:
+        case SGStateRegistering:
+        case SGStateAuthenticating:
+        case SGStateConnected:
+        case SGStateBackingOff:
+        case SGStateIdleNoNetwork:
+        case SGStateIdleCircuitOpen:
+            return true;
+        default:
+            return false;
+    }
+}
+
 SGState SGConnectionStateForConfiguration(bool enabled,
                                           bool hasProfile,
                                           bool valid,

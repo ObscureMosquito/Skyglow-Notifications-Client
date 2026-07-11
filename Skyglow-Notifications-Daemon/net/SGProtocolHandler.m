@@ -52,12 +52,8 @@ static char     *_regPendingPrivKey = NULL;
 static size_t    _regPendingPrivKeyLen = 0;
 static RSA      *_regPendingRSA = NULL;
 static int64_t   _regTimestamp = 0;
-/* Guards the _regPending* trio.  The RSA-2048 keypair is pre-generated on a
- * background queue while the connection is still being established, so the
- * connection worker never blocks for multi-second keygen on the I/O path. */
 static pthread_mutex_t _regKeyLock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Protocol phase — gates which server messages we accept at any given moment */
 typedef enum {
     SGPProtoPreHello       = 0,
     SGPProtoHelloReceived  = 1,
@@ -134,6 +130,8 @@ const char *SGP_ConnectErrorName(int code) {
         case -2: return "SGP_CONNECT_IMMEDIATE_FAILED";
         case -3: return "SGP_CONNECT_SELECT_TIMEOUT";
         case -4: return "SGP_CONNECT_SOCKET_ERROR";
+        case -5: return "SGP_CONNECT_INVALID_ENDPOINT";
+        case -6: return "SGP_CONNECT_TLS_CONTEXT_FAILED";
         case -7: return "SGP_CONNECT_TLS_FAILED";
         case -8: return "SGP_CONNECT_PINNED_CERT_INVALID";
         case -9: return "SGP_CONNECT_NO_PEER_CERT";
@@ -257,11 +255,6 @@ static uint8_t *SG_SignPSS(RSA *rsa, const uint8_t *d1, size_t l1, const uint8_t
 }
 
 static int SG_SendChallengeResponse(SGPMsgType type, RSA *rsa, NSString *addr, int64_t ts) {
-    /* During registration, addr is nil — server hasn't assigned one yet, so
-     * the signed material covers only nonce + timestamp.  During login,
-     * addr is included so the signature binds the address claim to the
-     * private-key proof (server needs the address to look up the stored
-     * public key). */
     const char *u = addr ? [addr UTF8String] : NULL;
     size_t ul = u ? strlen(u) : 0;
     uint8_t tsBE[8]; SG_EncodeBE64(ts, tsBE);
@@ -293,10 +286,6 @@ void SGP_PrepareRegistrationKeypair(void) {
     pthread_mutex_unlock(&_regKeyLock);
     if (alreadyHave) return;
 
-    /* RSA-2048 keygen is the multi-second cost on A4/iOS 4.3 hardware.  It runs
-     * OUTSIDE _regKeyLock so it never blocks the connection worker (which takes
-     * the lock only to read the finished result).  Idempotent: a second caller
-     * either short-circuits above or loses the publish race below. */
     BIGNUM *bn = BN_new(); BN_set_word(bn, RSA_F4);
     RSA *rsa = RSA_new(); RSA_generate_key_ex(rsa, 2048, bn, NULL);
     BN_free(bn);
@@ -315,7 +304,6 @@ void SGP_PrepareRegistrationKeypair(void) {
 
     pthread_mutex_lock(&_regKeyLock);
     if (_regPendingRSA) {
-        /* Lost the race to a concurrent prepare — discard ours. */
         pthread_mutex_unlock(&_regKeyLock);
         SGP_ZeroAndFreeKeyMaterial(privBuf, (size_t)privLen);
         RSA_free(rsa);
@@ -449,17 +437,39 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     _lastRetryHint = 0;
     _lastFrameReceivedAt = 0.0;
 
+    struct sockaddr_storage peerAddress;
+    memset(&peerAddress, 0, sizeof(peerAddress));
+    socklen_t peerAddressLength = 0;
+    int addressFamily = AF_UNSPEC;
+
+    if (ip && port > 0 && port <= UINT16_MAX) {
+        struct sockaddr_in *address4 = (struct sockaddr_in *)&peerAddress;
+        if (inet_pton(AF_INET, ip, &address4->sin_addr) == 1) {
+            addressFamily = AF_INET;
+            address4->sin_len = sizeof(*address4);
+            address4->sin_family = AF_INET;
+            address4->sin_port = htons((uint16_t)port);
+            peerAddressLength = sizeof(*address4);
+        } else {
+            struct sockaddr_in6 *address6 = (struct sockaddr_in6 *)&peerAddress;
+            if (inet_pton(AF_INET6, ip, &address6->sin6_addr) == 1) {
+                addressFamily = AF_INET6;
+                address6->sin6_len = sizeof(*address6);
+                address6->sin6_family = AF_INET6;
+                address6->sin6_port = htons((uint16_t)port);
+                peerAddressLength = sizeof(*address6);
+            }
+        }
+    }
+
+    if (addressFamily == AF_UNSPEC) return -5;
+
     _sslctx = SSL_CTX_new(TLS_client_method());
+    if (!_sslctx) return -6;
     SSL_CTX_set_options(_sslctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
-    /* We pin the exact server certificate ourselves after the handshake (below),
-     * so OpenSSL's own chain verification is deliberately not used: it would
-     * reject a self-signed pinned leaf, and for a CA-anchored cert it would
-     * accept ANY sibling leaf that CA issued.  A byte-comparison of the leaf the
-     * server actually presents against the pinned cert is both stricter and
-     * independent of chain/hostname semantics (we connect by IP). */
     SSL_CTX_set_verify(_sslctx, SSL_VERIFY_NONE, NULL);
 
-    _sock = socket(AF_INET, SOCK_STREAM, 0);
+    _sock = socket(addressFamily, SOCK_STREAM, 0);
     if (_sock < 0) { SGP_DisconnectFromServer(); return -1; }
 
     int yes = 1;
@@ -468,12 +478,7 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     int flags = fcntl(_sock, F_GETFL, 0);
     fcntl(_sock, F_SETFL, flags | O_NONBLOCK);
 
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET; addr.sin_port = htons(port);
-    inet_pton(AF_INET, ip, &addr.sin_addr);
-
-    int connectResult = connect(_sock, (struct sockaddr *)&addr, sizeof(addr));
+    int connectResult = connect(_sock, (struct sockaddr *)&peerAddress, peerAddressLength);
     if (connectResult < 0 && errno != EINPROGRESS) {
         SGP_DisconnectFromServer();
         return -2;
@@ -499,8 +504,6 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     setsockopt(_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(_sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 
-    /* Parse the pinned certificate into DER here — after the socket-level early
-     * returns above — so no error path leaks it. */
     unsigned char *pinnedDer = NULL;
     int pinnedDerLen = 0;
     {
@@ -529,11 +532,10 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     }
 
     _ssl = SSL_new(_sslctx);
+    if (!_ssl) { OPENSSL_free(pinnedDer); SGP_DisconnectFromServer(); return -6; }
     SSL_set_fd(_ssl, _sock);
     if (SSL_connect(_ssl) != 1) { OPENSSL_free(pinnedDer); SGP_DisconnectFromServer(); return -7; }
 
-    /* Certificate pinning: the leaf the server actually presented must be
-     * byte-identical to the pinned certificate, or we refuse the connection. */
     X509 *peer = SSL_get_peer_certificate(_ssl);
     if (!peer) {
         OPENSSL_free(pinnedDer);
@@ -650,10 +652,10 @@ void SGP_FlushActiveTopicFilter(void) {
     }
 }
 
-void SGP_SendClientDisconnect(void) {
-    if (!SGP_IsConnected()) return;
+BOOL SGP_SendClientDisconnect(void) {
+    if (!SGP_IsConnected()) return NO;
     uint8_t reason = SGP_DISC_NORMAL;
-    SGP_LowLevelSend(SGP_C_DISCONNECT, &reason, 1);
+    return SGP_LowLevelSend(SGP_C_DISCONNECT, &reason, 1) == 0;
 }
 
 int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
@@ -811,8 +813,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
 
     switch (type) {
         case SGP_S_HELLO: {
-            /* HELLO is only valid as the very first server frame after TLS
-             * handshake */
             if (_phase != SGPProtoPreHello) {
                 SGLOGW(SGP, "code=%s type=S_HELLO phase=%d result=unsolicited",
                        SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase);
@@ -823,7 +823,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             break;
         }
         case SGP_S_CHALLENGE: {
-            /* Only accept the challenge in response to our C_LOGIN/C_REGISTER */
             if (_phase != SGPProtoChallengeWait) {
                 SGLOGW(SGP, "code=%s type=S_CHALLENGE phase=%d result=unsolicited",
                        SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase);
@@ -832,7 +831,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             if (len < SGP_NONCE_LEN) { result = SGP_ERR_PROTO; goto cleanup; }
             memcpy(_pendingNonce, raw, SGP_NONCE_LEN); _hasPendingNonce = YES;
             _phase = SGPProtoAuthWait;
-            /* Distinguish registration vs login by which keypair is pending. */
+
             if (_regPendingRSA) SG_SendChallengeResponse(SGP_C_REGISTER_RESP, _regPendingRSA, nil, _regTimestamp);
             else                SG_SendChallengeResponse(SGP_C_LOGIN_RESP, _userPrivKey, _userAddress, _loginTimestamp);
             break;
@@ -897,7 +896,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             result = SGP_ERR_CLOSED; goto cleanup;
         }
         case SGP_S_REGISTER_OK: {
-            /* Must have an active registration AND be in the auth-wait phase */
             if (!_regPendingRSA || _phase != SGPProtoAuthWait) {
                 SGLOGW(SGP, "code=%s type=S_REGISTER_OK phase=%d hasRegister=%d result=unsolicited",
                        SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase, _regPendingRSA != NULL);
@@ -908,8 +906,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             uint32_t serverVer = SG_DecodeBE32(raw);
             uint16_t addrLen   = ((uint16_t)raw[4] << 8) | (uint16_t)raw[5];
             
-            /* Bounds-check against both the frame and the server's 255-char
-             * contract.  Reject malformed frames as protocol errors. */
             if (addrLen == 0 || addrLen > 255 || (uint64_t)6 + addrLen > (uint64_t)len) {
                 SGLOGE(SGP, "code=%s field=address addrLen=%u frameLen=%llu result=rejected",
                        SGND_PROTOCOL_FRAME_SIZE_INVALID, addrLen, (unsigned long long)len);
@@ -1019,9 +1015,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             int64_t serverTime = SG_DecodeBE64(raw);
             int64_t localTime  = (int64_t)time(NULL);
             int64_t offset     = serverTime - localTime;
-            /* Bound skew: ±2 days.  Limits the damage from a compromised
-             * server pushing timestamps wildly out of any reasonable replay
-             * window, this is generous. */
+
             if (offset > 172800 || offset < -172800) {
                 SGLOGW(SGP, "code=%s offset=%llds result=rejected_excessive_skew",
                        SGND_PROTOCOL_TIME_SYNC, offset);

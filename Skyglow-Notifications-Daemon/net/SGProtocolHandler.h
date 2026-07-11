@@ -206,8 +206,9 @@ void SGP_DisconnectFromServer(void);
 
 /**
  * Sends a C_DISCONNECT frame with a normal reason code.
+ * Returns YES only when the complete frame was written to TLS.
  */
-void SGP_SendClientDisconnect(void);
+BOOL SGP_SendClientDisconnect(void);
 
 /**
  * Initiates the first-time device registration flow.  The server assigns

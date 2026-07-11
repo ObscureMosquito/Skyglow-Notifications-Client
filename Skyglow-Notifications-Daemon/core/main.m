@@ -117,7 +117,7 @@ int main(int argc, char *argv[]) {
         CFRunLoopRun();
 
         SGLOGI(Skyglow, "code=%s pid=%d result=stopping", SGND_DAEMON_SHUTTING_DOWN, (int)getpid());
-        [daemon requestGracefulDisconnect];
+        (void)[daemon requestGracefulDisconnect];
 
         [daemon attachControlChannel:nil];
         [daemon attachPlatform:nil];

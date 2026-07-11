@@ -41,7 +41,7 @@ The TXT record contains space-separated `key=value` pairs:
 
 | Key         | Description                                                  | Required    |
 | ----------- | ------------------------------------------------------------ | ----------- |
-| `tcp_addr`  | IPv4 address of the TCP protocol server                      | Yes         |
+| `tcp_addr`  | IPv4 or IPv6 address of the TCP protocol server               | Yes         |
 | `tcp_port`  | Port number of the TCP protocol server (TLS)                 | Yes         |
 | `http_addr` | Base URL of the HTTP API (push submission + cert auto-fetch) | Recommended |
 

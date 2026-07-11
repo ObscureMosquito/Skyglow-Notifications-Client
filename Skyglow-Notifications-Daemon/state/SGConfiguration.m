@@ -55,8 +55,6 @@ void SGEnsureRuntimeDirectories(void) {
     SGApplyPrivateDirectoryProtection(inboxDir);
 }
 
-/* Scrubs a private-key buffer before releasing it so the PEM never lingers in
- * freed heap memory. */
 static void SG_ZeroAndReleaseData(NSMutableData *data) {
     if (!data) return;
     [data resetBytesInRange:NSMakeRange(0, [data length])];

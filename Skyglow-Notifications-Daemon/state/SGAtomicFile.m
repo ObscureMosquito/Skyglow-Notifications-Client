@@ -130,3 +130,24 @@ BOOL SGAtomicWritePropertyList(id propertyList,
 
     return SGAtomicWriteData(data, path, mode, outError);
 }
+
+BOOL SGDurableRemoveItem(NSString *path, NSError **outError) {
+    if (outError) *outError = nil;
+    if ([path length] == 0) {
+        SGAtomicFileSetError(outError, 1, EINVAL);
+        return NO;
+    }
+
+    if (unlink([path fileSystemRepresentation]) != 0 && errno != ENOENT) {
+        SGAtomicFileSetError(outError, 5, errno);
+        return NO;
+    }
+
+    NSString *directory = [path stringByDeletingLastPathComponent];
+    int directoryFD = open([directory fileSystemRepresentation], O_RDONLY);
+    if (directoryFD >= 0) {
+        (void)fsync(directoryFD);
+        close(directoryFD);
+    }
+    return YES;
+}

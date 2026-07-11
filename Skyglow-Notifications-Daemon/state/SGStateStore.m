@@ -147,9 +147,6 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
     if (!SGProfileIndexIsValid(profileIdx) || ![serverAddress length]) return NO;
 
     @synchronized(self) {
-        /* Recreates the certificate directory with 0700 + mobile ownership;
-         * a bare mkdir here as root would leave a parent SpringBoard cannot
-         * write the inbox under. */
         SGEnsureRuntimeDirectories();
 
         NSString *storedCertPath = SGProfileCertificatePathForIndex(profileIdx);
@@ -190,8 +187,6 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
             }
         }];
         if (!persisted) {
-            /* The plist still names the old server; restore the certificate
-             * it was pinned to so the pair stays consistent. */
             if (certFileReplaced) {
                 if (previousCertData) {
                     SGAtomicWriteData(previousCertData, certDiskPath, 0644, NULL);
@@ -202,8 +197,6 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
             return NO;
         }
 
-        /* Keychain last: a crash here leaves an orphan key (overwritten on
-         * the next registration), never a credentialed plist without a key. */
         if (invalidate) SGKeychain_DeletePrivateKey(profileIdx);
         if (outInvalidatedCredentials) *outInvalidatedCredentials = invalidate;
         return YES;
@@ -214,25 +207,59 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
     if (!SGProfileIndexIsValid(profileIdx)) return NO;
     @synchronized(self) {
         NSString *plistPath = SGProfilePlistPathForIndex(profileIdx);
-        NSFileManager *fm = [NSFileManager defaultManager];
-        if ([fm fileExistsAtPath:plistPath]) {
-            NSError *err = nil;
-            if (![fm removeItemAtPath:plistPath error:&err]) {
-                SGLOGE(SGStateStore,
-                       "profile-delete: plist removal failed idx=%ld errno=%d",
-                       (long)profileIdx, (int)[err code]);
-                return NO;
-            }
-        }
-
         NSString *certDiskPath =
             SGPath(SGProfileCertificatePathForIndex(profileIdx));
-        if ([fm fileExistsAtPath:certDiskPath]) {
-            [fm removeItemAtPath:certDiskPath error:nil];
+        NSFileManager *fm = [NSFileManager defaultManager];
+
+        BOOL hadProfile = [fm fileExistsAtPath:plistPath];
+        BOOL hadCertificate = [fm fileExistsAtPath:certDiskPath];
+        NSData *profileSnapshot = hadProfile
+            ? [NSData dataWithContentsOfFile:plistPath] : nil;
+        NSData *certificateSnapshot = hadCertificate
+            ? [NSData dataWithContentsOfFile:certDiskPath] : nil;
+        NSMutableData *keySnapshot = nil;
+
+        if ((hadProfile && !profileSnapshot) ||
+            (hadCertificate && !certificateSnapshot) ||
+            !SGKeychain_CopyPrivateKeyPEM(profileIdx, &keySnapshot)) {
+            if (keySnapshot) {
+                [keySnapshot resetBytesInRange:NSMakeRange(0, [keySnapshot length])];
+            }
+            return NO;
         }
 
-        SGKeychain_DeletePrivateKey(profileIdx);
-        return YES;
+        NSError *removeError = nil;
+        BOOL ok = SGDurableRemoveItem(plistPath, &removeError) &&
+                  SGDurableRemoveItem(certDiskPath, &removeError) &&
+                  SGKeychain_DeletePrivateKey(profileIdx) &&
+                  [[SGDatabaseManager sharedManager]
+                      clearOperationalStateForProfile:profileIdx];
+
+        if (!ok) {
+            BOOL rollbackOK = YES;
+            if (hadCertificate) {
+                rollbackOK = SGAtomicWriteData(
+                    certificateSnapshot, certDiskPath, 0644, NULL) && rollbackOK;
+            }
+            if (keySnapshot) {
+                rollbackOK = SGKeychain_StorePrivateKeyData(
+                    keySnapshot, profileIdx) && rollbackOK;
+            }
+            if (hadProfile) {
+                rollbackOK = SGAtomicWriteData(
+                    profileSnapshot, plistPath, 0644, NULL) && rollbackOK;
+            }
+            SGLOGE(SGStateStore,
+                   "profile-delete: commit failed idx=%ld rollback=%s error=%s",
+                   (long)profileIdx,
+                   rollbackOK ? "ok" : "failed",
+                   removeError ? [[removeError description] UTF8String] : "none");
+        }
+
+        if (keySnapshot) {
+            [keySnapshot resetBytesInRange:NSMakeRange(0, [keySnapshot length])];
+        }
+        return ok;
     }
 }
 
@@ -258,8 +285,6 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
             SGPath(SG_PREFS_PLIST_PATH)] ?: @{};
         id previousIntent =
             [[preferences objectForKey:@"appStatus"] objectForKey:bundleID];
-        /* No persisted provider choice is fail-closed. Otherwise appStatus's
-         * boolean is the durable source for the pre-request mute state. */
         BOOL rollbackMuted =
             previousIntent ? ![previousIntent boolValue] : YES;
 
@@ -384,16 +409,8 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
                     continue;
                 }
 
-                /* Preserve ordering for repeated uninstall records for one app
-                 * without blocking an unrelated app's uninstall cleanup. */
                 if ([blockedBundles containsObject:bundleID]) continue;
 
-                /* The envelope was listed before we got here; SpringBoard
-                 * purges superseded records when an installed app re-enables
-                 * (it is the only component that can prove the app exists).
-                 * Re-check existence under the store lock so a purged event
-                 * is never applied from the cached copy, whichever side of
-                 * the listing the unlink landed on. */
                 BOOL applied = NO;
                 BOOL superseded = NO;
                 @synchronized(self) {

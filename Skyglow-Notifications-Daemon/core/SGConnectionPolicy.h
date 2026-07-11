@@ -15,6 +15,9 @@
  */
 bool SGConnectionTransitionIsLegal(SGState from, SGState to);
 
+/** Whether this state needs reachability, power, retry, and keepalive services. */
+bool SGConnectionStateNeedsActiveServices(SGState state);
+
 /**
  * Returns the state a configuration reload should select. A valid reload keeps
  * an explicitly offline daemon offline; every other valid state starts a fresh
