@@ -23,6 +23,22 @@ static void SNCopyCString(char *dst, size_t dstSize, const char *src) {
     dst[i] = '\0';
 }
 
+static NSString *SNErrorMessageFromResponse(const SGControlChannelMessage *response) {
+    if (!response ||
+        response->messageType != SGCMSG_ERROR_RESPONSE ||
+        response->payloadLength < sizeof(SGCErrorResponsePayload)) {
+        return nil;
+    }
+
+    const SGCErrorResponsePayload *payload =
+        (const SGCErrorResponsePayload *)response->payload;
+    size_t length = strnlen(payload->message, sizeof(payload->message));
+    if (length == 0 || length >= sizeof(payload->message)) return nil;
+    return [[[NSString alloc] initWithBytes:payload->message
+                                    length:length
+                                  encoding:NSUTF8StringEncoding] autorelease];
+}
+
 static SGControlChannel *DaemonClient(void) {
     dispatch_once(&gDaemonOnce, ^{
         gDaemonClient = [SGControlChannel clientForServiceName:SKYGLOW_CONTROL_SERVICE_DAEMON];
@@ -72,9 +88,12 @@ static SGControlChannel *DaemonClient(void) {
         BOOL ok = (err == SGCERR_OK);
         NSString *message = nil;
         if (!ok) {
-            message = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
-                ? @"Could not communicate with SpringBoard. Try again after respringing."
-                : @"SpringBoard rejected the registration request.";
+            message = SNErrorMessageFromResponse(response);
+            if (message.length == 0) {
+                message = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                    ? @"Could not communicate with SpringBoard. Try again after respringing."
+                    : @"SpringBoard rejected the registration request.";
+            }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             if (completion) completion(ok, message);

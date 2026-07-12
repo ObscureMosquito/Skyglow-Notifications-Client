@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import "SGControlChannelProtocol.h"
 
 /* Native  push registration state on this device */
 
@@ -11,6 +12,14 @@ BOOL SGN_IsCascadeReEntry(NSString *bundleId);
 
 /* Tears down Apple's native push registration for a bundle */
 void SGN_DeregisterAppNatively(NSString *bundleId);
+void SGN_DeregisterAppNativelyWithCompletion(
+    NSString *bundleId,
+    void (^completion)(SGControlError error, NSString *detail));
+
+/* Requests a real Apple Push registration without changing Skyglow state. */
+void SGN_RegisterAppNativelyWithCompletion(
+    NSString *bundleId,
+    void (^completion)(SGControlError error, NSString *detail));
 
 /* Installs a SGN token into the native push client  */
 void SGN_DeliverSuccess(NSString *bundleId, id application, id environment,
@@ -22,6 +31,8 @@ void SGN_InstallTokenGuard(void);
 
 /* Registration provider-choice flow */
 BOOL SGNRegistrationConsumePassThrough(void);
+void SGNRegistrationBeginPassThrough(void);
+void SGNRegistrationEndPassThrough(void);
 void SGNRegistrationPresentClassicChoice(id server, id application,
                                          id environment, NSString *bundleId,
                                          int notificationTypes);

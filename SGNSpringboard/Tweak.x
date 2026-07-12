@@ -57,7 +57,8 @@
 
     if (SGNEffectiveAppIntent(bundleId)) {
         SGN_InstallTokenGuard();
-        SGN_AsyncFetchAndDeliverToken(bundleId, application, environment, notificationTypes);
+        SGN_AsyncFetchAndDeliverToken(bundleId, application, environment,
+                                      notificationTypes, nil);
         return 1;
     }
 
@@ -84,7 +85,7 @@
 
     if (SGNEffectiveAppIntent(bundleIdentifier)) {
         SGN_InstallTokenGuard();
-        SGN_AsyncFetchAndDeliverToken(bundleIdentifier, nil, nil, 0);
+        SGN_AsyncFetchAndDeliverToken(bundleIdentifier, nil, nil, 0, nil);
         %orig;
         return;
     }
@@ -120,4 +121,3 @@
         %init(HookRegistration_iOS9);
     }
 }
-

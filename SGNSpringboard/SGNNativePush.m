@@ -2,6 +2,7 @@
 #import "SGNPrivateAPI.h"
 #import "SGNAppIntent.h"
 #import "SGNDaemonBridge.h"
+#import "SGNNativePushBroker.h"
 #import "SGSharedConstants.h"
 #import "SGDurableInbox.h"
 #import <UIKit/UIKit.h>
@@ -12,23 +13,14 @@
 #pragma mark - Native iOS Push Registration State Query
 
 NSArray *SGN_AllNativelyRegisteredBundles(void) {
-    if (SGN_IS_PRE_IOS_9) {
-        SBRemoteNotificationServer *server = [objc_getClass("SBRemoteNotificationServer") sharedInstance];
-        NSDictionary *dict = GetIvar(server, "_bundleIdentifiersToClients");
-        if ([dict isKindOfClass:[NSDictionary class]]) return [dict allKeys];
-        if ([server respondsToSelector:@selector(_allPushRegisteredThirdPartyBundleIDs)]) {
-            return [server _allPushRegisteredThirdPartyBundleIDs] ?: @[];
-        }
-        return @[];
+    SGControlError error = SGCERR_OK;
+    NSString *detail = nil;
+    NSArray *identifiers = [[SGNNativePushBroker sharedBroker]
+        registeredBundleIdentifiersWithError:&error detail:&detail];
+    if (error != SGCERR_OK) {
+        NSLog(@"[SGN] Native push query unavailable: %@", detail);
     }
-
-    id userNS = [NSClassFromString(@"UNUserNotificationServer") performSelector:@selector(sharedInstance)];
-    id registrar = GetIvar(userNS, "_registrarConnectionListener");
-    id remoteSrv = GetIvar(registrar, "_remoteNotificationServer")
-                ?: GetIvar(registrar, "_removeNotificationServer");
-    NSDictionary *dict = GetIvar(remoteSrv, "_bundleIdentifiersToClients");
-    if (![dict isKindOfClass:[NSDictionary class]]) return @[];
-    return [dict allKeys];
+    return identifiers ?: @[];
 }
 
 BOOL SGN_BundleRegisteredWithNativePush(NSString *bundleId) {
@@ -47,47 +39,40 @@ BOOL SGN_IsCascadeReEntry(NSString *bundleId) {
         && [sActiveDeregisterBundle isEqualToString:bundleId];
 }
 
-void SGN_DeregisterAppNatively(NSString *bundleId) {
-    if (!bundleId.length) return;
+void SGN_DeregisterAppNativelyWithCompletion(
+    NSString *bundleId,
+    void (^completion)(SGControlError error, NSString *detail)) {
+    if (!bundleId.length) {
+        if (completion) completion(SGCERR_INVALID_REQUEST, @"bundle id required");
+        return;
+    }
     SGNClearRuntimeAppIntent(bundleId);
 
     [sActiveDeregisterBundle release];
     sActiveDeregisterBundle = [bundleId copy];
     NSUInteger gen = ++sDeregisterGeneration;
+    void (^completionCopy)(SGControlError, NSString *) = [completion copy];
 
-    if (SGN_IS_PRE_IOS_9) {
-        id app = SBApp_LookupByIdentifier(bundleId);
-        SBRemoteNotificationServer *server = [objc_getClass("SBRemoteNotificationServer") sharedInstance];
-        if (app && [server respondsToSelector:@selector(unregisterApplication:)]) {
-            [server unregisterApplication:app];
-            NSLog(@"[SGN] Native deregister (classic): %@", bundleId);
-        }
-        NSMutableDictionary *clientsDict = GetIvar(server, "_bundleIdentifiersToClients");
-        if ([clientsDict isKindOfClass:[NSMutableDictionary class]]) {
-            [clientsDict removeObjectForKey:bundleId];
-        }
-        SBApplicationPersistence *persist = [objc_getClass("SBApplicationPersistence") sharedInstance];
-        if ([persist respondsToSelector:@selector(setArchivedObject:forKey:bundleOrDisplayIdentifier:)]) {
-            [persist setArchivedObject:nil
-                                forKey:@"SBRemoteNotificationClient"
-             bundleOrDisplayIdentifier:bundleId];
-        }
-    } else {
-        id userNS = [NSClassFromString(@"UNUserNotificationServer") performSelector:@selector(sharedInstance)];
-        id registrar = GetIvar(userNS, "_registrarConnectionListener");
-        SEL sel = @selector(invalidateTokenForRemoteNotificationsForBundleIdentifier:);
-        if ([registrar respondsToSelector:sel]) {
-            [registrar performSelector:sel withObject:bundleId];
-            NSLog(@"[SGN] Native deregister (iOS 9+): %@", bundleId);
-        }
-    }
+    [[SGNNativePushBroker sharedBroker]
+        resetBundleIdentifier:bundleId
+        completion:^(SGControlError error, NSString *detail) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (sDeregisterGeneration == gen) {
+                    [sActiveDeregisterBundle release];
+                    sActiveDeregisterBundle = nil;
+                }
+                if (error == SGCERR_OK) {
+                    NSLog(@"[SGN] Native registration and authorization reset: %@",
+                          bundleId);
+                }
+                if (completionCopy) completionCopy(error, detail);
+                [completionCopy release];
+            });
+        }];
+}
 
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (sDeregisterGeneration == gen) {
-            [sActiveDeregisterBundle release];
-            sActiveDeregisterBundle = nil;
-        }
-    });
+void SGN_DeregisterAppNatively(NSString *bundleId) {
+    SGN_DeregisterAppNativelyWithCompletion(bundleId, nil);
 }
 
 #pragma mark - Token Registration
@@ -187,10 +172,10 @@ static BOOL sPassThrough      = NO;
                              nil);
 
         if (sPendingIsModern) {
-            SGN_AsyncFetchAndDeliverToken(sPendingBundleId, nil, nil, 0);
+            SGN_AsyncFetchAndDeliverToken(sPendingBundleId, nil, nil, 0, nil);
         } else {
             SGN_AsyncFetchAndDeliverToken(sPendingBundleId, sPendingApp,
-                                          sPendingEnv, sPendingTypes);
+                                          sPendingEnv, sPendingTypes, nil);
         }
     } else {
         SGNSetRuntimeAppIntent(sPendingBundleId, NO);
@@ -244,6 +229,26 @@ BOOL SGNRegistrationConsumePassThrough(void) {
         return YES;
     }
     return NO;
+}
+
+void SGNRegistrationBeginPassThrough(void) {
+    sPassThrough = YES;
+}
+
+void SGNRegistrationEndPassThrough(void) {
+    sPassThrough = NO;
+}
+
+void SGN_RegisterAppNativelyWithCompletion(
+    NSString *bundleId,
+    void (^completion)(SGControlError error, NSString *detail)) {
+    if (!SG_IsIdentifierStringSafe(bundleId)) {
+        if (completion) completion(SGCERR_INVALID_REQUEST, @"bundle id invalid");
+        return;
+    }
+
+    [[SGNNativePushBroker sharedBroker]
+        registerBundleIdentifier:bundleId completion:completion];
 }
 
 void SGNRegistrationPresentClassicChoice(id server, id application,

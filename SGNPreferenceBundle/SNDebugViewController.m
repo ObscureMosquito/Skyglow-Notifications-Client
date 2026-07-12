@@ -280,7 +280,9 @@ typedef enum {
                                                completion:^(BOOL ok, NSString *message) {
                 if (ok) {
                     [self showAlert:@"Registered"
-                            message:[NSString stringWithFormat:@"SpringBoard accepted registration for '%@'.", bidCopy]];
+                            message:[NSString stringWithFormat:
+                                @"Skyglow registered '%@' and saved its provider state.",
+                                bidCopy]];
                 } else {
                     [self showAlert:@"Registration Failed"
                             message:message ?: @"SpringBoard did not respond."];

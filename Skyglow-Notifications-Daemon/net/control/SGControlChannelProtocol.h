@@ -23,6 +23,7 @@ static inline BOOL SG_IsIdentifierStringSafe(NSString *str) {
 
 #define SKYGLOW_CONTROL_SERVICE_DAEMON       "com.skyglow.sgn.control.daemon"
 #define SKYGLOW_CONTROL_SERVICE_SPRINGBOARD  "com.skyglow.sgn.control.springboard"
+#define SKYGLOW_CONTROL_SERVICE_USERNOTIFICATIONS "com.skyglow.sgn.control.usernotifications"
 #define SG_CONTROL_MAGIC                     ((uint8_t)0x43)
 #define SG_CONTROL_VERSION                   ((uint8_t)0x01)
 #define SG_CONTROL_MAX_PAYLOAD               4096
@@ -41,7 +42,7 @@ static inline BOOL SG_IsIdentifierStringSafe(NSString *str) {
 typedef enum : uint8_t {
     SGCMSG_TOKEN_REQUEST       = 0x10,  /* SGCTokenRequestPayload */
     SGCMSG_RELOAD_CONFIG       = 0x13,  /* (empty) */
-    SGCMSG_TEST_INJECT         = 0x14,  /* (empty) */
+    SGCMSG_TEST_INJECT         = 0x14,  /* SGCBundleIdPayload */
     SGCMSG_PUSH_DELIVERY       = 0x16,  /* SGCPushDeliveryPayload */
     SGCMSG_SUBSCRIBE           = 0x17,  /* SGCSubscribePayload */
     SGCMSG_UNSUBSCRIBE         = 0x18,  /* SGCUnsubscribePayload */
@@ -59,6 +60,8 @@ typedef enum : uint8_t {
     SGCMSG_SET_ENABLED         = 0x24,  /* SGCEnabledPayload */
     SGCMSG_CLEAR_APP_INTENT    = 0x25,  /* SGCBundleIdPayload */
     SGCMSG_LIST_SKYGLOW_APPS   = 0x26,  /* (empty) -> SGCMSG_BUNDLE_ID_LIST */
+    SGCMSG_REGISTER_NATIVE_PUSH_APP = 0x27,  /* SGCBundleIdPayload (broker: in-proc requestToken) */
+    SGCMSG_AUTHORIZE_NATIVE_PUSH_APP = 0x28, /* SGCBundleIdPayload (broker: submit Apple prompt) */
 
     SGCMSG_GENERIC_ACK         = 0x30,  /* (empty) */
     SGCMSG_TOKEN_RESPONSE      = 0x31,  /* SGCTokenResponsePayload */

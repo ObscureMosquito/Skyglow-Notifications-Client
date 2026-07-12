@@ -18,9 +18,12 @@ void SGNSendDeleteAppCommand(NSString *bundleId);
 /* Two-pass startup sweep that recovers uninstalls whose hook never fired. */
 void SGNScheduleInstalledApplicationReconciliation(void);
 
-/* Asks the daemon for an app's Skyglow token and delivers it */
+/* Asks the daemon for an app's Skyglow token and delivers it. Completion is
+ * called only after token persistence has succeeded or definitively failed. */
 void SGN_AsyncFetchAndDeliverToken(NSString *bundleId, id application,
-                                   id environment, int notificationTypes);
+                                   id environment, int notificationTypes,
+                                   void (^completion)(SGControlError error,
+                                                      NSString *detail));
 
 /* The SBRemoteApplication proxy for a bundle, or nil. */
 id SGN_RemoteAppForBundle(NSString *bundleId);

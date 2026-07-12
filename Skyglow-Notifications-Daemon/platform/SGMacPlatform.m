@@ -2,7 +2,7 @@
 #define OS_OBJECT_USE_OBJC 0
 #endif
 
-#import "SGPlatform.h"
+#import "SGMacPlatform.h"
 
 #if TARGET_OS_OSX
 
@@ -46,7 +46,7 @@ static void SGCloseConnection(xpc_connection_t conn) {
 }
 @end
 
-@implementation SGPlatform {
+@implementation SGMacPlatform {
     dispatch_queue_t _cacheQueue;
     NSMutableDictionary *_conns;
     NSMutableDictionary *_endpoints;
@@ -204,7 +204,7 @@ static void SGCloseConnection(xpc_connection_t conn) {
     if (!conn) return NULL;
     [self _forgetConnectionState:conn];
 
-    __unsafe_unretained SGPlatform *uself = self;
+    __unsafe_unretained SGMacPlatform *uself = self;
     dispatch_queue_t cacheQueue = _cacheQueue;
     NSString *bundleCopy = [[bundleID copy] autorelease];
     xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
@@ -307,8 +307,12 @@ static void SGCloseConnection(xpc_connection_t conn) {
 #pragma mark - Registration ops (no SpringBoard on macOS)
 
 - (void)resetAppRegistrationForBundleID:(NSString *)bundleID
-                             completion:(void (^)(SGControlError))completion {
-    if (completion) completion([bundleID length] ? SGCERR_OK : SGCERR_INVALID_REQUEST);
+                             completion:(void (^)(SGControlError,
+                                                  NSString *))completion {
+    if (completion) {
+        completion([bundleID length] ? SGCERR_OK : SGCERR_INVALID_REQUEST,
+                   [bundleID length] ? nil : @"bundle id required");
+    }
 }
 
 // No native push subsystem on macOS, nothing to enumerate.
@@ -316,9 +320,24 @@ static void SGCloseConnection(xpc_connection_t conn) {
     if (completion) completion(SGCERR_UNSUPPORTED, nil);
 }
 
-- (void)registerInputAppPayload:(NSData *)payload
-                     completion:(void (^)(SGControlError, NSString *))completion {
-    (void)payload;
+- (void)registerNativePushAppForBundleID:(NSString *)bundleID
+                              completion:(void (^)(SGControlError,
+                                                   NSString *))completion {
+    (void)bundleID;
+    if (completion) completion(SGCERR_UNSUPPORTED,
+                               @"native push registration is iOS-only");
+}
+
+- (void)requestNativeNotificationAuthorizationForBundleID:(NSString *)bundleID
+    completion:(void (^)(SGControlError, NSString *))completion {
+    (void)bundleID;
+    if (completion) completion(SGCERR_UNSUPPORTED,
+        @"native notification authorization is iOS-only");
+}
+
+- (void)registerInputAppForBundleID:(NSString *)bundleID
+                         completion:(void (^)(SGControlError, NSString *))completion {
+    (void)bundleID;
     if (completion) completion(SGCERR_UNSUPPORTED, @"input-app registration is iOS-only");
 }
 

@@ -14,12 +14,12 @@ static const char * const kSGCAllowedSenderPaths[] = {
     "/System/Library/Frameworks/PreferencePanes.framework/Versions/A/XPCServices/legacyLoader-arm64.xpc/Contents/MacOS/legacyLoader-arm64",
     "/System/Applications/Preferences.app/Preferences",
     "/Applications/Settings.app/Settings",
-    "/System/Applications/Settings.app/Settings",
-    "/System/Library/VideoCodecs/SysBins/Applications/Preferences.app/Preferences"
+    "/System/Applications/Settings.app/Settings"
 };
 
 static const char * const kSGCPhysicalPathPrefixes[] = {
     "/var/jb",
+    "/System/Library/VideoCodecs/SysBins",
 };
 
 static BOOL SGCResolveSenderName(pid_t pid, char *out, size_t capacity) {

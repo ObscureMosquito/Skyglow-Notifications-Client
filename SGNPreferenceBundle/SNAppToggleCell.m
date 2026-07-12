@@ -7,6 +7,47 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 
+@interface NSObject (SNLaunchServicesApplicationMetadata)
++ (id)applicationProxyForIdentifier:(NSString *)bundleIdentifier;
+- (NSString *)localizedName;
+- (NSString *)itemName;
+- (id)iconDataForVariant:(NSInteger)variant;
+@end
+
+@interface UIImage (SNApplicationIconProvider)
++ (UIImage *)_applicationIconImageForBundleIdentifier:
+    (NSString *)bundleIdentifier format:(NSInteger)format scale:(CGFloat)scale;
+@end
+
+static Class SNApplicationProxyClass(void) {
+    Class proxyClass = NSClassFromString(@"LSApplicationProxy");
+    if (proxyClass) return proxyClass;
+
+    for (NSString *path in @[
+        @"/System/Library/Frameworks/CoreServices.framework",
+        @"/System/Library/Frameworks/MobileCoreServices.framework"
+    ]) {
+        [[NSBundle bundleWithPath:path] load];
+        proxyClass = NSClassFromString(@"LSApplicationProxy");
+        if (proxyClass) break;
+    }
+    return proxyClass;
+}
+
+static UIImage *SNImageFromIconRepresentation(id representation) {
+    if ([representation isKindOfClass:[UIImage class]]) return representation;
+    if ([representation isKindOfClass:[NSData class]]) {
+        return [UIImage imageWithData:representation];
+    }
+    if ([representation isKindOfClass:[NSArray class]]) {
+        for (id item in representation) {
+            UIImage *image = SNImageFromIconRepresentation(item);
+            if (image) return image;
+        }
+    }
+    return nil;
+}
+
 @interface UIView (CenterY)
 @property (nonatomic) CGFloat centerY;
 @end
@@ -27,6 +68,13 @@
 
 @implementation AppInfoHelper
 
+- (id)modernApplicationProxyForBundleId:(NSString *)bundleId {
+    Class proxyClass = SNApplicationProxyClass();
+    return [proxyClass respondsToSelector:
+        @selector(applicationProxyForIdentifier:)]
+        ? [proxyClass applicationProxyForIdentifier:bundleId] : nil;
+}
+
 - (NSDictionary *)mobileInstallationPlist {
     static NSDictionary *cached = nil;
     if (!cached) {
@@ -44,12 +92,44 @@
 }
 
 - (NSString *)getAppNameForBundleId:(NSString *)bundleId {
+    id proxy = [self modernApplicationProxyForBundleId:bundleId];
+    NSString *name = [proxy respondsToSelector:@selector(localizedName)]
+        ? [proxy localizedName] : nil;
+    if (![name length] && [proxy respondsToSelector:@selector(itemName)]) {
+        name = [proxy itemName];
+    }
+    if ([name length]) return name;
+
     NSDictionary *entry = [self entryForBundleId:bundleId];
     if (!entry) return nil;
     return entry[@"CFBundleDisplayName"] ?: entry[@"CFBundleName"];
 }
 
 - (UIImage *)getIconForBundleId:(NSString *)bundleId {
+    id proxy = [self modernApplicationProxyForBundleId:bundleId];
+    if ([proxy respondsToSelector:@selector(iconDataForVariant:)]) {
+        for (NSNumber *variant in @[@2, @0, @1]) {
+            UIImage *image = SNImageFromIconRepresentation(
+                [proxy iconDataForVariant:[variant integerValue]]);
+            if (image) return image;
+        }
+    }
+
+    SEL iconSelector = @selector(
+        _applicationIconImageForBundleIdentifier:format:scale:);
+    if ([UIImage respondsToSelector:iconSelector]) {
+        CGFloat scale = [[UIScreen mainScreen] scale];
+        for (NSNumber *format in @[@0, @2, @1]) {
+            UIImage *image = [UIImage
+                _applicationIconImageForBundleIdentifier:bundleId
+                                                   format:[format integerValue]
+                                                    scale:scale];
+            if (image) return image;
+        }
+    }
+
+    /* Legacy fallback for releases that still publish the installation cache
+     * and store icon artwork directly inside the application bundle. */
     NSDictionary *entry = [self entryForBundleId:bundleId];
     NSString *bundlePath = entry[@"Path"];
     if (!bundlePath) return nil;

@@ -96,9 +96,10 @@ int main(int argc, char *argv[]) {
             [[SGControlChannel serverWithServiceName:SKYGLOW_CONTROL_SERVICE_DAEMON] retain];
 
         __unsafe_unretained SGDaemon *daemonRef = daemon;
-        SGPlatform *platform = [[SGPlatform alloc]
-            initWithDeliveryReadyHandler:^{ [daemonRef kickLocalDeliveryDrain]; }];
-        [daemon attachPlatform:platform];
+        id<SGPlatform> platform = SGPlatformCreate(^{
+            [daemonRef kickLocalDeliveryDrain];
+        });
+        [daemon attachDeliveryPlatform:platform];
         [platform start];
 
         SGControlCommandRouter *router =
@@ -120,7 +121,7 @@ int main(int argc, char *argv[]) {
         (void)[daemon requestGracefulDisconnect];
 
         [daemon attachControlChannel:nil];
-        [daemon attachPlatform:nil];
+        [daemon attachDeliveryPlatform:nil];
         [platform stop];
         [controlChannel stop];
         [controlChannel release];

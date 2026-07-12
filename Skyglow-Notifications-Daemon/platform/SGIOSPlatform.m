@@ -1,4 +1,4 @@
-#import "SGPlatform.h"
+#import "SGIOSPlatform.h"
 
 #if !TARGET_OS_OSX
 
@@ -9,7 +9,7 @@
 #import <libkern/OSAtomic.h>
 #import <stddef.h>
 
-@implementation SGPlatform {
+@implementation SGIOSPlatform {
     SGControlChannel *_channel;
 }
 
@@ -89,19 +89,48 @@
 
 #pragma mark - Registration ops (proxied to the SpringBoard tweak)
 
-- (void)resetAppRegistrationForBundleID:(NSString *)bundleID
-                             completion:(void (^)(SGControlError))completion {
-    if (![bundleID length]) { if (completion) completion(SGCERR_INVALID_REQUEST); return; }
-    if (!_channel) { if (completion) completion(SGCERR_UNREACHABLE); return; }
+- (void)sendNativeBundleRequest:(SGControlMessageType)messageType
+                       bundleID:(NSString *)bundleID
+                     completion:(void (^)(SGControlError,
+                                           NSString *))completion {
+    if (![bundleID length]) {
+        if (completion) completion(SGCERR_INVALID_REQUEST, @"bundle id required");
+        return;
+    }
+    if (!_channel) {
+        if (completion) completion(SGCERR_UNREACHABLE, nil);
+        return;
+    }
 
-    SGCBundleIdPayload p; memset(&p, 0, sizeof(p));
-    strlcpy(p.bundleID, [bundleID UTF8String], sizeof(p.bundleID));
-    [_channel sendRequest:SGCMSG_RESET_APP_REGISTRATION
-                  payload:[NSData dataWithBytes:&p length:sizeof(p)]
+    SGCBundleIdPayload payload;
+    memset(&payload, 0, sizeof(payload));
+    strlcpy(payload.bundleID, [bundleID UTF8String],
+            sizeof(payload.bundleID));
+    [_channel sendRequest:messageType
+                  payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
                   timeout:0
                completion:^(SGControlError err, const SGControlChannelMessage *r) {
-        (void)r; if (completion) completion(err);
+        NSString *detail = nil;
+        if (err != SGCERR_OK && r &&
+            r->messageType == SGCMSG_ERROR_RESPONSE &&
+            r->payloadLength >= sizeof(SGCErrorResponsePayload)) {
+            const SGCErrorResponsePayload *errorPayload =
+                (const SGCErrorResponsePayload *)r->payload;
+            detail = [[[NSString alloc]
+                initWithBytes:errorPayload->message
+                       length:strnlen(errorPayload->message,
+                                      sizeof(errorPayload->message))
+                     encoding:NSUTF8StringEncoding] autorelease];
+        }
+        if (completion) completion(err, detail);
     }];
+}
+
+- (void)resetAppRegistrationForBundleID:(NSString *)bundleID
+                             completion:(void (^)(SGControlError,
+                                                  NSString *))completion {
+    [self sendNativeBundleRequest:SGCMSG_RESET_APP_REGISTRATION
+                         bundleID:bundleID completion:completion];
 }
 
 - (void)listNativePushAppsWithCompletion:(void (^)(SGControlError, NSData *))completion {
@@ -118,23 +147,23 @@
     }];
 }
 
-- (void)registerInputAppPayload:(NSData *)payload
-                     completion:(void (^)(SGControlError, NSString *))completion {
-    if (!_channel) { if (completion) completion(SGCERR_UNREACHABLE, nil); return; }
-    [_channel sendRequest:SGCMSG_REGISTER_INPUT_APP
-                  payload:payload
-                  timeout:0
-               completion:^(SGControlError err, const SGControlChannelMessage *r) {
-        NSString *detail = nil;
-        if (err != SGCERR_OK && r && r->messageType == SGCMSG_ERROR_RESPONSE &&
-            r->payloadLength >= sizeof(SGCErrorResponsePayload)) {
-            SGCErrorResponsePayload *ep = (SGCErrorResponsePayload *)r->payload;
-            detail = [[[NSString alloc] initWithBytes:ep->message
-                                               length:strnlen(ep->message, sizeof(ep->message))
-                                             encoding:NSUTF8StringEncoding] autorelease];
-        }
-        if (completion) completion(err, detail);
-    }];
+- (void)registerNativePushAppForBundleID:(NSString *)bundleID
+                              completion:(void (^)(SGControlError,
+                                                   NSString *))completion {
+    [self sendNativeBundleRequest:SGCMSG_REGISTER_NATIVE_PUSH_APP
+                         bundleID:bundleID completion:completion];
+}
+
+- (void)requestNativeNotificationAuthorizationForBundleID:(NSString *)bundleID
+    completion:(void (^)(SGControlError, NSString *))completion {
+    [self sendNativeBundleRequest:SGCMSG_AUTHORIZE_NATIVE_PUSH_APP
+                         bundleID:bundleID completion:completion];
+}
+
+- (void)registerInputAppForBundleID:(NSString *)bundleID
+                         completion:(void (^)(SGControlError, NSString *))completion {
+    [self sendNativeBundleRequest:SGCMSG_REGISTER_INPUT_APP
+                         bundleID:bundleID completion:completion];
 }
 
 @end

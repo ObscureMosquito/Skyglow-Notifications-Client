@@ -3,7 +3,7 @@ ARCHS = armv7 armv7s arm64
 
 include $(THEOS)/makefiles/common.mk
  
-TOOL_NAME = SkyglowNotificationsDaemon
+TOOL_NAME = SkyglowNotificationsDaemon sgnctl
 SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/core/main.m \
     Skyglow-Notifications-Daemon/core/SGNotificationProcessor.m \
@@ -25,7 +25,8 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/net/SGReachabilityMonitor.m \
     Skyglow-Notifications-Daemon/core/SGDaemon.m \
     Skyglow-Notifications-Daemon/platform/SGAvailability.m \
-    Skyglow-Notifications-Daemon/platform/SGPlatformIOS.m \
+    Skyglow-Notifications-Daemon/platform/SGPlatformFactory.m \
+    Skyglow-Notifications-Daemon/platform/SGIOSPlatform.m \
     Skyglow-Notifications-Daemon/state/SGAtomicFile.m \
     Skyglow-Notifications-Daemon/state/SGDurableInbox.m \
     Skyglow-Notifications-Daemon/state/SGStateStore.m \
@@ -61,6 +62,25 @@ SkyglowNotificationsDaemon_CODESIGN_FLAGS = -Sentitlements.plist
 SkyglowNotificationsDaemon_INSTALL_PATH = /usr/local/bin
 SkyglowNotificationsDaemon_FRAMEWORKS = SystemConfiguration CFNetwork Security IOKit
 SkyglowNotificationsDaemon_LIBRARIES += z
+
+# On-device control tool (register / disable / test-inject / list) that drives
+# the daemon over its control channel.  Same sources as tools/Makefile's macOS
+# build, but compiled for iOS and installed alongside the daemon.
+sgnctl_FILES = \
+    tools/sgnctl.m \
+    Skyglow-Notifications-Daemon/net/control/SGControlChannel.m \
+    Skyglow-Notifications-Daemon/net/control/SGControlAuthorization.m \
+    Skyglow-Notifications-Daemon/shared/SGLog.m
+sgnctl_CFLAGS = -fno-objc-arc -Wno-deprecated-declarations \
+    -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/net \
+    -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/net/control \
+    -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/shared \
+    -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/platform \
+    -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/core \
+    -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/state
+sgnctl_FRAMEWORKS = Foundation
+sgnctl_INSTALL_PATH = /usr/local/bin
+sgnctl_CODESIGN_FLAGS = -Sentitlements.plist
 
 
 include $(THEOS_MAKE_PATH)/tool.mk

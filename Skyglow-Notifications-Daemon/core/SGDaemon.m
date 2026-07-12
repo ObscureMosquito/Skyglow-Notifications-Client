@@ -80,7 +80,7 @@ static BOOL isValidPort(NSString *port) {
     char                   _lastErrorDetail[128];
     SGStateStore          *_stateStore;
     SGControlChannel      *_controlChannel;
-    SGPlatform            *_platform;
+    id<SGPlatform>         _deliveryPlatform;
     SGReachabilityMonitor *_reachability;
     io_connect_t           _powerRootPort;
     io_object_t            _powerNotifier;
@@ -117,7 +117,7 @@ static BOOL isValidPort(NSString *port) {
     [_stateLock release];
     [_growthAlgorithm release];
     [_controlChannel release];
-    [_platform release];
+    [_deliveryPlatform release];
     [_reachability stopMonitoringSystemNetworkChanges];
     [_reachability release];
     [self _stopPowerMonitoring];
@@ -140,11 +140,11 @@ static BOOL isValidPort(NSString *port) {
     _controlChannel = channel;
 }
 
-- (void)attachPlatform:(SGPlatform *)platform {
-    if (platform == _platform) return;
+- (void)attachDeliveryPlatform:(id<SGPlatform>)platform {
+    if (platform == _deliveryPlatform) return;
     [platform retain];
-    [_platform release];
-    _platform = platform;
+    [_deliveryPlatform release];
+    _deliveryPlatform = platform;
 }
 
 - (void)kickLocalDeliveryDrain {
@@ -994,13 +994,14 @@ static void SG_IOPowerCallback(void *refcon, io_service_t service,
 - (kern_return_t)_deliverPushTopic:(NSString *)topic payload:(NSDictionary *)payload {
     if (!topic || [topic length] == 0) return KERN_INVALID_ARGUMENT;
 
-    if (!_platform) {
+    if (!_deliveryPlatform) {
         SGLOGW(SGDaemon, "code=%s bundle=%s result=unavailable", SGND_DELIVERY_PLATFORM_UNAVAILABLE,
                     [topic length] ? [topic UTF8String] : "none");
         return KERN_FAILURE;
     }
 
-    kern_return_t kr = [_platform sendNotificationForBundleID:topic payload:payload];
+    kern_return_t kr = [_deliveryPlatform
+        sendNotificationForBundleID:topic payload:payload];
     SGLOGI(SGDaemon, "code=%s bundle=%s result=%s", SGND_DELIVERY_DISPATCHING,
                 [topic UTF8String], (kr == KERN_SUCCESS) ? "delivered" : "failed");
     return kr;

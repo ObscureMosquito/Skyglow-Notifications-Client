@@ -51,9 +51,23 @@ static int Send(SGControlMessageType type, NSData *payload,
     [c sendRequest:type payload:payload timeout:10.0
         completion:^(SGControlError err, const SGControlChannelMessage *resp) {
             if (err != SGCERR_OK) {
-                fprintf(stderr, "sgnctl: %s\n", ErrName(err));
-            } else if (resp && resp->messageType == SGCMSG_ERROR_RESPONSE) {
-                fprintf(stderr, "sgnctl: daemon rejected request (%s)\n", ErrName((SGControlError)resp->errorCode));
+                NSString *detail = nil;
+                if (resp && resp->messageType == SGCMSG_ERROR_RESPONSE &&
+                    resp->payloadLength >= sizeof(SGCErrorResponsePayload)) {
+                    const SGCErrorResponsePayload *errorPayload =
+                        (const SGCErrorResponsePayload *)resp->payload;
+                    detail = [[[NSString alloc]
+                        initWithBytes:errorPayload->message
+                               length:strnlen(errorPayload->message,
+                                              sizeof(errorPayload->message))
+                             encoding:NSUTF8StringEncoding] autorelease];
+                }
+                if ([detail length]) {
+                    fprintf(stderr, "sgnctl: %s: %s\n", ErrName(err),
+                            [detail UTF8String]);
+                } else {
+                    fprintf(stderr, "sgnctl: %s\n", ErrName(err));
+                }
             } else {
                 rc = 0;
                 if (onOK) onOK(resp);
@@ -172,6 +186,21 @@ static int CmdProfiles(void) {
     return 0;
 }
 
+static int CmdListApps(SGControlMessageType messageType) {
+    return Send(messageType, nil, ^(const SGControlChannelMessage *response) {
+        NSArray *apps = response
+            ? SGCBundleIdListDecode(response->payload, response->payloadLength)
+            : nil;
+        if (![apps count]) {
+            printf("(none)\n");
+            return;
+        }
+        for (NSString *bundleIdentifier in apps) {
+            printf("%s\n", [bundleIdentifier UTF8String]);
+        }
+    });
+}
+
 static int CmdLogs(int lines) {
     NSString *path = SGPath(SG_LOG_PATH);
     NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
@@ -192,13 +221,17 @@ static void Usage(void) {
         "  logs [N]               last N daemon log lines (default 40)\n"
         "  daemon on|off          enable/disable the whole daemon\n"
         "  reload                 reload config from disk\n"
-        "  test-inject            inject a test notification\n\n"
+        "  test-inject <bundle>   deliver a notification through the native pipeline\n\n"
         "  register <bundle>      mint a push token for a bundle (prints token)\n"
         "  enable <bundle>        enable an app\n"
         "  disable <bundle>       disable (mute) an app\n"
         "  delete-app <bundle>    drop an app's registration\n"
         "  clear-intent <bundle>  clear app intent (use native provider)\n"
-        "  list-apps              list Skyglow-registered apps\n\n"
+        "  list-apps              list Skyglow-registered apps\n"
+        "  list-native            list Apple Push registrations\n"
+        "  register-native <id>   request an Apple Push registration\n"
+        "  authorize-native <id>  present Apple's notification permission prompt\n"
+        "  reset-native <id>      remove Apple token and notification permission\n\n"
         "  profiles                       list configured profiles + active\n"
         "  save-profile <1-5> <addr> [pem] register a server (address + optional cert PEM)\n"
         "  set-profile <1-5>              switch the active profile\n"
@@ -215,12 +248,15 @@ int main(int argc, char **argv) {
         if ([cmd isEqualToString:@"status"])          return CmdStatus();
         if ([cmd isEqualToString:@"logs"])            return CmdLogs(arg ? MAX(1, arg.intValue) : 40);
         if ([cmd isEqualToString:@"reload"])          return Send(SGCMSG_RELOAD_CONFIG, nil, ^(const SGControlChannelMessage *r){ (void)r; printf("reloaded\n"); });
-        if ([cmd isEqualToString:@"test-inject"])     return Send(SGCMSG_TEST_INJECT, nil, ^(const SGControlChannelMessage *r){ (void)r; printf("injected\n"); });
+        if ([cmd isEqualToString:@"test-inject"])     { NEED_ARG(); return AppCommand(SGCMSG_TEST_INJECT, arg, "injected"); }
         if ([cmd isEqualToString:@"register"])        { NEED_ARG(); return CmdRegister(arg); }
         if ([cmd isEqualToString:@"enable"])          { NEED_ARG(); return AppCommand(SGCMSG_ENABLE_APP, arg, "enabled"); }
         if ([cmd isEqualToString:@"disable"])         { NEED_ARG(); return AppCommand(SGCMSG_DISABLE_APP, arg, "disabled"); }
         if ([cmd isEqualToString:@"delete-app"])      { NEED_ARG(); return AppCommand(SGCMSG_DELETE_APP, arg, "deleted"); }
         if ([cmd isEqualToString:@"clear-intent"])    { NEED_ARG(); return AppCommand(SGCMSG_CLEAR_APP_INTENT, arg, "cleared"); }
+        if ([cmd isEqualToString:@"register-native"]) { NEED_ARG(); return AppCommand(SGCMSG_REGISTER_NATIVE_PUSH_APP, arg, "native-registered"); }
+        if ([cmd isEqualToString:@"authorize-native"]){ NEED_ARG(); return AppCommand(SGCMSG_AUTHORIZE_NATIVE_PUSH_APP, arg, "authorization-requested"); }
+        if ([cmd isEqualToString:@"reset-native"])    { NEED_ARG(); return AppCommand(SGCMSG_RESET_APP_REGISTRATION, arg, "native-reset"); }
         if ([cmd isEqualToString:@"profiles"])        return CmdProfiles();
         if ([cmd isEqualToString:@"save-profile"]) {
             if (argc < 4) { fprintf(stderr, "usage: sgnctl save-profile <1-5> <server-address> [server-cert.pem]\n"); return 2; }
@@ -234,13 +270,8 @@ int main(int argc, char **argv) {
             if ([arg isEqualToString:@"off"]) return CmdDaemon(NO);
             fprintf(stderr, "sgnctl: use 'daemon on' or 'daemon off'\n"); return 2;
         }
-        if ([cmd isEqualToString:@"list-apps"]) {
-            return Send(SGCMSG_LIST_SKYGLOW_APPS, nil, ^(const SGControlChannelMessage *r) {
-                NSArray *apps = r ? SGCBundleIdListDecode(r->payload, r->payloadLength) : nil;
-                if (!apps.count) { printf("(none)\n"); return; }
-                for (NSString *a in apps) printf("%s\n", a.UTF8String);
-            });
-        }
+        if ([cmd isEqualToString:@"list-apps"])       return CmdListApps(SGCMSG_LIST_SKYGLOW_APPS);
+        if ([cmd isEqualToString:@"list-native"])     return CmdListApps(SGCMSG_LIST_NATIVE_PUSH_APPS);
 
         Usage();
         return 2;

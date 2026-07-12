@@ -6,7 +6,7 @@
 #import "SGStatusServer.h"
 #import "SGControlChannelProtocol.h"
 
-@class SGPlatform;
+@protocol SGPlatform;
 
 typedef NS_ENUM(NSInteger, SGEvent) {
     SGEventStartRequested,
@@ -49,8 +49,9 @@ typedef NS_ENUM(NSInteger, SGEvent) {
  */
 - (void)attachControlChannel:(SGControlChannel *)channel;
 
-/* The daemon's handle to the platform layer, used only for delivery. */
-- (void)attachPlatform:(SGPlatform *)platform;
+/* The daemon's handle to the platform layer, used only for final local
+ * notification delivery. Pass nil before stopping the platform. */
+- (void)attachDeliveryPlatform:(id<SGPlatform>)platform;
 
 /* Retry pending local deliveries — called when the iOS presentation channel
  * (re)connects. No-op if there is nothing pending. */

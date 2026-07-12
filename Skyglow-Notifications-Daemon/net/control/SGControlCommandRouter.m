@@ -14,10 +14,11 @@
 
 @implementation SGControlCommandRouter {
     SGDaemon   *_daemon;
-    SGPlatform *_platform;
+    id<SGPlatform> _platform;
 }
 
-- (instancetype)initWithDaemon:(SGDaemon *)daemon platform:(SGPlatform *)platform {
+- (instancetype)initWithDaemon:(SGDaemon *)daemon
+                       platform:(id<SGPlatform>)platform {
     if ((self = [super init])) {
         _daemon = [daemon retain];
         _platform = [platform retain];
@@ -33,7 +34,7 @@
 
 - (void)attachToChannel:(SGControlChannel *)controlChannel {
     SGDaemon   *daemon   = _daemon;
-    SGPlatform *platform = _platform;
+    id<SGPlatform> platform = _platform;
 
     [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                       SGControlReplyBlock reply,
@@ -232,8 +233,61 @@
     [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                       SGControlReplyBlock reply,
                                       SGControlReplyErrorBlock replyError) {
-        SGLOGI(Skyglow, "code=%s message=TEST_INJECT result=received", SGND_DAEMON_TEST_INJECT);
-        reply(SGCMSG_GENERIC_ACK, nil);
+        if (req->payloadLength < sizeof(SGCBundleIdPayload)) {
+            replyError(SGCERR_INVALID_REQUEST,
+                       @"test notification bundle id missing");
+            return;
+        }
+        const SGCBundleIdPayload *payload =
+            (const SGCBundleIdPayload *)req->payload;
+        NSString *bundleID = [[NSString alloc]
+            initWithBytes:payload->bundleID
+                   length:strnlen(payload->bundleID,
+                                  sizeof(payload->bundleID))
+                 encoding:NSUTF8StringEncoding];
+        if (!SG_IsIdentifierStringSafe(bundleID)) {
+            [bundleID release];
+            replyError(SGCERR_INVALID_REQUEST,
+                       @"test notification bundle id invalid");
+            return;
+        }
+        if (!platform) {
+            [bundleID release];
+            replyError(SGCERR_UNREACHABLE, @"platform unavailable");
+            return;
+        }
+
+        NSString *bundleCopy = [bundleID copy];
+        SGControlReplyBlock replyCopy = [reply copy];
+        SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
+        dispatch_async(dispatch_get_global_queue(
+            DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            @autoreleasepool {
+                NSDictionary *testPayload = @{
+                    @"title": @"Skyglow Notifications",
+                    @"body": [NSString stringWithFormat:
+                        @"Native delivery test for %@", bundleCopy],
+                    @"sound": @"default"
+                };
+                kern_return_t result = [platform
+                    sendNotificationForBundleID:bundleCopy
+                                         payload:testPayload];
+                SGLOGI(Skyglow,
+                    "code=%s message=TEST_INJECT bundle=%s result=%s",
+                    SGND_DAEMON_TEST_INJECT, [bundleCopy UTF8String],
+                    result == KERN_SUCCESS ? "delivered" : "rejected");
+                if (result == KERN_SUCCESS) {
+                    replyCopy(SGCMSG_GENERIC_ACK, nil);
+                } else {
+                    replyErrorCopy(SGCERR_INTERNAL,
+                        @"native notification delivery was rejected");
+                }
+            }
+            [bundleCopy release];
+            [replyCopy release];
+            [replyErrorCopy release];
+        });
+        [bundleID release];
     } forMessageType:SGCMSG_TEST_INJECT];
 
     [controlChannel registerHandler:^(const SGControlChannelMessage *req,
@@ -331,7 +385,8 @@
         SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
 
         [platform resetAppRegistrationForBundleID:bundleRet
-                                       completion:^(SGControlError err) {
+                                       completion:^(SGControlError err,
+                                                    NSString *resetDetail) {
             if (err == SGCERR_OK) {
                 if ([daemon.stateStore performDeleteAppStateForBundleIdentifier:bundleRet]) {
                     replyCopy(SGCMSG_GENERIC_ACK, nil);
@@ -340,9 +395,10 @@
                                    @"could not persist application deletion");
                 }
             } else {
-                NSString *detail = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
-                    ? @"SpringBoard did not respond"
-                    : @"SpringBoard rejected the reset request";
+                NSString *detail = [resetDetail length] ? resetDetail
+                    : ((err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                        ? @"SpringBoard did not respond"
+                        : @"SpringBoard rejected the reset request");
                 replyErrorCopy(err, detail);
             }
 
@@ -352,6 +408,51 @@
         }];
         [bundleID release];
     } forMessageType:SGCMSG_DELETE_APP];
+
+    [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                      SGControlReplyBlock reply,
+                                      SGControlReplyErrorBlock replyError) {
+        if (req->payloadLength < sizeof(SGCBundleIdPayload)) {
+            replyError(SGCERR_INVALID_REQUEST,
+                       @"native reset payload too short");
+            return;
+        }
+        const SGCBundleIdPayload *payload =
+            (const SGCBundleIdPayload *)req->payload;
+        NSString *bundleID = [[NSString alloc]
+            initWithBytes:payload->bundleID
+                   length:strnlen(payload->bundleID, sizeof(payload->bundleID))
+                 encoding:NSUTF8StringEncoding];
+        if (!SG_IsIdentifierStringSafe(bundleID)) {
+            [bundleID release];
+            replyError(SGCERR_INVALID_REQUEST,
+                       @"native reset bundle id invalid");
+            return;
+        }
+        if (!platform) {
+            [bundleID release];
+            replyError(SGCERR_UNREACHABLE, @"platform unavailable");
+            return;
+        }
+
+        NSString *bundleCopy = [bundleID copy];
+        SGControlReplyBlock replyCopy = [reply copy];
+        SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
+        [platform resetAppRegistrationForBundleID:bundleCopy
+                                       completion:^(SGControlError error,
+                                                    NSString *detail) {
+            if (error == SGCERR_OK) {
+                replyCopy(SGCMSG_GENERIC_ACK, nil);
+            } else {
+                replyErrorCopy(error,
+                    [detail length] ? detail : @"native reset failed");
+            }
+            [bundleCopy release];
+            [replyCopy release];
+            [replyErrorCopy release];
+        }];
+        [bundleID release];
+    } forMessageType:SGCMSG_RESET_APP_REGISTRATION];
 
     [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                       SGControlReplyBlock reply,
@@ -371,6 +472,97 @@
     [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                       SGControlReplyBlock reply,
                                       SGControlReplyErrorBlock replyError) {
+        if (req->payloadLength < sizeof(SGCBundleIdPayload)) {
+            replyError(SGCERR_INVALID_REQUEST,
+                       @"native registration payload too short");
+            return;
+        }
+        const SGCBundleIdPayload *payload =
+            (const SGCBundleIdPayload *)req->payload;
+        NSString *bundleID = [[NSString alloc]
+            initWithBytes:payload->bundleID
+                   length:strnlen(payload->bundleID, sizeof(payload->bundleID))
+                 encoding:NSUTF8StringEncoding];
+        if (!SG_IsIdentifierStringSafe(bundleID)) {
+            [bundleID release];
+            replyError(SGCERR_INVALID_REQUEST,
+                       @"native registration bundle id invalid");
+            return;
+        }
+        if (!platform) {
+            [bundleID release];
+            replyError(SGCERR_UNREACHABLE, @"platform unavailable");
+            return;
+        }
+
+        NSString *bundleCopy = [bundleID copy];
+        SGControlReplyBlock replyCopy = [reply copy];
+        SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
+        [platform registerNativePushAppForBundleID:bundleCopy
+                                        completion:^(SGControlError error,
+                                                     NSString *detail) {
+            if (error == SGCERR_OK) {
+                replyCopy(SGCMSG_GENERIC_ACK, nil);
+            } else {
+                replyErrorCopy(error,
+                    [detail length] ? detail : @"native registration failed");
+            }
+            [bundleCopy release];
+            [replyCopy release];
+            [replyErrorCopy release];
+        }];
+        [bundleID release];
+    } forMessageType:SGCMSG_REGISTER_NATIVE_PUSH_APP];
+
+    [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                      SGControlReplyBlock reply,
+                                      SGControlReplyErrorBlock replyError) {
+        if (req->payloadLength < sizeof(SGCBundleIdPayload)) {
+            replyError(SGCERR_INVALID_REQUEST,
+                       @"native authorization payload too short");
+            return;
+        }
+        const SGCBundleIdPayload *payload =
+            (const SGCBundleIdPayload *)req->payload;
+        NSString *bundleID = [[NSString alloc]
+            initWithBytes:payload->bundleID
+                   length:strnlen(payload->bundleID,
+                                  sizeof(payload->bundleID))
+                 encoding:NSUTF8StringEncoding];
+        if (!SG_IsIdentifierStringSafe(bundleID)) {
+            [bundleID release];
+            replyError(SGCERR_INVALID_REQUEST,
+                       @"native authorization bundle id invalid");
+            return;
+        }
+        if (!platform) {
+            [bundleID release];
+            replyError(SGCERR_UNREACHABLE, @"platform unavailable");
+            return;
+        }
+
+        NSString *bundleCopy = [bundleID copy];
+        SGControlReplyBlock replyCopy = [reply copy];
+        SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
+        [platform
+            requestNativeNotificationAuthorizationForBundleID:bundleCopy
+            completion:^(SGControlError error, NSString *detail) {
+                if (error == SGCERR_OK) {
+                    replyCopy(SGCMSG_GENERIC_ACK, nil);
+                } else {
+                    replyErrorCopy(error, [detail length]
+                        ? detail : @"native authorization request failed");
+                }
+                [bundleCopy release];
+                [replyCopy release];
+                [replyErrorCopy release];
+            }];
+        [bundleID release];
+    } forMessageType:SGCMSG_AUTHORIZE_NATIVE_PUSH_APP];
+
+    [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                      SGControlReplyBlock reply,
+                                      SGControlReplyErrorBlock replyError) {
         reply(SGCMSG_BUNDLE_ID_LIST,
               SGCBundleIdListEncode([[SGDatabaseManager sharedManager] registeredBundleIdentifiers]));
     } forMessageType:SGCMSG_LIST_SKYGLOW_APPS];
@@ -383,15 +575,45 @@
             return;
         }
         if (!platform) { replyError(SGCERR_UNREACHABLE, @"platform unavailable"); return; }
-        NSData *payloadCopy = [NSData dataWithBytes:req->payload length:req->payloadLength];
+        const SGCBundleIdPayload *bundlePayload =
+            (const SGCBundleIdPayload *)req->payload;
+        NSString *bundleID = [[NSString alloc]
+            initWithBytes:bundlePayload->bundleID
+                   length:strnlen(bundlePayload->bundleID,
+                                  sizeof(bundlePayload->bundleID))
+                 encoding:NSUTF8StringEncoding];
+        if (!SG_IsIdentifierStringSafe(bundleID)) {
+            [bundleID release];
+            replyError(SGCERR_INVALID_REQUEST,
+                       @"register-input bundle id invalid");
+            return;
+        }
+        NSString *bundleCopy = [bundleID copy];
         SGControlReplyBlock      replyCopy      = [reply copy];
         SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
-        [platform registerInputAppPayload:payloadCopy completion:^(SGControlError err, NSString *detail) {
-            if (err == SGCERR_OK) replyCopy(SGCMSG_GENERIC_ACK, nil);
-            else replyErrorCopy(err, detail.length ? detail : @"register request failed");
+        [platform registerInputAppForBundleID:bundleCopy completion:^(SGControlError err, NSString *detail) {
+            if (err == SGCERR_OK) {
+                /* The platform has persisted and returned the Skyglow token.
+                 * Commit provider ownership before reporting success so the
+                 * app list and future registration hooks see the same state. */
+                BOOL committed = [daemon.stateStore
+                    performSetAppEnabled:YES
+                    forBundleIdentifier:bundleCopy];
+                if (committed) {
+                    replyCopy(SGCMSG_GENERIC_ACK, nil);
+                } else {
+                    replyErrorCopy(SGCERR_INTERNAL,
+                        @"Skyglow token exists but application intent could not be persisted");
+                }
+            } else {
+                replyErrorCopy(err,
+                    [detail length] ? detail : @"register request failed");
+            }
+            [bundleCopy release];
             [replyCopy release];
             [replyErrorCopy release];
         }];
+        [bundleID release];
     } forMessageType:SGCMSG_REGISTER_INPUT_APP];
 }
 

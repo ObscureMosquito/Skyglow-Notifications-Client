@@ -10,6 +10,7 @@ BIN        := $(BUILD_DIR)/SkyglowNotificationsDaemon
 CC  := xcrun clang
 OBJC_SRCS := \
 	$(DAEMON_DIR)/core/main.m \
+	$(DAEMON_DIR)/core/SGNotificationProcessor.m \
 	$(DAEMON_DIR)/shared/SGLog.m \
 	$(DAEMON_DIR)/net/SGProtocolHandler.m \
 	$(DAEMON_DIR)/net/SGServerLocator.m \
@@ -25,7 +26,8 @@ OBJC_SRCS := \
 	$(DAEMON_DIR)/net/SGReachabilityMonitor.m \
 	$(DAEMON_DIR)/core/SGDaemon.m \
 	$(DAEMON_DIR)/platform/SGAvailability.m \
-	$(DAEMON_DIR)/platform/SGPlatformMac.m \
+	$(DAEMON_DIR)/platform/SGPlatformFactory.m \
+	$(DAEMON_DIR)/platform/SGMacPlatform.m \
 	$(DAEMON_DIR)/state/SGAtomicFile.m \
 	$(DAEMON_DIR)/state/SGDurableInbox.m \
 	$(DAEMON_DIR)/state/SGStateStore.m \
@@ -36,6 +38,7 @@ OBJC_SRCS := \
 	$(DAEMON_DIR)/platform/SGCompatibilityShim.m
 
 C_SRCS := \
+	$(DAEMON_DIR)/core/SGConnectionPolicy.c \
 	$(DAEMON_DIR)/shared/SGStatusServer.c \
 	$(DAEMON_DIR)/net/SGKeepAliveStrategy.c \
 	libraries/sqlite/sqlite3.c

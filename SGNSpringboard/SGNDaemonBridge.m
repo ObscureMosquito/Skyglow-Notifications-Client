@@ -2,6 +2,7 @@
 #import "SGNPrivateAPI.h"
 #import "SGNAppIntent.h"
 #import "SGNNativePush.h"
+#import "SGNNativePushBroker.h"
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
 #import "SGControlPayloadCodec.h"
@@ -12,6 +13,20 @@
 
 static SGControlChannel *gSGCDaemonClient = nil;
 static SGControlChannel *gSGCSBServer     = nil;
+
+static NSString *SGNBundleIdentifierFromRequest(
+    const SGControlChannelMessage *request) {
+    if (!request || request->payloadLength < sizeof(SGCBundleIdPayload)) {
+        return nil;
+    }
+    const SGCBundleIdPayload *payload =
+        (const SGCBundleIdPayload *)request->payload;
+    NSString *bundleIdentifier = [[[NSString alloc]
+        initWithBytes:payload->bundleID
+               length:strnlen(payload->bundleID, sizeof(payload->bundleID))
+             encoding:NSUTF8StringEncoding] autorelease];
+    return SG_IsIdentifierStringSafe(bundleIdentifier) ? bundleIdentifier : nil;
+}
 
 static void SGNCopyCString(char *dst, size_t dstSize, const char *src) {
     if (!dst || dstSize == 0) return;
@@ -25,6 +40,20 @@ static void SGNCopyCString(char *dst, size_t dstSize, const char *src) {
         i++;
     }
     dst[i] = '\0';
+}
+
+static NSString *SGNControlErrorDetail(
+    const SGControlChannelMessage *response) {
+    if (!response || response->messageType != SGCMSG_ERROR_RESPONSE ||
+        response->payloadLength < sizeof(SGCErrorResponsePayload)) {
+        return nil;
+    }
+    const SGCErrorResponsePayload *payload =
+        (const SGCErrorResponsePayload *)response->payload;
+    return [[[NSString alloc]
+        initWithBytes:payload->message
+               length:strnlen(payload->message, sizeof(payload->message))
+             encoding:NSUTF8StringEncoding] autorelease];
 }
 
 #pragma mark - Commands to the daemon
@@ -165,18 +194,24 @@ static void SGN_DeliverFailure(NSString *bundleId, NSString *reason) {
 void SGN_AsyncFetchAndDeliverToken(NSString *bundleId,
                                    id application,
                                    id environment,
-                                   int notificationTypes) {
+                                   int notificationTypes,
+                                   void (^completion)(SGControlError,
+                                                      NSString *)) {
     NSString *safeBundleId = [bundleId copy];
     id        safeApp      = application ? [application retain] : nil;
     id        safeEnv      = environment ? [environment retain] : nil;
+    void (^completionCopy)(SGControlError, NSString *) = [completion copy];
 
     if (!gSGCDaemonClient) {
         NSLog(@"[SGN] AsyncFetch: control channel not initialised for %@", safeBundleId);
         dispatch_async(dispatch_get_main_queue(), ^{
             SGN_DeliverFailure(safeBundleId, @"control channel not initialised");
+            if (completionCopy) completionCopy(SGCERR_UNREACHABLE,
+                @"control channel not initialised");
             [safeBundleId release];
             [safeApp release];
             [safeEnv release];
+            [completionCopy release];
         });
         return;
     }
@@ -191,6 +226,8 @@ void SGN_AsyncFetchAndDeliverToken(NSString *bundleId,
                           timeout:0
                        completion:^(SGControlError err, const SGControlChannelMessage *response) {
         NSData *token = nil;
+        SGControlError result = err;
+        NSString *detail = SGNControlErrorDetail(response);
         if (err == SGCERR_OK && response &&
             response->payloadLength >= sizeof(SGCTokenResponsePayload)) {
             SGCTokenResponsePayload *resp = (SGCTokenResponsePayload *)response->payload;
@@ -198,23 +235,34 @@ void SGN_AsyncFetchAndDeliverToken(NSString *bundleId,
                 token = [NSData dataWithBytes:resp->tokenData length:resp->tokenLength];
             }
         }
+        if (!token && result == SGCERR_OK) {
+            result = SGCERR_INTERNAL;
+            detail = @"daemon returned an invalid Skyglow token";
+        }
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            @try {
-                if (token) {
+            SGControlError finalResult = result;
+            NSString *finalDetail = detail;
+            if (token) {
+                @try {
                     SGN_DeliverSuccess(safeBundleId, safeApp, safeEnv,
                                        notificationTypes, token);
-                } else {
-                    NSString *reason = [NSString stringWithFormat:
-                        @"daemon unreachable (err=%d)", err];
-                    SGN_DeliverFailure(safeBundleId, reason);
+                } @catch (NSException *e) {
+                    NSLog(@"[SGN] Delivery exception for %@: %@", safeBundleId, e);
+                    finalResult = SGCERR_INTERNAL;
+                    finalDetail = [e reason] ?: @"token delivery exception";
                 }
-            } @catch (NSException *e) {
-                NSLog(@"[SGN] Delivery exception for %@: %@", safeBundleId, e);
+            } else {
+                finalDetail = [detail length] ? detail :
+                    [NSString stringWithFormat:@"token request failed (err=%d)",
+                                               result];
+                SGN_DeliverFailure(safeBundleId, finalDetail);
             }
+            if (completionCopy) completionCopy(finalResult, finalDetail);
             [safeBundleId release];
             [safeApp release];
             [safeEnv release];
+            [completionCopy release];
         });
     }];
 }
@@ -251,41 +299,22 @@ static NSDictionary *WrapInAPNSFormat(NSDictionary *flat) {
     return result;
 }
 
-// Returns YES only when a delivery target existed and the message was handed, NO means nowhere to deliver right now
-static BOOL DeliverNotification(NSString *topic, NSDictionary *userInfo) {
-    if (!topic.length) return NO;
-    NSDictionary *apnsPayload = WrapInAPNSFormat(userInfo ?: @{});
-
-    if (SGN_IS_PRE_IOS_6) {
-        id server = [NSClassFromString(@"SBRemoteNotificationServer") performSelector:@selector(sharedInstance)];
-        if (!server) return NO;
-        SEL sel = @selector(connection:didReceiveMessageForTopic:userInfo:);
-        void (*send)(id, SEL, id, id, id) = (void (*)(id, SEL, id, id, id))objc_msgSend;
-        send(server, sel, nil, topic, apnsPayload);
-        return YES;
-    } else if (SGN_IS_PRE_IOS_9) {
-        id server = [NSClassFromString(@"SBRemoteNotificationServer") performSelector:@selector(sharedInstance)];
-        APSIncomingMessage *msg = [[NSClassFromString(@"APSIncomingMessage") alloc] initWithTopic:topic userInfo:apnsPayload];
-        if (!server || !msg) {
-            [msg release];
-            return NO;
-        }
-        [server performSelector:@selector(connection:didReceiveIncomingMessage:) withObject:nil withObject:msg];
-        [msg release];
-        return YES;
+static void SGNFinishPushDelivery(
+    SGControlError error,
+    NSString *detail,
+    NSString *topic,
+    NSDictionary *userInfo,
+    SGControlReplyBlock reply,
+    SGControlReplyErrorBlock replyError) {
+    if (error == SGCERR_OK) {
+        reply(SGCMSG_GENERIC_ACK, nil);
     } else {
-        APSIncomingMessage *msg = [[NSClassFromString(@"APSIncomingMessage") alloc] initWithTopic:topic userInfo:apnsPayload];
-        id userNS = [NSClassFromString(@"UNUserNotificationServer") performSelector:@selector(sharedInstance)];
-        id registrar = GetIvar(userNS, "_registrarConnectionListener");
-        id remoteSrv = GetIvar(registrar, "_remoteNotificationServer") ?: GetIvar(registrar, "_removeNotificationServer");
-        BOOL delivered = NO;
-        if (msg && [remoteSrv respondsToSelector:@selector(connection:didReceiveIncomingMessage:)]) {
-            [remoteSrv performSelector:@selector(connection:didReceiveIncomingMessage:) withObject:nil withObject:msg];
-            delivered = YES;
-        }
-        [msg release];
-        return delivered;
+        replyError(error, detail ?: @"push delivery failed");
     }
+    [topic release];
+    [userInfo release];
+    [reply release];
+    [replyError release];
 }
 
 #pragma mark - SGControlChannel Server (push delivery + prefs commands)
@@ -339,24 +368,24 @@ void StartSpringBoardControlChannel(void) {
         NSDictionary            *userInfoRet    = [userInfo retain];
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            BOOL ok = YES;
-            NSString *failReason = nil;
+            NSLog(@"[SGN] Delivering push for topic: %@", topic);
+            NSDictionary *apnsPayload =
+                WrapInAPNSFormat(userInfoRet ?: @{});
             @try {
-                NSLog(@"[SGN] Delivering push for topic: %@", topic);
-                ok = DeliverNotification(topic, userInfoRet);
-                if (!ok) failReason = @"no delivery target (push server not available yet)";
-            } @catch (NSException *e) {
-                NSLog(@"[SGN] Push delivery threw: %@", e);
-                ok = NO;
-                failReason = [e reason] ?: @"delivery exception";
+                [[SGNNativePushBroker sharedBroker]
+                    deliverAPNSPayload:apnsPayload
+                    toBundleIdentifier:topic
+                    completion:^(SGControlError error, NSString *detail) {
+                        SGNFinishPushDelivery(error, detail, topic,
+                                              userInfoRet, replyCopy,
+                                              replyErrorCopy);
+                    }];
+            } @catch (NSException *exception) {
+                NSLog(@"[SGN] Push delivery backend threw: %@", exception);
+                SGNFinishPushDelivery(SGCERR_INTERNAL,
+                    [exception reason] ?: @"notification backend exception",
+                    topic, userInfoRet, replyCopy, replyErrorCopy);
             }
-            if (ok) replyCopy(SGCMSG_GENERIC_ACK, nil);
-            else    replyErrorCopy(SGCERR_INTERNAL, failReason);
-
-            [topic release];
-            [userInfoRet release];
-            [replyCopy release];
-            [replyErrorCopy release];
         });
     } forMessageType:SGCMSG_PUSH_DELIVERY];
 
@@ -381,27 +410,19 @@ void StartSpringBoardControlChannel(void) {
         SGControlReplyBlock      replyCopy      = [reply copy];
         SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
         dispatch_async(dispatch_get_main_queue(), ^{
-            id app = SBApp_LookupByIdentifier(bundleIdRet);
-            if (!app) {
-                replyErrorCopy(SGCERR_NOT_FOUND,
-                    [NSString stringWithFormat:@"No installed application has bundle id '%@'.", bundleIdRet]);
-                [bundleIdRet release];
-                [replyCopy release];
-                [replyErrorCopy release];
-                return;
-            }
-            if (SGN_IS_PRE_IOS_9) {
-                SBRemoteNotificationServer *server = [objc_getClass("SBRemoteNotificationServer") sharedInstance];
-                if (server) {
-                    [server registerApplication:app forEnvironment:@"production" withTypes:7];
-                }
-            } else {
-                SGN_AsyncFetchAndDeliverToken(bundleIdRet, nil, nil, 0);
-            }
-            replyCopy(SGCMSG_GENERIC_ACK, nil);
-            [bundleIdRet release];
-            [replyCopy release];
-            [replyErrorCopy release];
+            [[SGNNativePushBroker sharedBroker]
+                activateSkyglowForBundleIdentifier:bundleIdRet
+                completion:^(SGControlError error, NSString *detail) {
+                    if (error == SGCERR_OK) {
+                        replyCopy(SGCMSG_GENERIC_ACK, nil);
+                    } else {
+                        replyErrorCopy(error,
+                            detail ?: @"Skyglow activation failed");
+                    }
+                    [bundleIdRet release];
+                    [replyCopy release];
+                    [replyErrorCopy release];
+                }];
         });
         [bundleId release];
     } forMessageType:SGCMSG_REGISTER_INPUT_APP];
@@ -410,36 +431,107 @@ void StartSpringBoardControlChannel(void) {
                                     SGControlReplyBlock reply,
                                     SGControlReplyErrorBlock replyError) {
         SGControlReplyBlock replyCopy = [reply copy];
+        SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
         dispatch_async(dispatch_get_main_queue(), ^{
-            replyCopy(SGCMSG_BUNDLE_ID_LIST, SGCBundleIdListEncode(SGN_AllNativelyRegisteredBundles()));
+            SGControlError error = SGCERR_OK;
+            NSString *detail = nil;
+            NSArray *identifiers = [[SGNNativePushBroker sharedBroker]
+                registeredBundleIdentifiersWithError:&error detail:&detail];
+            if (error == SGCERR_OK) {
+                replyCopy(SGCMSG_BUNDLE_ID_LIST,
+                          SGCBundleIdListEncode(identifiers));
+            } else {
+                replyErrorCopy(error, detail ?: @"native push query failed");
+            }
             [replyCopy release];
+            [replyErrorCopy release];
         });
     } forMessageType:SGCMSG_LIST_NATIVE_PUSH_APPS];
 
     [gSGCSBServer registerHandler:^(const SGControlChannelMessage *req,
                                     SGControlReplyBlock reply,
                                     SGControlReplyErrorBlock replyError) {
-        if (req->payloadLength < sizeof(SGCBundleIdPayload)) {
-            replyError(SGCERR_INVALID_REQUEST, @"reset registration payload too short");
-            return;
-        }
-        SGCBundleIdPayload *bp = (SGCBundleIdPayload *)req->payload;
-        NSString *bundleId = [[NSString alloc] initWithBytes:bp->bundleID
-                                                      length:strnlen(bp->bundleID, sizeof(bp->bundleID))
-                                                    encoding:NSUTF8StringEncoding];
-        if (!SG_IsIdentifierStringSafe(bundleId)) {
-            [bundleId release];
+        NSString *bundleId = SGNBundleIdentifierFromRequest(req);
+        if (!bundleId) {
             replyError(SGCERR_INVALID_REQUEST, @"reset registration bundle id invalid");
             return;
         }
         NSString *bidForReset = [bundleId copy];
+        SGControlReplyBlock replyCopy = [reply copy];
+        SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
         dispatch_async(dispatch_get_main_queue(), ^{
-            SGN_DeregisterAppNatively(bidForReset);
-            [bidForReset release];
+            SGN_DeregisterAppNativelyWithCompletion(bidForReset,
+                ^(SGControlError error, NSString *detail) {
+                    if (error == SGCERR_OK) {
+                        replyCopy(SGCMSG_GENERIC_ACK, nil);
+                    } else {
+                        replyErrorCopy(error, detail ?: @"native reset failed");
+                    }
+                    [bidForReset release];
+                    [replyCopy release];
+                    [replyErrorCopy release];
+                });
         });
-        [bundleId release];
-        reply(SGCMSG_GENERIC_ACK, nil);
     } forMessageType:SGCMSG_RESET_APP_REGISTRATION];
+
+    [gSGCSBServer registerHandler:^(const SGControlChannelMessage *req,
+                                    SGControlReplyBlock reply,
+                                    SGControlReplyErrorBlock replyError) {
+        NSString *bundleId = SGNBundleIdentifierFromRequest(req);
+        if (!bundleId) {
+            replyError(SGCERR_INVALID_REQUEST,
+                       @"native registration bundle id invalid");
+            return;
+        }
+        NSString *bidForRegistration = [bundleId copy];
+        SGControlReplyBlock replyCopy = [reply copy];
+        SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            SGN_RegisterAppNativelyWithCompletion(bidForRegistration,
+                ^(SGControlError error, NSString *detail) {
+                    if (error == SGCERR_OK) {
+                        replyCopy(SGCMSG_GENERIC_ACK, nil);
+                    } else {
+                        replyErrorCopy(error,
+                            detail ?: @"native registration failed");
+                    }
+                    [bidForRegistration release];
+                    [replyCopy release];
+                    [replyErrorCopy release];
+                });
+        });
+    } forMessageType:SGCMSG_REGISTER_NATIVE_PUSH_APP];
+
+    [gSGCSBServer registerHandler:^(const SGControlChannelMessage *req,
+                                    SGControlReplyBlock reply,
+                                    SGControlReplyErrorBlock replyError) {
+        NSString *bundleId = SGNBundleIdentifierFromRequest(req);
+        if (!bundleId) {
+            replyError(SGCERR_INVALID_REQUEST,
+                       @"native authorization bundle id invalid");
+            return;
+        }
+        NSString *bundleCopy = [bundleId copy];
+        SGControlReplyBlock replyCopy = [reply copy];
+        SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *detail = nil;
+            SGControlError error = [[SGNNativePushBroker sharedBroker]
+                beginAuthorizationForBundleIdentifier:bundleCopy
+                detail:&detail];
+            if (error == SGCERR_OK) {
+                /* The user decision is intentionally not part of this reply:
+                 * a permission sheet may remain open beyond the IPC timeout. */
+                replyCopy(SGCMSG_GENERIC_ACK, nil);
+            } else {
+                replyErrorCopy(error,
+                    detail ?: @"native authorization request failed");
+            }
+            [bundleCopy release];
+            [replyCopy release];
+            [replyErrorCopy release];
+        });
+    } forMessageType:SGCMSG_AUTHORIZE_NATIVE_PUSH_APP];
 
     if (![gSGCSBServer start]) {
         NSLog(@"[SGN] SGControlChannel server failed to start on %s", SKYGLOW_CONTROL_SERVICE_SPRINGBOARD);
