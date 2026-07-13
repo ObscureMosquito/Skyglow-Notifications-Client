@@ -3,6 +3,8 @@
 
 #import <Foundation/Foundation.h>
 
+typedef void (^SGSystemPowerEventHandler)(void);
+
 typedef NS_ENUM(NSInteger, SGCapability) {
     SGCapabilityPersistentTimer,
     SGCapabilityGrowthAlgorithm,
@@ -44,6 +46,14 @@ typedef NS_ENUM(NSInteger, SGKeepAliveOffloadBackend) {
 
 /* Selected version-specific offload implementation, or None. */
 @property (nonatomic, readonly) SGKeepAliveOffloadBackend keepAliveOffloadBackend;
+
+#pragma mark - System Power Events
+
+/* Owns the platform IOKit registration and callback lifetime */
+- (BOOL)startPowerEventMonitoringWithWakeHandler:
+    (SGSystemPowerEventHandler)wakeHandler
+    willSleepHandler:(SGSystemPowerEventHandler)willSleepHandler;
+- (void)stopPowerEventMonitoring;
 
 #pragma mark - PCPersistentTimer
 

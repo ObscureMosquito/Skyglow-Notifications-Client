@@ -1,4 +1,5 @@
 #import "SNLogTailViewController.h"
+#import "SNInterfaceColors.h"
 #import "SNDataManager.h"
 #import "SNAlert.h"
 #import "SGSharedConstants.h"
@@ -183,7 +184,7 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
 - (void)setPlaceholderText:(NSString *)text {
     if (text.length == 0) return;
     self.textView.font = [UIFont systemFontOfSize:13.0f];
-    self.textView.textColor = [UIColor colorWithWhite:0.50f alpha:1.0f];
+    self.textView.textColor = SNSecondaryLabelColor([UIColor colorWithWhite:0.50f alpha:1.0f]);
     self.textView.text = [@"\n" stringByAppendingString:text];
     [self clampTextViewToVerticalScrolling];
 }
@@ -291,8 +292,8 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
     label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     label.backgroundColor = [UIColor clearColor];
     label.font = [UIFont systemFontOfSize:13.0f];
-    label.textColor = [UIColor colorWithRed:0.30f green:0.34f blue:0.42f alpha:1.0f];
-    label.shadowColor = [UIColor colorWithWhite:1.0f alpha:0.7f];
+    label.textColor = SNSecondaryLabelColor([UIColor colorWithRed:0.30f green:0.34f blue:0.42f alpha:1.0f]);
+    label.shadowColor = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.7f]);
     label.shadowOffset = CGSizeMake(0, 1);
     label.textAlignment = (NSTextAlignment)UITextAlignmentCenter;
     label.numberOfLines = 1;
@@ -935,7 +936,7 @@ passesFiltersAllowingUnstructured:NO]) {
             self.rawTailContent = @"";
             self.lastVisibleLineCount = 0;
             self.textView.font = [UIFont systemFontOfSize:13.0f];
-            self.textView.textColor = [UIColor colorWithWhite:0.50f alpha:1.0f];
+            self.textView.textColor = SNSecondaryLabelColor([UIColor colorWithWhite:0.50f alpha:1.0f]);
             self.textView.text = (self.contentMode == SNLogContentModeSummary)
                 ? [self diagnosticSummaryForLines:[NSArray array] countOut:NULL applyFilters:YES]
                 : [self stringForLines:[NSArray array] countOut:NULL];
@@ -984,7 +985,7 @@ passesFiltersAllowingUnstructured:NO]) {
     self.textView.font = [UIFont fontWithName:@"Menlo" size:10.5f]
                        ?: [UIFont fontWithName:@"Courier" size:10.5f]
                        ?: [UIFont systemFontOfSize:10.5f];
-    self.textView.textColor = [UIColor colorWithRed:0.18f green:0.18f blue:0.20f alpha:1.0f];
+    self.textView.textColor = SNLabelColor([UIColor colorWithRed:0.18f green:0.18f blue:0.20f alpha:1.0f]);
     self.textView.text = rendered;
     [self clampTextViewToVerticalScrolling];
 

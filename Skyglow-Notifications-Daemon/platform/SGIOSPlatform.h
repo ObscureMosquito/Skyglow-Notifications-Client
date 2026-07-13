@@ -3,7 +3,7 @@
 
 #import "SGPlatform.h"
 
-@interface SGIOSPlatform : NSObject <SGPlatform>
+@interface SGIOSPlatform : NSObject <SGNativePushPlatform>
 - (instancetype)initWithDeliveryReadyHandler:(void (^)(void))handler;
 @end
 

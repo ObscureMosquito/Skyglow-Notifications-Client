@@ -1,6 +1,7 @@
 #import "SNCustomizationViewController.h"
 #import "SNDataManager.h"
 #import "SNAlert.h"
+#import "SNInterfaceColors.h"
 
 #pragma mark - Legend cell
 
@@ -70,8 +71,8 @@
             UILabel *name = [[UILabel alloc] init];
             name.text             = titles[i];
             name.font             = [UIFont boldSystemFontOfSize:14.0f];
-            name.textColor        = [UIColor colorWithRed:0.18f green:0.18f blue:0.18f alpha:1.0f];
-            name.shadowColor      = [UIColor colorWithWhite:1.0f alpha:0.7f];
+            name.textColor        = SNLabelColor([UIColor colorWithRed:0.18f green:0.18f blue:0.18f alpha:1.0f]);
+            name.shadowColor      = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.7f]);
             name.shadowOffset     = CGSizeMake(0, 1);
             name.backgroundColor  = [UIColor clearColor];
             [self.contentView addSubview:name];
@@ -81,8 +82,8 @@
             UILabel *desc = [[UILabel alloc] init];
             desc.text             = details[i];
             desc.font             = [UIFont systemFontOfSize:12.0f];
-            desc.textColor        = [UIColor colorWithRed:0.40f green:0.40f blue:0.44f alpha:1.0f];
-            desc.shadowColor      = [UIColor colorWithWhite:1.0f alpha:0.6f];
+            desc.textColor        = SNSecondaryLabelColor([UIColor colorWithRed:0.40f green:0.40f blue:0.44f alpha:1.0f]);
+            desc.shadowColor      = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.6f]);
             desc.shadowOffset     = CGSizeMake(0, 1);
             desc.backgroundColor  = [UIColor clearColor];
             [self.contentView addSubview:desc];

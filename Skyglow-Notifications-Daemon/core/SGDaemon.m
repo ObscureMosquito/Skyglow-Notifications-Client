@@ -22,8 +22,6 @@
 #include <sys/stat.h>
 #include <stdatomic.h>
 #include <libkern/OSAtomic.h>
-#include <IOKit/pwr_mgt/IOPMLib.h>
-#include <IOKit/IOMessage.h>
 
 static const int64_t kSGGracefulDisconnectTimeoutSec = 2;
 
@@ -82,9 +80,6 @@ static BOOL isValidPort(NSString *port) {
     SGControlChannel      *_controlChannel;
     id<SGPlatform>         _deliveryPlatform;
     SGReachabilityMonitor *_reachability;
-    io_connect_t           _powerRootPort;
-    io_object_t            _powerNotifier;
-    IONotificationPortRef  _powerNotifyPort;
     _Atomic uint32_t       _probeAssertionID;
     _Atomic bool           _probeInFlight;
 }
@@ -104,9 +99,6 @@ static BOOL isValidPort(NSString *port) {
                                                     NSDictionary *payload) {
                 return [daemonSelf _deliverPushTopic:bundleID payload:payload];
             }];
-        _powerRootPort       = MACH_PORT_NULL;
-        _powerNotifier       = MACH_PORT_NULL;
-        _powerNotifyPort     = NULL;
     }
     return self;
 }
@@ -120,7 +112,7 @@ static BOOL isValidPort(NSString *port) {
     [_deliveryPlatform release];
     [_reachability stopMonitoringSystemNetworkChanges];
     [_reachability release];
-    [self _stopPowerMonitoring];
+    [[SGAvailability shared] stopPowerEventMonitoring];
     if (_keepAliveTimer) { [_keepAliveTimer invalidate]; [_keepAliveTimer release]; }
     dispatch_release(_entryActionQueue);
     dispatch_release(_connectionQueue);
@@ -174,7 +166,14 @@ static BOOL isValidPort(NSString *port) {
 
     [_notificationProcessor kickPendingDeliveryDrain];
     [self _startReachabilityMonitor];
-    [self _startPowerMonitoring];
+    __unsafe_unretained SGDaemon *daemonSelf = self;
+    [[SGAvailability shared]
+        startPowerEventMonitoringWithWakeHandler:^{
+            [daemonSelf handleSystemWake];
+        }
+        willSleepHandler:^{
+            [daemonSelf _armScheduledWakeIfNeeded];
+        }];
 }
 
 - (void)_exitActiveMode {
@@ -189,7 +188,7 @@ static BOOL isValidPort(NSString *port) {
     [[SGAvailability shared] cancelPendingScheduledWake];
     [_notificationProcessor suspendPendingDeliveryRetries];
     [self _stopReachabilityMonitor];
-    [self _stopPowerMonitoring];
+    [[SGAvailability shared] stopPowerEventMonitoring];
 }
 
 - (void)_startReachabilityMonitor {
@@ -210,57 +209,6 @@ static BOOL isValidPort(NSString *port) {
     [_reachability stopMonitoringSystemNetworkChanges];
     [_reachability release];
     _reachability = nil;
-}
-
-#pragma mark - IOKit Power Monitoring
-
-static void SG_IOPowerCallback(void *refcon, io_service_t service,
-                                natural_t messageType, void *messageArgument) {
-    SGDaemon *daemon = (__bridge SGDaemon *)refcon;
-    switch (messageType) {
-        case kIOMessageSystemHasPoweredOn:
-            [daemon handleSystemWake];
-            break;
-        case kIOMessageSystemWillSleep:
-            [daemon _armScheduledWakeIfNeeded];
-            IOAllowPowerChange(daemon->_powerRootPort, (long)messageArgument);
-            break;
-        case kIOMessageCanSystemSleep:
-            IOAllowPowerChange(daemon->_powerRootPort, (long)messageArgument);
-            break;
-        default:
-            break;
-    }
-}
-
-- (void)_startPowerMonitoring {
-    if (_powerRootPort != MACH_PORT_NULL) return;
-    _powerRootPort = IORegisterForSystemPower((__bridge void *)self,
-                                              &_powerNotifyPort,
-                                              SG_IOPowerCallback,
-                                              &_powerNotifier);
-    if (_powerRootPort == MACH_PORT_NULL) {
-        SGLOGW(SGDaemon, "code=%s result=disabled reason=iokit_registration_failed", SGND_AVAILABILITY_POWER_NOTIFY_FAILED);
-        return;
-    }
-    CFRunLoopAddSource(CFRunLoopGetMain(),
-                       IONotificationPortGetRunLoopSource(_powerNotifyPort),
-                       kCFRunLoopDefaultMode);
-    SGLOGI(SGDaemon, "code=%s result=registered", SGND_AVAILABILITY_POWER_NOTIFY_READY);
-}
-
-- (void)_stopPowerMonitoring {
-    if (_powerRootPort == MACH_PORT_NULL) return;
-    if (_powerNotifier != MACH_PORT_NULL) {
-        IODeregisterForSystemPower(&_powerNotifier);
-        _powerNotifier = MACH_PORT_NULL;
-    }
-    IOServiceClose(_powerRootPort);
-    _powerRootPort = MACH_PORT_NULL;
-    if (_powerNotifyPort) {
-        IONotificationPortDestroy(_powerNotifyPort);
-        _powerNotifyPort = NULL;
-    }
 }
 
 - (void)reconcileTokensWithPlist {

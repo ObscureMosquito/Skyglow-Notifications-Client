@@ -95,7 +95,39 @@
         return;
     }
 
-    SGNRegistrationPresentModernChoice(self, bundleIdentifier, resultBlock);
+    SGNRegistrationPresentModernChoice(self, bundleIdentifier, resultBlock,
+                                       _cmd);
+}
+%end
+%end
+
+%group HookRegistration_iOS10
+%hook UNSUserNotificationServerConnectionListener
+- (void)requestTokenForRemoteNotificationsForBundleIdentifier:
+            (NSString *)bundleIdentifier
+                                      withCompletionHandler:(id)resultBlock {
+    if (SGNRegistrationConsumePassThrough()) { %orig; return; }
+
+    if (SGN_IsCascadeReEntry(bundleIdentifier)) {
+        NSLog(@"[SGN] Suppressing deregister cascade for %@", bundleIdentifier);
+        %orig;
+        return;
+    }
+
+    if (SGNEffectiveAppIntent(bundleIdentifier)) {
+        SGN_InstallTokenGuard();
+        SGN_AsyncFetchAndDeliverToken(bundleIdentifier, nil, nil, 0, nil);
+        %orig;
+        return;
+    }
+
+    if (SGN_BundleRegisteredWithNativePush(bundleIdentifier)) {
+        %orig;
+        return;
+    }
+
+    SGNRegistrationPresentModernChoice(self, bundleIdentifier, resultBlock,
+                                       _cmd);
 }
 %end
 %end
@@ -118,6 +150,15 @@
     if (SGN_IS_PRE_IOS_9) {
         %init(HookRegistration_Classic);
     } else {
-        %init(HookRegistration_iOS9);
+        Class legacyRegistrar = NSClassFromString(
+            @"UNNotificationRegistrarConnectionListener");
+        SEL legacySelector = @selector(
+            requestTokenForRemoteNotificationsForBundleIdentifier:
+            withResult:);
+        if ([legacyRegistrar instancesRespondToSelector:legacySelector]) {
+            %init(HookRegistration_iOS9);
+        } else {
+            %init(HookRegistration_iOS10);
+        }
     }
 }

@@ -1,4 +1,5 @@
 #import "SNAppToggleCell.h"
+#import "SNInterfaceColors.h"
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
 #import <Preferences/PSSpecifier.h>
@@ -194,7 +195,7 @@ static UIImage *SNImageFromIconRepresentation(id representation) {
         _appNameLabel = [[UILabel alloc] init];
         _appNameLabel.font = [UIFont boldSystemFontOfSize:16.0];
         _appNameLabel.backgroundColor = [UIColor clearColor];
-        _appNameLabel.textColor = [UIColor blackColor];
+        _appNameLabel.textColor = SNLabelColor([UIColor blackColor]);
         [self.contentView addSubview:_appNameLabel];
 
         NSString *bundleId = [specifier propertyForKey:@"bundleId"];

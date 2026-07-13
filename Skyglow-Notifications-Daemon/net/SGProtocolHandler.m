@@ -54,6 +54,25 @@ static RSA      *_regPendingRSA = NULL;
 static int64_t   _regTimestamp = 0;
 static pthread_mutex_t _regKeyLock = PTHREAD_MUTEX_INITIALIZER;
 
+static void SGP_ClearPendingRegistrationKeypairLocked(void) {
+    if (_regPendingRSA) {
+        RSA_free(_regPendingRSA);
+        _regPendingRSA = NULL;
+    }
+    if (_regPendingPrivKey) {
+        SGP_ZeroAndFreeKeyMaterial(_regPendingPrivKey,
+                                   _regPendingPrivKeyLen);
+        _regPendingPrivKey = NULL;
+        _regPendingPrivKeyLen = 0;
+    }
+}
+
+static void SGP_ClearPendingRegistrationKeypair(void) {
+    pthread_mutex_lock(&_regKeyLock);
+    SGP_ClearPendingRegistrationKeypairLocked();
+    pthread_mutex_unlock(&_regKeyLock);
+}
+
 typedef enum {
     SGPProtoPreHello       = 0,
     SGPProtoHelloReceived  = 1,
@@ -415,15 +434,12 @@ void SGP_DisconnectFromServer(void) {
     if (_sock >= 0) { close(_sock); _sock = -1; }
     [_userAddress release]; _userAddress = nil;
     pthread_mutex_lock(&_regKeyLock);
-    if (_regPendingRSA) { RSA_free(_regPendingRSA); _regPendingRSA = NULL; }
-    if (_regPendingPrivKey) {
-        SGP_ZeroAndFreeKeyMaterial(_regPendingPrivKey, _regPendingPrivKeyLen);
-        _regPendingPrivKey    = NULL;
-        _regPendingPrivKeyLen = 0;
-    }
+    SGP_ClearPendingRegistrationKeypairLocked();
     pthread_mutex_unlock(&_regKeyLock);
+    pthread_mutex_lock(&_pingLock);
     _pingPendingSince = 0.0;
     _pingPendingWallSince = 0;
+    pthread_mutex_unlock(&_pingLock);
     _lastFrameReceivedAt = 0.0;
     _phase = SGPProtoPreHello;
     _v1HelloConsumed = NO;
@@ -909,11 +925,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             if (addrLen == 0 || addrLen > 255 || (uint64_t)6 + addrLen > (uint64_t)len) {
                 SGLOGE(SGP, "code=%s field=address addrLen=%u frameLen=%llu result=rejected",
                        SGND_PROTOCOL_FRAME_SIZE_INVALID, addrLen, (unsigned long long)len);
-                if (_regPendingRSA) { RSA_free(_regPendingRSA); _regPendingRSA = NULL; }
-                if (_regPendingPrivKey) {
-                    SGP_ZeroAndFreeKeyMaterial(_regPendingPrivKey, _regPendingPrivKeyLen);
-                    _regPendingPrivKey = NULL; _regPendingPrivKeyLen = 0;
-                }
+                SGP_ClearPendingRegistrationKeypair();
                 result = SGP_ERR_PROTO;
                 goto cleanup;
             }
@@ -921,28 +933,24 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             if (!SG_IsAddressCharsetSafe(raw + 6, addrLen)) {
                 SGLOGE(SGP, "code=%s field=address result=rejected_charset",
                        SGND_PROTOCOL_FRAME_SIZE_INVALID);
-                if (_regPendingRSA) { RSA_free(_regPendingRSA); _regPendingRSA = NULL; }
-                if (_regPendingPrivKey) {
-                    SGP_ZeroAndFreeKeyMaterial(_regPendingPrivKey, _regPendingPrivKeyLen);
-                    _regPendingPrivKey = NULL; _regPendingPrivKeyLen = 0;
-                }
+                SGP_ClearPendingRegistrationKeypair();
                 result = SGP_ERR_PROTO;
                 goto cleanup;
             }
             NSString *capturedAddress = [[[NSString alloc] initWithBytes:raw + 6
                                                                   length:addrLen
                                                                 encoding:NSUTF8StringEncoding] autorelease];
+            pthread_mutex_lock(&_regKeyLock);
             char   *capturedPemKey = _regPendingPrivKey;
-            size_t  capturedPemLen = _regPendingPrivKeyLen;
             RSA    *capturedRSA    = _regPendingRSA;
             _regPendingPrivKey    = NULL;
             _regPendingPrivKeyLen = 0;
             _regPendingRSA        = NULL;
+            pthread_mutex_unlock(&_regKeyLock);
             RSA_free(capturedRSA);
             [_delegate protocolDidCompleteRegistrationWithAddress:capturedAddress
                                                        privateKey:capturedPemKey
                                                     serverVersion:serverVer];
-            (void)capturedPemLen;
             break;
         }
         case SGP_S_REGISTER_FAIL: {
@@ -964,12 +972,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             }
             if (!reason) reason = @"Unknown";
             SGLOGE(SGP, "code=%s server_code=%u reason=%s result=rejected", SGND_PROTOCOL_REGISTRATION_REJECTED, code, [reason UTF8String]);
-            if (_regPendingRSA) { RSA_free(_regPendingRSA); _regPendingRSA = NULL; }
-            if (_regPendingPrivKey) {
-                SGP_ZeroAndFreeKeyMaterial(_regPendingPrivKey, _regPendingPrivKeyLen);
-                _regPendingPrivKey    = NULL;
-                _regPendingPrivKeyLen = 0;
-            }
+            SGP_ClearPendingRegistrationKeypair();
             [_delegate protocolDidFailRegistrationWithCode:code reason:reason];
             break;
         }

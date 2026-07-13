@@ -9,6 +9,7 @@
 #import <mach/message.h>
 #include <bootstrap.h>
 #import "SNAlert.h"
+#import "SNInterfaceColors.h"
 
 extern char **environ;
 
@@ -175,7 +176,7 @@ typedef enum {
             
             if (indexPath.row == 1) {
                 cell.textLabel.text = @"Register Bundle ID";
-                cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
+                cell.textLabel.textColor = SNSystemBlueColor([UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0]);
             }
             
             return cell;
@@ -202,7 +203,7 @@ typedef enum {
             NSUInteger truncLen = MIN((NSUInteger)16, [hex length]);
             cell.detailTextLabel.text = [NSString stringWithFormat:@"Token: %@...",
                                          [hex substringToIndex:truncLen]];
-            cell.detailTextLabel.textColor = [UIColor grayColor];
+            cell.detailTextLabel.textColor = SNSecondaryLabelColor([UIColor grayColor]);
 
             if ([_deletingBundleIDs containsObject:bundleId]) {
                 UIActivityIndicatorView *spin = [[UIActivityIndicatorView alloc]
@@ -228,7 +229,7 @@ typedef enum {
                                           reuseIdentifier:valueCellID] autorelease];
         }
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        cell.detailTextLabel.textColor = [UIColor darkGrayColor];
+        cell.detailTextLabel.textColor = SNSecondaryLabelColor([UIColor darkGrayColor]);
         if (indexPath.row == 0) {
             cell.textLabel.text = @"Registered Apps";
             cell.detailTextLabel.text = _appCount;
@@ -252,12 +253,12 @@ typedef enum {
     if (indexPath.section == SectionLogs) {
         cell.textLabel.text = @"View Logs";
         cell.textLabel.textAlignment = NSTextAlignmentLeft;
-        cell.textLabel.textColor = [UIColor blackColor];
+        cell.textLabel.textColor = SNLabelColor([UIColor blackColor]);
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     } else if (indexPath.section == SectionDaemon) {
         cell.textLabel.text = @"Restart Daemon";
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
-        cell.textLabel.textColor = [UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0];
+        cell.textLabel.textColor = SNSystemBlueColor([UIColor colorWithRed:0.0 green:0.478 blue:1.0 alpha:1.0]);
     }
     return cell;
 }

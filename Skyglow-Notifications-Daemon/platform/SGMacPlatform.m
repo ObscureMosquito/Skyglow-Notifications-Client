@@ -315,32 +315,6 @@ static void SGCloseConnection(xpc_connection_t conn) {
     }
 }
 
-// No native push subsystem on macOS, nothing to enumerate.
-- (void)listNativePushAppsWithCompletion:(void (^)(SGControlError, NSData *))completion {
-    if (completion) completion(SGCERR_UNSUPPORTED, nil);
-}
-
-- (void)registerNativePushAppForBundleID:(NSString *)bundleID
-                              completion:(void (^)(SGControlError,
-                                                   NSString *))completion {
-    (void)bundleID;
-    if (completion) completion(SGCERR_UNSUPPORTED,
-                               @"native push registration is iOS-only");
-}
-
-- (void)requestNativeNotificationAuthorizationForBundleID:(NSString *)bundleID
-    completion:(void (^)(SGControlError, NSString *))completion {
-    (void)bundleID;
-    if (completion) completion(SGCERR_UNSUPPORTED,
-        @"native notification authorization is iOS-only");
-}
-
-- (void)registerInputAppForBundleID:(NSString *)bundleID
-                         completion:(void (^)(SGControlError, NSString *))completion {
-    (void)bundleID;
-    if (completion) completion(SGCERR_UNSUPPORTED, @"input-app registration is iOS-only");
-}
-
 @end
 
 #endif

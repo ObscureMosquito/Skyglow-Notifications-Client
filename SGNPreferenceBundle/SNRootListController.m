@@ -8,6 +8,7 @@
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
 #import "SNAlert.h"
+#import "SNInterfaceColors.h"
 
 @implementation SNRootListController
 
@@ -56,8 +57,8 @@
     UILabel *titleLabel = [[UILabel alloc] init];
     titleLabel.text         = @"Skyglow Notifications";
     titleLabel.font         = [UIFont boldSystemFontOfSize:17.0f];
-    titleLabel.textColor    = [UIColor colorWithRed:0.18f green:0.18f blue:0.18f alpha:1.0f];
-    titleLabel.shadowColor  = [UIColor colorWithWhite:1.0f alpha:0.7f];
+    titleLabel.textColor    = SNLabelColor([UIColor colorWithRed:0.18f green:0.18f blue:0.18f alpha:1.0f]);
+    titleLabel.shadowColor  = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.7f]);
     titleLabel.shadowOffset = CGSizeMake(0, 1);
     titleLabel.textAlignment    = NSTextAlignmentCenter;
     titleLabel.backgroundColor  = [UIColor clearColor];
@@ -72,8 +73,8 @@
     UILabel *bodyLabel = [[UILabel alloc] init];
     bodyLabel.text          = @"A push notification daemon, built from scratch.";
     bodyLabel.font          = [UIFont systemFontOfSize:13.0f];
-    bodyLabel.textColor     = [UIColor colorWithRed:0.38f green:0.38f blue:0.42f alpha:1.0f];
-    bodyLabel.shadowColor   = [UIColor colorWithWhite:1.0f alpha:0.6f];
+    bodyLabel.textColor     = SNSecondaryLabelColor([UIColor colorWithRed:0.38f green:0.38f blue:0.42f alpha:1.0f]);
+    bodyLabel.shadowColor   = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.6f]);
     bodyLabel.shadowOffset  = CGSizeMake(0, 1);
     bodyLabel.textAlignment    = NSTextAlignmentCenter;
     bodyLabel.backgroundColor  = [UIColor clearColor];
@@ -170,8 +171,8 @@
         _versionLabel = [[UILabel alloc] initWithFrame:CGRectZero];
         _versionLabel.text = @"Version 3.0";
         _versionLabel.backgroundColor = [UIColor clearColor];
-        _versionLabel.textColor = [UIColor colorWithRed:0.3f green:0.34f blue:0.42f alpha:1.0f];
-        _versionLabel.shadowColor = [UIColor whiteColor];
+        _versionLabel.textColor = SNSecondaryLabelColor([UIColor colorWithRed:0.3f green:0.34f blue:0.42f alpha:1.0f]);
+        _versionLabel.shadowColor = SNLegacyTextShadowColor([UIColor whiteColor]);
         _versionLabel.shadowOffset = CGSizeMake(0, 1);
         _versionLabel.font = [UIFont systemFontOfSize:12.5f];
         _versionLabel.textAlignment = NSTextAlignmentCenter;
@@ -179,8 +180,8 @@
         _creditsLabel = [[UILabel alloc] initWithFrame:CGRectZero];
         _creditsLabel.text = @"Tweak and protocol created by Requis - ObscureMosquito, improved and server created by Preloading.";
         _creditsLabel.backgroundColor = [UIColor clearColor];
-        _creditsLabel.textColor = [UIColor colorWithRed:0.3f green:0.34f blue:0.42f alpha:1.0f];
-        _creditsLabel.shadowColor = [UIColor whiteColor];
+        _creditsLabel.textColor = SNSecondaryLabelColor([UIColor colorWithRed:0.3f green:0.34f blue:0.42f alpha:1.0f]);
+        _creditsLabel.shadowColor = SNLegacyTextShadowColor([UIColor whiteColor]);
         _creditsLabel.shadowOffset = CGSizeMake(0, 1);
         _creditsLabel.font = [UIFont systemFontOfSize:13.4f];
         _creditsLabel.textAlignment = NSTextAlignmentCenter;

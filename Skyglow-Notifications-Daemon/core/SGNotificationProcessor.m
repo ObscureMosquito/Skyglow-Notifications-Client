@@ -77,6 +77,13 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     }
 }
 
+- (void)_finishMessageID:(NSData *)msgID
+                ackStatus:(int)ackStatus
+                expiresAt:(int64_t)expiresAt {
+    SGP_EnqueueAcknowledgement(msgID, ackStatus);
+    [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+}
+
 - (void)_advanceLastDeliveredSeqIfNeeded:(int64_t)arrivedSeq {
     if (arrivedSeq <= 0) return;
     SGDatabaseManager *db = [SGDatabaseManager sharedManager];
@@ -123,8 +130,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
         if (expiresAt > 0 && now > expiresAt) {
             SGLOGI(SGNotificationProcessor, "code=%s msg=%s age=%llds expires_at=%lld now=%lld ack=expired",
                    SGND_DELIVERY_EXPIRED, msgHex, now - expiresAt, expiresAt, now);
-            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_EXPIRED);
-            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+            [self _finishMessageID:msgID ackStatus:SGP_ACK_EXPIRED expiresAt:expiresAt];
             return;
         }
 
@@ -139,8 +145,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
         if ([db isMutedForRoutingKey:routingKey]) {
             SGLOGI(SGNotificationProcessor, "code=%s msg=%s bundle=%s ack=success action=suppress",
                    SGND_DELIVERY_MUTED, msgHex, [routingData[@"bundleID"] UTF8String]);
-            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
-            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+            [self _finishMessageID:msgID ackStatus:SGP_ACK_SUCCESS expiresAt:expiresAt];
             return;
         }
 
@@ -148,8 +153,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
         if (!payloadBytes) {
             SGLOGW(SGNotificationProcessor, "code=%s msg=%s ack=parse_failed action=drop",
                    SGND_DELIVERY_PAYLOAD_EMPTY, msgHex);
-            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
-            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+            [self _finishMessageID:msgID ackStatus:SGP_ACK_PARSE_FAILED expiresAt:expiresAt];
             return;
         }
 
@@ -166,16 +170,14 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
                 SGLOGW(SGNotificationProcessor, "code=%s msg=%s bytes=%lu min=%d ack=decrypt_failed action=drop",
                        SGND_DELIVERY_CIPHERTEXT_SHORT, msgHex,
                        (unsigned long)[payloadBytes length], SGP_GCM_TAG_LEN);
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED);
-                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                [self _finishMessageID:msgID ackStatus:SGP_ACK_DECRYPT_FAILED expiresAt:expiresAt];
                 return;
             }
             NSData *iv = messageDict[@"iv"];
             if (!iv) {
                 SGLOGW(SGNotificationProcessor, "code=%s msg=%s ack=decrypt_failed action=drop",
                        SGND_DELIVERY_IV_MISSING, msgHex);
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED);
-                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                [self _finishMessageID:msgID ackStatus:SGP_ACK_DECRYPT_FAILED expiresAt:expiresAt];
                 return;
             }
             payloadBytes = SG_CryptoDecryptAESGCM(
@@ -183,8 +185,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
             if (!payloadBytes) {
                 SGLOGE(SGNotificationProcessor, "code=%s msg=%s ack=decrypt_failed action=drop",
                        SGND_DELIVERY_DECRYPT_FAILED, msgHex);
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_DECRYPT_FAILED);
-                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                [self _finishMessageID:msgID ackStatus:SGP_ACK_DECRYPT_FAILED expiresAt:expiresAt];
                 return;
             }
         } else {
@@ -201,8 +202,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
                 SGLOGW(SGNotificationProcessor, "code=%s msg=%s bytes=%lu ack=parse_failed action=drop",
                        SGND_DELIVERY_INFLATE_FAILED, msgHex,
                        (unsigned long)[payloadBytes length]);
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
-                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                [self _finishMessageID:msgID ackStatus:SGP_ACK_PARSE_FAILED expiresAt:expiresAt];
                 return;
             }
             SGLOGD(SGNotificationProcessor, "code=%s msg=%s in=%lu out=%lu action=inflate",
@@ -221,8 +221,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
             SGLOGW(SGNotificationProcessor, "code=%s msg=%s bytes=%lu fmt=%u ack=parse_failed action=drop",
                    SGND_DELIVERY_PARSE_FAILED, msgHex,
                    (unsigned long)[payloadBytes length], (unsigned)contentType);
-            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
-            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+            [self _finishMessageID:msgID ackStatus:SGP_ACK_PARSE_FAILED expiresAt:expiresAt];
             return;
         }
 
@@ -234,8 +233,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
                (unsigned long)[parsed count]);
         kern_return_t deliveryKr = [self _deliverBundleID:bundleID payload:parsed];
         if (deliveryKr == KERN_SUCCESS) {
-            SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
-            [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+            [self _finishMessageID:msgID ackStatus:SGP_ACK_SUCCESS expiresAt:expiresAt];
             [self _advanceLastDeliveredSeqIfNeeded:arrivedSeq];
             [self kickPendingDeliveryDrain];
         } else {
@@ -259,8 +257,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
             } else if (!serialized) {
                 SGLOGE(SGNotificationProcessor, "code=%s msg=%s kr=%d ack=parse_failed action=halt_resends",
                        SGND_DELIVERY_LOCAL_RETRY_BAD_PAYLOAD, msgHex, deliveryKr);
-                SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
-                [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                [self _finishMessageID:msgID ackStatus:SGP_ACK_PARSE_FAILED expiresAt:expiresAt];
             } else {
                 SGLOGE(SGNotificationProcessor, "code=%s msg=%s kr=%d action=abort_for_redelivery",
                        SGND_DELIVERY_LOCAL_RETRY_ENQUEUE_FAILED, msgHex, deliveryKr);
@@ -326,8 +323,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
                     SGLOGW(SGNotificationProcessor, "code=%s msg=%s bundle=%s ack=expired action=remove",
                            SGND_DELIVERY_LOCAL_RETRY_EXPIRED, msgHex,
                            [bundleID UTF8String]);
-                    SGP_EnqueueAcknowledgement(msgID, SGP_ACK_EXPIRED);
-                    [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                    [self _finishMessageID:msgID ackStatus:SGP_ACK_EXPIRED expiresAt:expiresAt];
                     [db removeLocalPendingDeliveryForMessageID:msgID];
                     continue;
                 }
@@ -341,8 +337,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
                     SGLOGE(SGNotificationProcessor, "code=%s msg=%s bundle=%s ack=parse_failed action=remove",
                            SGND_DELIVERY_LOCAL_RETRY_BAD_PAYLOAD, msgHex,
                            [bundleID UTF8String]);
-                    SGP_EnqueueAcknowledgement(msgID, SGP_ACK_PARSE_FAILED);
-                    [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                    [self _finishMessageID:msgID ackStatus:SGP_ACK_PARSE_FAILED expiresAt:expiresAt];
                     [db removeLocalPendingDeliveryForMessageID:msgID];
                     continue;
                 }
@@ -352,8 +347,7 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
                     SGLOGI(SGNotificationProcessor, "code=%s msg=%s bundle=%s result=delivered",
                            SGND_DELIVERY_LOCAL_RETRY_SUCCEEDED, msgHex,
                            [bundleID UTF8String]);
-                    SGP_EnqueueAcknowledgement(msgID, SGP_ACK_SUCCESS);
-                    [self _markMessageDeliveredID:msgID expiresAt:expiresAt];
+                    [self _finishMessageID:msgID ackStatus:SGP_ACK_SUCCESS expiresAt:expiresAt];
                     [self _advanceLastDeliveredSeqIfNeeded:deviceSeq];
                     [db removeLocalPendingDeliveryForMessageID:msgID];
                 }

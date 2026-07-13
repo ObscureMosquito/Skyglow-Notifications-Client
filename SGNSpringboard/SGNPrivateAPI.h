@@ -52,6 +52,19 @@
 - (void)invalidateTokenForRemoteNotificationsForBundleIdentifier:(NSString *)bundleIdentifier;
 @end
 
+/* iOS 10+ merged notification authorization and token requests into the
+ * UserNotificationsServer connection listener. */
+@interface UNSUserNotificationServerConnectionListener : NSObject
+- (void)requestAuthorizationWithOptions:(NSUInteger)options
+                    forBundleIdentifier:(NSString *)bundleIdentifier
+                      completionHandler:(id)completionHandler;
+- (void)requestTokenForRemoteNotificationsForBundleIdentifier:
+            (NSString *)bundleIdentifier
+                                      withCompletionHandler:(id)completionHandler;
+- (void)invalidateTokenForRemoteNotificationsForBundleIdentifier:
+            (NSString *)bundleIdentifier;
+@end
+
 @interface UNRemoteNotificationServer : NSObject
 @end
 

@@ -148,6 +148,7 @@ static id sPendingEnv         = nil;
 static int sPendingTypes      = 0;
 static NSString *sPendingBundleId = nil;
 static id sPendingResultBlock = nil;
+static SEL sPendingRequestSelector = NULL;
 static BOOL sPendingIsModern  = NO;
 static BOOL sPassThrough      = NO;
 
@@ -185,7 +186,13 @@ static BOOL sPassThrough      = NO;
 
         if (sPendingIsModern) {
             sPassThrough = YES;
-            [sPendingServer requestTokenForRemoteNotificationsForBundleIdentifier:sPendingBundleId withResult:sPendingResultBlock];
+            SEL selector = sPendingRequestSelector ?: @selector(
+                requestTokenForRemoteNotificationsForBundleIdentifier:
+                withResult:);
+            void (*requestToken)(id, SEL, NSString *, id) =
+                (void (*)(id, SEL, NSString *, id))objc_msgSend;
+            requestToken(sPendingServer, selector, sPendingBundleId,
+                         sPendingResultBlock);
         } else {
             sPassThrough = YES;
             [(SBRemoteNotificationServer *)sPendingServer registerApplication:sPendingApp forEnvironment:sPendingEnv withTypes:sPendingTypes];
@@ -198,6 +205,7 @@ static BOOL sPassThrough      = NO;
     [sPendingBundleId release];    sPendingBundleId = nil;
     [sPendingResultBlock release]; sPendingResultBlock = nil;
     sPendingTypes = 0;
+    sPendingRequestSelector = NULL;
     sPendingIsModern = NO;
 }
 @end
@@ -270,7 +278,8 @@ void SGNRegistrationPresentClassicChoice(id server, id application,
 }
 
 void SGNRegistrationPresentModernChoice(id server, NSString *bundleId,
-                                        id resultBlock) {
+                                        id resultBlock,
+                                        SEL requestSelector) {
     NSString *bidCopy = [bundleId copy];
     id resultCopy = [resultBlock copy];
     id serverCopy = [server retain];
@@ -281,6 +290,7 @@ void SGNRegistrationPresentModernChoice(id server, NSString *bundleId,
             [sPendingServer release];      sPendingServer = [serverCopy retain];
             [sPendingBundleId release];    sPendingBundleId = [bidCopy copy];
             [sPendingResultBlock release]; sPendingResultBlock = [resultCopy copy];
+            sPendingRequestSelector = requestSelector;
             sPendingIsModern = YES;
             ShowRegistrationChoiceAlert(bidCopy);
         }

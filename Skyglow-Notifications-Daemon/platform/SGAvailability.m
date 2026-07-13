@@ -4,6 +4,7 @@
 #import "SGLogDiagnostics.h"
 #include <TargetConditionals.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
+#include <IOKit/IOMessage.h>
 
 static double SGSystemVersionRead(void) {
     NSDictionary *sv = [NSDictionary dictionaryWithContentsOfFile:
@@ -133,6 +134,12 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
     CFDateRef     _pendingWakeDate;
     NSLock       *_wakeLock;
     double        _systemVersion;
+    io_connect_t  _powerRootPort;
+    io_object_t   _powerNotifier;
+    IONotificationPortRef _powerNotifyPort;
+    SGSystemPowerEventHandler _wakeHandler;
+    SGSystemPowerEventHandler _willSleepHandler;
+    NSLock *_powerEventLock;
 }
 
 + (SGAvailability *)shared {
@@ -150,6 +157,10 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
         _assertionLock      = [[NSLock alloc] init];
         _wakeLock           = [[NSLock alloc] init];
         _pendingWakeDate    = NULL;
+        _powerRootPort      = MACH_PORT_NULL;
+        _powerNotifier      = MACH_PORT_NULL;
+        _powerNotifyPort    = NULL;
+        _powerEventLock     = [[NSLock alloc] init];
 
         _systemVersion = SGSystemVersionRead();
         double sysVer = _systemVersion;
@@ -192,11 +203,107 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
 }
 
 - (void)dealloc {
+    [self stopPowerEventMonitoring];
     [self cancelPendingScheduledWake];
     [_activeAssertionIDs release];
     [_assertionLock release];
     [_wakeLock release];
+    [_powerEventLock release];
     [super dealloc];
+}
+
+#pragma mark - System Power Events
+
+static void SGPowerEventCallback(void *refcon, io_service_t service,
+                                 natural_t messageType,
+                                 void *messageArgument) {
+    (void)service;
+    SGAvailability *availability = (SGAvailability *)refcon;
+    [availability->_powerEventLock lock];
+    switch (messageType) {
+        case kIOMessageSystemHasPoweredOn:
+            if (availability->_wakeHandler) availability->_wakeHandler();
+            break;
+        case kIOMessageSystemWillSleep:
+            if (availability->_willSleepHandler) {
+                availability->_willSleepHandler();
+            }
+            IOAllowPowerChange(availability->_powerRootPort,
+                               (long)messageArgument);
+            break;
+        case kIOMessageCanSystemSleep:
+            IOAllowPowerChange(availability->_powerRootPort,
+                               (long)messageArgument);
+            break;
+        default:
+            break;
+    }
+    [availability->_powerEventLock unlock];
+}
+
+- (BOOL)startPowerEventMonitoringWithWakeHandler:
+    (SGSystemPowerEventHandler)wakeHandler
+    willSleepHandler:(SGSystemPowerEventHandler)willSleepHandler {
+    [_powerEventLock lock];
+    if (_powerRootPort != MACH_PORT_NULL) {
+        [_powerEventLock unlock];
+        return YES;
+    }
+
+    [_wakeHandler release];
+    _wakeHandler = [wakeHandler copy];
+    [_willSleepHandler release];
+    _willSleepHandler = [willSleepHandler copy];
+
+    _powerRootPort = IORegisterForSystemPower(self, &_powerNotifyPort,
+                                               SGPowerEventCallback,
+                                               &_powerNotifier);
+    if (_powerRootPort == MACH_PORT_NULL) {
+        [_wakeHandler release];
+        _wakeHandler = nil;
+        [_willSleepHandler release];
+        _willSleepHandler = nil;
+        SGLOGW(SGAvailability,
+               "code=%s result=disabled reason=iokit_registration_failed",
+               SGND_AVAILABILITY_POWER_NOTIFY_FAILED);
+        [_powerEventLock unlock];
+        return NO;
+    }
+
+    CFRunLoopAddSource(CFRunLoopGetMain(),
+                       IONotificationPortGetRunLoopSource(_powerNotifyPort),
+                       kCFRunLoopDefaultMode);
+    SGLOGI(SGAvailability, "code=%s result=registered",
+           SGND_AVAILABILITY_POWER_NOTIFY_READY);
+    [_powerEventLock unlock];
+    return YES;
+}
+
+- (void)stopPowerEventMonitoring {
+    [_powerEventLock lock];
+    if (_powerRootPort != MACH_PORT_NULL) {
+        if (_powerNotifier != MACH_PORT_NULL) {
+            IODeregisterForSystemPower(&_powerNotifier);
+            _powerNotifier = MACH_PORT_NULL;
+        }
+        IOServiceClose(_powerRootPort);
+        _powerRootPort = MACH_PORT_NULL;
+        if (_powerNotifyPort) {
+            CFRunLoopSourceRef source =
+                IONotificationPortGetRunLoopSource(_powerNotifyPort);
+            if (source) {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), source,
+                                      kCFRunLoopDefaultMode);
+            }
+            IONotificationPortDestroy(_powerNotifyPort);
+            _powerNotifyPort = NULL;
+        }
+    }
+    [_wakeHandler release];
+    _wakeHandler = nil;
+    [_willSleepHandler release];
+    _willSleepHandler = nil;
+    [_powerEventLock unlock];
 }
 
 #pragma mark - Capability Queries

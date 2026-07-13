@@ -1,6 +1,5 @@
 #import "SGDatabaseManager.h"
 #import "SGConfiguration.h"
-#import "SGProtocolHandler.h"
 #import "SGLog.h"
 #include <sqlite3.h>
 #include <pwd.h>

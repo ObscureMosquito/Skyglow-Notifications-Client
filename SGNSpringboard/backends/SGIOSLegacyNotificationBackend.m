@@ -4,16 +4,45 @@
 #import "SGNDaemonBridge.h"
 #import "SGNNativePush.h"
 #import "SGNPrivateAPI.h"
+#import <objc/message.h>
 
-static id SGNLegacyRegistrar(void) {
+static id SGNLegacyUserNotificationServer(void) {
     Class serverClass = NSClassFromString(@"UNUserNotificationServer");
     id server = [serverClass respondsToSelector:@selector(sharedInstance)]
         ? [serverClass sharedInstance] : nil;
-    return GetIvar(server, "_registrarConnectionListener");
+    if (server) return server;
+
+    /* iOS 10 moved the same responsibility to the UNS-prefixed server. */
+    serverClass = NSClassFromString(@"UNSUserNotificationServer");
+    return [serverClass respondsToSelector:@selector(sharedInstance)]
+        ? [serverClass sharedInstance] : nil;
+}
+
+static id SGNLegacyRegistrar(void) {
+    id server = SGNLegacyUserNotificationServer();
+    id registrar = GetIvar(server, "_registrarConnectionListener");
+    if (!registrar) {
+        registrar = GetIvar(server, "_userNotificationServerConnectionListener");
+    }
+    return registrar;
 }
 
 static id SGNLegacyRemoteNotificationServer(void) {
-    return GetIvar(SGNLegacyRegistrar(), "_remoteNotificationServer");
+    id registrar = SGNLegacyRegistrar();
+    id remoteServer = GetIvar(registrar, "_remoteNotificationServer");
+    if (!remoteServer) {
+        remoteServer = GetIvar(registrar, "_remoteNotificationService");
+    }
+    return remoteServer;
+}
+
+static BOOL SGNLegacyRegistrarCanRequestToken(id registrar) {
+    return [registrar respondsToSelector:
+        @selector(requestTokenForRemoteNotificationsForBundleIdentifier:
+                  withResult:)] ||
+        [registrar respondsToSelector:
+        @selector(requestTokenForRemoteNotificationsForBundleIdentifier:
+                  withCompletionHandler:)];
 }
 
 static NSArray *SGNLegacySafeIdentifiers(id remoteServer) {
@@ -38,11 +67,9 @@ static NSArray *SGNLegacySafeIdentifiers(id remoteServer) {
 
 + (BOOL)isSupported {
     id registrar = SGNLegacyRegistrar();
-    id remoteServer = GetIvar(registrar, "_remoteNotificationServer");
+    id remoteServer = SGNLegacyRemoteNotificationServer();
     return registrar && remoteServer &&
-        [registrar respondsToSelector:
-            @selector(requestTokenForRemoteNotificationsForBundleIdentifier:
-                      withResult:)] &&
+        SGNLegacyRegistrarCanRequestToken(registrar) &&
         [remoteServer respondsToSelector:
             @selector(connection:didReceiveIncomingMessage:)];
 }
@@ -72,6 +99,11 @@ static NSArray *SGNLegacySafeIdentifiers(id remoteServer) {
                                    @"legacy native registrar unavailable");
         return;
     }
+    if (!SGNLegacyRegistrarCanRequestToken(registrar)) {
+        if (completion) completion(SGCERR_UNSUPPORTED,
+                                   @"legacy native token request unavailable");
+        return;
+    }
     if (!SBApp_LookupByIdentifier(bundleIdentifier)) {
         if (completion) completion(SGCERR_NOT_FOUND,
                                    @"application not found");
@@ -79,14 +111,21 @@ static NSArray *SGNLegacySafeIdentifiers(id remoteServer) {
     }
 
     @try {
+        SEL selector = [registrar respondsToSelector:
+            @selector(requestTokenForRemoteNotificationsForBundleIdentifier:
+                      withResult:)]
+            ? @selector(requestTokenForRemoteNotificationsForBundleIdentifier:
+                        withResult:)
+            : @selector(requestTokenForRemoteNotificationsForBundleIdentifier:
+                        withCompletionHandler:);
+        void (*requestToken)(id, SEL, NSString *, id) =
+            (void (*)(id, SEL, NSString *, id))objc_msgSend;
         SGNRegistrationBeginPassThrough();
-        [registrar
-            requestTokenForRemoteNotificationsForBundleIdentifier:
-                bundleIdentifier
-            withResult:^(id result, id error) {
+        requestToken(registrar, selector, bundleIdentifier,
+            ^(id result, id error) {
                 (void)result;
                 (void)error;
-            }];
+            });
         SGNRegistrationEndPassThrough();
         if (completion) completion(SGCERR_OK, nil);
     } @catch (NSException *exception) {
@@ -102,8 +141,35 @@ static NSArray *SGNLegacySafeIdentifiers(id remoteServer) {
         if (detail) *detail = @"bundle id invalid";
         return SGCERR_INVALID_REQUEST;
     }
-    if (detail) *detail = @"separate authorization is unavailable on this iOS version";
-    return SGCERR_UNSUPPORTED;
+    id registrar = SGNLegacyRegistrar();
+    SEL selector = @selector(requestAuthorizationWithOptions:
+        forBundleIdentifier:completionHandler:);
+    if (![registrar respondsToSelector:selector]) {
+        if (detail) *detail =
+            @"separate authorization is unavailable on this iOS version";
+        return SGCERR_UNSUPPORTED;
+    }
+
+    NSString *bundleCopy = [bundleIdentifier copy];
+    @try {
+        void (*requestAuthorization)(id, SEL, NSUInteger, NSString *, id) =
+            (void (*)(id, SEL, NSUInteger, NSString *, id))objc_msgSend;
+        requestAuthorization(registrar, selector, 7, bundleCopy,
+            ^(BOOL granted, NSError *error) {
+                NSLog(@"[SGN] Legacy authorization completed for %@: %@%@",
+                      bundleCopy, granted ? @"granted" : @"denied",
+                      error ? [NSString stringWithFormat:@" (%@)", error] : @"");
+                [bundleCopy release];
+            });
+        return SGCERR_OK;
+    } @catch (NSException *exception) {
+        if (detail) {
+            *detail = [exception reason]
+                ?: @"legacy authorization request exception";
+        }
+        [bundleCopy release];
+        return SGCERR_INTERNAL;
+    }
 }
 
 - (void)resetBundleIdentifier:(NSString *)bundleIdentifier
@@ -165,6 +231,16 @@ static NSArray *SGNLegacySafeIdentifiers(id remoteServer) {
     }
     if (!SBApp_LookupByIdentifier(bundleIdentifier)) {
         if (completion) completion(SGCERR_NOT_FOUND, @"application not found");
+        return;
+    }
+
+    NSString *detail = nil;
+    SGControlError authorizationResult =
+        [self beginAuthorizationForBundleIdentifier:bundleIdentifier
+                                             detail:&detail];
+    if (authorizationResult != SGCERR_OK &&
+        authorizationResult != SGCERR_UNSUPPORTED) {
+        if (completion) completion(authorizationResult, detail);
         return;
     }
     SGN_AsyncFetchAndDeliverToken(bundleIdentifier, nil, nil, 0, completion);

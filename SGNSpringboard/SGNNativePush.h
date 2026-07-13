@@ -37,4 +37,5 @@ void SGNRegistrationPresentClassicChoice(id server, id application,
                                          id environment, NSString *bundleId,
                                          int notificationTypes);
 void SGNRegistrationPresentModernChoice(id server, NSString *bundleId,
-                                        id resultBlock);
+                                        id resultBlock,
+                                        SEL requestSelector);

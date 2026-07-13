@@ -1,4 +1,5 @@
 #import "SNProfileListController.h"
+#import "SNInterfaceColors.h"
 #import "SNServerInfoViewController.h"
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
@@ -130,7 +131,7 @@ enum {
 
         cell.textLabel.text       = [NSString stringWithFormat:@"Profile %ld", (long)idx];
         cell.detailTextLabel.text = (addr && [addr length] > 0) ? addr : @"Not Configured";
-        cell.detailTextLabel.textColor = [UIColor grayColor];
+        cell.detailTextLabel.textColor = SNSecondaryLabelColor([UIColor grayColor]);
 
         BOOL showSpinner = [_deletingIndices containsObject:@(idx)] ||
                            (_activatingIndex && [_activatingIndex integerValue] == idx);
@@ -156,7 +157,7 @@ enum {
                                       reuseIdentifier:@"AddCell"] autorelease];
     }
     cell.textLabel.text      = @"Add Profile";
-    cell.textLabel.textColor = [UIColor colorWithRed:0.05f green:0.42f blue:0.86f alpha:1.0f];
+    cell.textLabel.textColor = SNSystemBlueColor([UIColor colorWithRed:0.05f green:0.42f blue:0.86f alpha:1.0f]);
     cell.accessoryType       = UITableViewCellAccessoryDisclosureIndicator;
     cell.selectionStyle      = UITableViewCellSelectionStyleBlue;
     return cell;

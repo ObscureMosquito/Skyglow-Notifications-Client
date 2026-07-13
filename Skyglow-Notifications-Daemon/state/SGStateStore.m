@@ -353,10 +353,23 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
 - (BOOL)performDeleteAppStateForBundleIdentifier:(NSString *)bundleID {
     if (!SG_IsIdentifierStringSafe(bundleID)) return NO;
     @synchronized(self) {
-        BOOL databaseClean = [self _runDeletionCascadeForBundleIdentifier:bundleID];
-        BOOL intentRemoved =
-            [self _removeAppStatusForBundleIdentifier:bundleID];
-        if (!(databaseClean && intentRemoved)) return NO;
+        NSDictionary *preferences = [NSDictionary dictionaryWithContentsOfFile:
+            SGPath(SG_PREFS_PLIST_PATH)] ?: @{};
+        id previousIntent =
+            [[preferences objectForKey:@"appStatus"] objectForKey:bundleID];
+
+        if (![self _removeAppStatusForBundleIdentifier:bundleID]) return NO;
+        if (![self _runDeletionCascadeForBundleIdentifier:bundleID]) {
+            BOOL rollbackOK = !previousIntent ||
+                [self _writeAppStatus:[previousIntent boolValue]
+                  forBundleIdentifier:bundleID];
+            if (!rollbackOK) {
+                SGLOGE(SGStateStore, "code=%s bundle=%s result=failed",
+                       SGND_APP_DELETE_ROLLBACK_FAILED,
+                       [bundleID UTF8String]);
+            }
+            return NO;
+        }
 
         SGP_FlushActiveTopicFilter();
         return YES;

@@ -5,6 +5,7 @@
 #import "../libraries/SFPFilePicker/include/SFPFilePicker.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import "SNAlert.h"
+#import "SNInterfaceColors.h"
 
 /* SFPFilePicker is a non-PS UIViewController subclass, so iOS 4-5
  * PSRootController hits the same "unrecognized selector" crash on
@@ -121,8 +122,8 @@ typedef enum {
         UILabel *arrowLabel = [[[UILabel alloc] initWithFrame:CGRectMake(iconSize + spacing, 0, arrowWidth, iconSize)] autorelease];
         arrowLabel.text = @"➔";
         arrowLabel.font = [UIFont boldSystemFontOfSize:25.0f];
-        arrowLabel.textColor = [UIColor colorWithRed:0.55f green:0.55f blue:0.58f alpha:1.0f];
-        arrowLabel.shadowColor = [UIColor colorWithWhite:1.0f alpha:0.7f];
+        arrowLabel.textColor = SNTertiaryLabelColor([UIColor colorWithRed:0.55f green:0.55f blue:0.58f alpha:1.0f]);
+        arrowLabel.shadowColor = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.7f]);
         arrowLabel.shadowOffset = CGSizeMake(0, 1);
         arrowLabel.backgroundColor = [UIColor clearColor];
         arrowLabel.textAlignment = NSTextAlignmentCenter;
@@ -150,8 +151,8 @@ typedef enum {
         UILabel *titleLabel     = [[[UILabel alloc] init] autorelease];
         titleLabel.text         = @"Skyglow Notifications";
         titleLabel.font         = [UIFont boldSystemFontOfSize:17.0f];
-        titleLabel.textColor    = [UIColor colorWithRed:0.18f green:0.18f blue:0.18f alpha:1.0f];
-        titleLabel.shadowColor  = [UIColor colorWithWhite:1.0f alpha:0.7f];
+        titleLabel.textColor    = SNLabelColor([UIColor colorWithRed:0.18f green:0.18f blue:0.18f alpha:1.0f]);
+        titleLabel.shadowColor  = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.7f]);
         titleLabel.shadowOffset = CGSizeMake(0, 1);
         titleLabel.textAlignment     = NSTextAlignmentCenter;
         titleLabel.backgroundColor   = [UIColor clearColor];
@@ -163,8 +164,8 @@ typedef enum {
         UILabel *bodyLabel      = [[[UILabel alloc] init] autorelease];
         bodyLabel.text          = @"Enter your server address below, then select\nyour server\xe2\x80\x99s public certificate to get started.";
         bodyLabel.font          = [UIFont systemFontOfSize:13.0f];
-        bodyLabel.textColor     = [UIColor colorWithRed:0.38f green:0.38f blue:0.42f alpha:1.0f];
-        bodyLabel.shadowColor   = [UIColor colorWithWhite:1.0f alpha:0.6f];
+        bodyLabel.textColor     = SNSecondaryLabelColor([UIColor colorWithRed:0.38f green:0.38f blue:0.42f alpha:1.0f]);
+        bodyLabel.shadowColor   = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.6f]);
         bodyLabel.shadowOffset  = CGSizeMake(0, 1);
         bodyLabel.textAlignment    = NSTextAlignmentCenter;
         bodyLabel.backgroundColor  = [UIColor clearColor];
@@ -287,7 +288,7 @@ typedef enum {
         BOOL hasAddress = (self.pendingServerAddress.length > 0);
         BOOL canSelect  = hasAddress && !self.autoFetchInProgress && !self.profileSaveRequestInFlight;
         BOOL isSavingThisRow = self.profileSaveInFlight && self.profileSaveWizardRow == indexPath.row;
-        UIColor *enabledTint = [UIColor colorWithRed:0.05f green:0.42f blue:0.86f alpha:1.0f];
+        UIColor *enabledTint = SNSystemBlueColor([UIColor colorWithRed:0.05f green:0.42f blue:0.86f alpha:1.0f]);
 
         if (isAuto) {
             if (isSavingThisRow) {
@@ -324,7 +325,7 @@ typedef enum {
             }
         }
 
-        cell.textLabel.textColor = (canSelect || isSavingThisRow) ? enabledTint : [UIColor grayColor];
+        cell.textLabel.textColor = (canSelect || isSavingThisRow) ? enabledTint : SNSecondaryLabelColor([UIColor grayColor]);
         cell.selectionStyle      = canSelect ? UITableViewCellSelectionStyleBlue
                                              : UITableViewCellSelectionStyleNone;
         return cell;
@@ -338,8 +339,8 @@ typedef enum {
 
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
     cell.accessoryType  = UITableViewCellAccessoryNone;
-    cell.textLabel.textColor       = [UIColor blackColor];
-    cell.detailTextLabel.textColor = [UIColor grayColor];
+    cell.textLabel.textColor       = SNLabelColor([UIColor blackColor]);
+    cell.detailTextLabel.textColor = SNSecondaryLabelColor([UIColor grayColor]);
     cell.detailTextLabel.adjustsFontSizeToFitWidth = NO;
 
     UIView *oldTF = [cell.contentView viewWithTag:200];
@@ -363,7 +364,7 @@ typedef enum {
                 tf.clearButtonMode          = UITextFieldViewModeWhileEditing;
                 tf.delegate                 = self;
                 tf.font                     = [UIFont systemFontOfSize:15.0f];
-                tf.textColor                = [UIColor grayColor];
+                tf.textColor                = SNSecondaryLabelColor([UIColor grayColor]);
                 tf.textAlignment            = NSTextAlignmentRight;
                 tf.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
                 tf.autoresizingMask         = UIViewAutoresizingFlexibleWidth;
@@ -398,7 +399,9 @@ typedef enum {
         }
         case SectionActions: {
             cell.textLabel.text      = self.unregisterInFlight ? @"Unregistering\xe2\x80\xa6" : @"Unregister Device";
-            cell.textLabel.textColor = self.unregisterInFlight ? [UIColor grayColor] : [UIColor redColor];
+            cell.textLabel.textColor = self.unregisterInFlight
+                ? SNSecondaryLabelColor([UIColor grayColor])
+                : SNSystemRedColor([UIColor redColor]);
             cell.detailTextLabel.text = @"";
             if (self.unregisterInFlight) {
                 UIActivityIndicatorView *spin = [[UIActivityIndicatorView alloc]

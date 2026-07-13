@@ -14,6 +14,12 @@
 - (void)resetAppRegistrationForBundleID:(NSString *)bundleID
                              completion:(void (^)(SGControlError err,
                                                    NSString *detail))completion;
+
+@end
+
+
+@protocol SGNativePushPlatform <SGPlatform>
+
 - (void)listNativePushAppsWithCompletion:(void (^)(SGControlError err, NSData *listPayload))completion;
 - (void)registerNativePushAppForBundleID:(NSString *)bundleID
                               completion:(void (^)(SGControlError err,
