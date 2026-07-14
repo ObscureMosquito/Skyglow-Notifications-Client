@@ -19,7 +19,7 @@
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier specifier:(PSSpecifier *)specifier {
     self = [super initWithStyle:style reuseIdentifier:reuseIdentifier specifier:specifier];
     if (self) {
-        self.backgroundColor             = [UIColor clearColor];
+        self.backgroundColor = [UIColor clearColor];
         self.contentView.backgroundColor = [UIColor clearColor];
         UIView *emptyBG = [[UIView alloc] init];
         emptyBG.backgroundColor = [UIColor clearColor];
@@ -27,7 +27,7 @@
         [emptyBG release];
 
         self.contentView.clipsToBounds = NO;
-        self.clipsToBounds             = NO;
+        self.clipsToBounds = NO;
 
         SNLogViewController *lvc = [[SNLogViewController alloc] init];
         self.logViewController = lvc;

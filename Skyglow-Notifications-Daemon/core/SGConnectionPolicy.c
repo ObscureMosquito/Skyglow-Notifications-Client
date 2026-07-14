@@ -30,6 +30,7 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateRegistering,        SGStateIdleCircuitOpen      },
     { SGStateRegistering,        SGStateIdleNoNetwork        },
     { SGStateRegistering,        SGStateErrorVersionMismatch },
+    { SGStateRegistering,        SGStateErrorAuth            },
 
     { SGStateAuthenticating,     SGStateResolvingDNS         },
     { SGStateAuthenticating,     SGStateRegistering          },

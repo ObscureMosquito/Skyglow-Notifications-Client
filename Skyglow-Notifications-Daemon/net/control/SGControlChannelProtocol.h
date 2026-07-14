@@ -35,6 +35,7 @@ static inline BOOL SG_IsIdentifierStringSafe(NSString *str) {
 #define SG_CONTROL_MAX_EVENT_DATA_SIZE       1024
 #define SG_CONTROL_MAX_SERVER_ADDRESS_SIZE   256
 #define SG_CONTROL_MAX_PROFILE_PEM_SIZE      3584
+#define SG_CONTROL_MAX_REG_IDENTITY_PEM_SIZE 4088  /* keeps payload <= SG_CONTROL_MAX_PAYLOAD */
 #define SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC  5.0
 #define SG_CONTROL_DELETE_APP_TIMEOUT_SEC       12.0
 #define SG_CONTROL_SEND_TIMEOUT_MS              1000
@@ -62,7 +63,7 @@ typedef enum : uint8_t {
     SGCMSG_LIST_SKYGLOW_APPS   = 0x26,  /* (empty) -> SGCMSG_BUNDLE_ID_LIST */
     SGCMSG_REGISTER_NATIVE_PUSH_APP = 0x27,  /* SGCBundleIdPayload (broker: in-proc requestToken) */
     SGCMSG_AUTHORIZE_NATIVE_PUSH_APP = 0x28, /* SGCBundleIdPayload (broker: submit Apple prompt) */
-
+    SGCMSG_SET_REG_IDENTITY    = 0x29,  /* SGCRegIdentityPayload */
     SGCMSG_GENERIC_ACK         = 0x30,  /* (empty) */
     SGCMSG_TOKEN_RESPONSE      = 0x31,  /* SGCTokenResponsePayload */
     SGCMSG_ERROR_RESPONSE      = 0x32,  /* SGCErrorResponsePayload */
@@ -155,6 +156,15 @@ typedef struct {
     char     serverAddress[SG_CONTROL_MAX_SERVER_ADDRESS_SIZE];
     uint8_t  certificatePEM[SG_CONTROL_MAX_PROFILE_PEM_SIZE];
 } SGCProfileSavePayload;
+
+/* Operator-issued client cert + key (concatenated PEM) for cert-gated
+ * registration.  identityPEMLength 0 removes the profile's identity. */
+typedef struct {
+    uint8_t  profileIndex;
+    uint8_t  reserved;
+    uint16_t identityPEMLength;
+    uint8_t  identityPEM[SG_CONTROL_MAX_REG_IDENTITY_PEM_SIZE];
+} SGCRegIdentityPayload;
 
 /* Packed, variable-length: uint16 count, then per entry uint16 len + UTF-8 bytes
  * (NOT null-terminated). Iterate strictly by the encoded lengths. */

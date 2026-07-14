@@ -90,6 +90,15 @@ typedef void (^SNChannelBundleListCompletion)(BOOL ok, NSArray *bundleIds, NSStr
                 completion:(SNChannelCommandCompletion)completion;
 
 /**
+ * Stores or removes (nil) a profile's registration identity — the
+ * operator-issued client cert + key PEM required by servers that gate
+ * first-time registration.  Completion fires on the main queue.
+ */
++ (void)setRegistrationIdentityAtIndex:(NSInteger)profileIndex
+                           identityPEM:(NSString *)identityPEM
+                            completion:(SNChannelCommandCompletion)completion;
+
+/**
  * Asynchronously requests the list of bundles iOS considers push-registered
  * (third-party only).  The SB tweak handler returns the iOS-native push
  * registration table (apsd-style — apps that have been registered for push

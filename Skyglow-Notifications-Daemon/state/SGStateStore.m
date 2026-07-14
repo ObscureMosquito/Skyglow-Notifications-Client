@@ -22,6 +22,11 @@ static NSString *SGProfileCertificatePathForIndex(NSInteger profileIdx) {
             kSGProfileCertificateDirectory, (long)profileIdx];
 }
 
+static NSString *SGProfileRegIdentityPathForIndex(NSInteger profileIdx) {
+    return [NSString stringWithFormat:@"%@/profile%ld-reg-identity.pem",
+            kSGProfileCertificateDirectory, (long)profileIdx];
+}
+
 static NSString *SGProfilePlistPathForIndex(NSInteger profileIdx) {
     return SGPath([NSString stringWithFormat:
         SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
@@ -203,6 +208,37 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
     }
 }
 
+- (BOOL)setRegistrationIdentityAtIndex:(NSInteger)profileIdx
+                           identityPEM:(NSString *)identityPEM {
+    if (!SGProfileIndexIsValid(profileIdx)) return NO;
+
+    @synchronized(self) {
+        NSString *plistPath = SGProfilePlistPathForIndex(profileIdx);
+        if (![[NSFileManager defaultManager] fileExistsAtPath:plistPath]) return NO;
+
+        NSString *storedPath = SGProfileRegIdentityPathForIndex(profileIdx);
+        NSString *diskPath = SGPath(storedPath);
+
+        if ([identityPEM length] > 0) {
+            SGEnsureRuntimeDirectories();
+            NSData *pemData = [identityPEM dataUsingEncoding:NSUTF8StringEncoding];
+            /* 0600: the blob contains a private key. */
+            if (!SGAtomicWriteData(pemData, diskPath, 0600, NULL)) return NO;
+            return [self _updateProfileAtIndex:profileIdx
+                                      mutation:^(NSMutableDictionary *profile) {
+                [profile setObject:storedPath forKey:@"registration_identity"];
+            }];
+        }
+
+        BOOL persisted = [self _updateProfileAtIndex:profileIdx
+                                            mutation:^(NSMutableDictionary *profile) {
+            [profile removeObjectForKey:@"registration_identity"];
+        }];
+        if (persisted) unlink([diskPath fileSystemRepresentation]);
+        return persisted;
+    }
+}
+
 - (BOOL)removeProfileAtIndex:(NSInteger)profileIdx {
     if (!SGProfileIndexIsValid(profileIdx)) return NO;
     @synchronized(self) {
@@ -258,6 +294,10 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
 
         if (keySnapshot) {
             [keySnapshot resetBytesInRange:NSMakeRange(0, [keySnapshot length])];
+        }
+        if (ok) {
+            unlink([SGPath(SGProfileRegIdentityPathForIndex(profileIdx))
+                       fileSystemRepresentation]);
         }
         return ok;
     }

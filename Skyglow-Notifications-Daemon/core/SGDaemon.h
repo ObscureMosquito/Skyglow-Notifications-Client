@@ -120,6 +120,10 @@ typedef NS_ENUM(NSInteger, SGEvent) {
                     serverAddress:(NSString *)serverAddress
                     certificatePEM:(NSString *)certificatePEM;
 
+/* Stores or removes a profile's operator-issued registration identity */
+- (BOOL)performSetRegistrationIdentityAtIndex:(NSInteger)profileIdx
+                                  identityPEM:(NSString *)identityPEM;
+
 /**
  * Flips the global "enabled" switch.  The daemon owns the write of the
  * `enabled` key in main prefs (making it the sole writer of the keys it

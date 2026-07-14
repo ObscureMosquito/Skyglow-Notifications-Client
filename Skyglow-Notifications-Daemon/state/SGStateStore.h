@@ -37,6 +37,10 @@
             certificatePEM:(NSString *)certificatePEM
     invalidatedCredentials:(BOOL *)outInvalidatedCredentials;
 
+/* Stores or removes the slot's operator-issued registration identity and its profile-plist pointer */
+- (BOOL)setRegistrationIdentityAtIndex:(NSInteger)profileIdx
+                           identityPEM:(NSString *)identityPEM;
+
 /**
  * Removes the slot, keychain entry, certificate, and operational database
  * state as one serialized operation.

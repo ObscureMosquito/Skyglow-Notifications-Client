@@ -64,6 +64,8 @@ void SGEnsureRuntimeDirectories(void);
  * the backing store is zeroed on reload/dealloc so the key never lingers. */
 @property (nonatomic, readonly) NSData *privateKeyPEM;
 @property (nonatomic, readonly, copy) NSString *serverPubKeyPEM;
+/* Optional operator-issued client cert */
+@property (nonatomic, readonly, copy) NSString *registrationIdentityPEM;
 
 /**
  * 1-based index of the active profile (1–5).  Defaults to 1.

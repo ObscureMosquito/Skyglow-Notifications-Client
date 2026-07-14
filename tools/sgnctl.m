@@ -169,6 +169,33 @@ static int CmdSaveProfile(int idx, NSString *address, NSString *pemPath) {
         });
 }
 
+static int CmdRegIdentity(int idx, NSString *pemPath) {
+    if (idx < 1 || idx > 5) { fprintf(stderr, "sgnctl: profile index must be 1-5\n"); return 2; }
+
+    NSData *pem = nil;
+    if (pemPath) {
+        pem = [NSData dataWithContentsOfFile:pemPath];
+        if (!pem) { fprintf(stderr, "sgnctl: cannot read identity file %s\n", pemPath.UTF8String); return 1; }
+        if (pem.length > SG_CONTROL_MAX_REG_IDENTITY_PEM_SIZE) {
+            fprintf(stderr, "sgnctl: identity file too large (max %d bytes)\n", SG_CONTROL_MAX_REG_IDENTITY_PEM_SIZE);
+            return 2;
+        }
+    }
+
+    SGCRegIdentityPayload p; memset(&p, 0, sizeof(p));
+    p.profileIndex = (uint8_t)idx;
+    if (pem.length) {
+        p.identityPEMLength = (uint16_t)pem.length;
+        memcpy(p.identityPEM, pem.bytes, pem.length);
+    }
+    return Send(SGCMSG_SET_REG_IDENTITY, [NSData dataWithBytes:&p length:sizeof(p)],
+        ^(const SGControlChannelMessage *r) {
+            (void)r;
+            printf("%s registration identity for profile %d\n",
+                   pem.length ? "stored" : "removed", idx);
+        });
+}
+
 static int CmdProfiles(void) {
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:SGPath(SG_PREFS_PLIST_PATH)];
     NSInteger active = [[prefs objectForKey:@"activeProfile"] integerValue];
@@ -234,6 +261,7 @@ static void Usage(void) {
         "  reset-native <id>      remove Apple token and notification permission\n\n"
         "  profiles                       list configured profiles + active\n"
         "  save-profile <1-5> <addr> [pem] register a server (address + optional cert PEM)\n"
+        "  reg-identity <1-5> [pem]       store/remove the registration cert+key PEM (cert-gated registration)\n"
         "  set-profile <1-5>              switch the active profile\n"
         "  delete-profile <1-5>           delete a profile slot\n");
 }
@@ -261,6 +289,10 @@ int main(int argc, char **argv) {
         if ([cmd isEqualToString:@"save-profile"]) {
             if (argc < 4) { fprintf(stderr, "usage: sgnctl save-profile <1-5> <server-address> [server-cert.pem]\n"); return 2; }
             return CmdSaveProfile(arg.intValue, @(argv[3]), argc > 4 ? @(argv[4]) : nil);
+        }
+        if ([cmd isEqualToString:@"reg-identity"]) {
+            NEED_ARG();
+            return CmdRegIdentity(arg.intValue, argc > 3 ? @(argv[3]) : nil);
         }
         if ([cmd isEqualToString:@"set-profile"])     { NEED_ARG(); return CmdProfileIndex(SGCMSG_SET_ACTIVE_PROFILE, arg.intValue, "activated"); }
         if ([cmd isEqualToString:@"delete-profile"])  { NEED_ARG(); return CmdProfileIndex(SGCMSG_DELETE_PROFILE, arg.intValue, "deleted"); }

@@ -302,6 +302,47 @@ static void SendBundleCommandWithCompletion(uint8_t messageType, NSString *bundl
     }];
 }
 
++ (void)setRegistrationIdentityAtIndex:(NSInteger)profileIndex
+                           identityPEM:(NSString *)identityPEM
+                            completion:(SNChannelCommandCompletion)completion {
+    if (profileIndex < 1 || profileIndex > 5) {
+        if (completion) completion(NO, @"Invalid profile index.");
+        return;
+    }
+
+    NSData *pemData = [identityPEM dataUsingEncoding:NSUTF8StringEncoding];
+    if (pemData.length > SG_CONTROL_MAX_REG_IDENTITY_PEM_SIZE) {
+        if (completion) completion(NO, @"The selected identity file is too large.");
+        return;
+    }
+
+    SGCRegIdentityPayload payload;
+    memset(&payload, 0, sizeof(payload));
+    payload.profileIndex = (uint8_t)profileIndex;
+    payload.identityPEMLength = (uint16_t)[pemData length];
+    if ([pemData length] > 0) {
+        memcpy(payload.identityPEM, [pemData bytes], [pemData length]);
+    }
+
+    [DaemonClient() sendRequest:SGCMSG_SET_REG_IDENTITY
+                        payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
+                        timeout:0
+                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
+        BOOL ok = (err == SGCERR_OK);
+        NSString *message = nil;
+        if (!ok) {
+            if (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE) {
+                message = @"Could not communicate with the Skyglow daemon. Try again after restarting it.";
+            } else {
+                message = @"The daemon rejected the registration identity. It must be a PEM file containing the certificate and its private key.";
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(ok, message);
+        });
+    }];
+}
+
 + (void)subscribeToStatusUpdatesWithHandler:(void (^)(SGStatusPayload payload))handler {
     if (!handler) return;
     void (^handlerCopy)(SGStatusPayload) = [handler copy];

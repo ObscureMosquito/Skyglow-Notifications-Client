@@ -58,6 +58,8 @@ typedef enum {
 @property (nonatomic, strong) SNDeferredActivity *profileSaveActivity;
 @property (nonatomic, unsafe_unretained) UITextField *serverAddressField;
 @property (nonatomic, unsafe_unretained) UITextField *registeredAddressField;
+@property (nonatomic, assign) BOOL         importingRegIdentity;
+@property (nonatomic, assign) BOOL         regIdentitySaveInFlight;
 
 @end
 
@@ -88,6 +90,7 @@ typedef enum {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    self.importingRegIdentity = NO;
     BOOL busy = self.profileSaveRequestInFlight || self.unregisterRequestInFlight;
     [self.navigationItem setHidesBackButton:busy animated:NO];
     [self _updateTableHeaderView];
@@ -207,10 +210,17 @@ typedef enum {
     }
     switch (section) {
         case SectionServer:  return 3;
-        case SectionDevice:  return 1;
+        case SectionDevice:  return [self _deviceIsRegistered] ? 1 : 2;
         case SectionActions: return 1;
         default: return 0;
     }
+}
+
+/* Profile exists but no device address yet — the state where cert-gated
+ * registration may need an operator identity. */
+- (BOOL)_deviceIsRegistered {
+    NSDictionary *profile = [[SNDataManager shared] profileForIndex:self.profileIndex];
+    return [[profile objectForKey:@"device_address"] length] > 0;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -238,6 +248,8 @@ typedef enum {
             default: return nil;
         }
     }
+    if (section == SectionDevice && ![self _deviceIsRegistered])
+        return @"If your server restricts who can register, import the registration certificate (.pem with certificate and key) issued by its operator.";
     if (section == SectionActions)
         return @"Unregistering disables the daemon and deletes your cryptographic keys. App toggles are preserved.";
     return nil;
@@ -391,10 +403,22 @@ typedef enum {
             break;
         }
         case SectionDevice: {
-            cell.textLabel.text = @"Device ID";
-            cell.detailTextLabel.text = [prof objectForKey:@"device_address"] ?: @"None";
-            cell.detailTextLabel.adjustsFontSizeToFitWidth = YES;
-            cell.detailTextLabel.minimumFontSize = 8.0f;
+            if (indexPath.row == 0) {
+                cell.textLabel.text = @"Device ID";
+                cell.detailTextLabel.text = [prof objectForKey:@"device_address"] ?: @"None";
+                cell.detailTextLabel.adjustsFontSizeToFitWidth = YES;
+                cell.detailTextLabel.minimumFontSize = 8.0f;
+            } else {
+                cell.textLabel.text = @"Registration Cert";
+                if (self.regIdentitySaveInFlight) {
+                    cell.detailTextLabel.text = @"Importing\xe2\x80\xa6";
+                } else {
+                    cell.detailTextLabel.text =
+                        [prof objectForKey:@"registration_identity"] ? @"Imported" : @"None";
+                    cell.accessoryType  = UITableViewCellAccessoryDisclosureIndicator;
+                    cell.selectionStyle = UITableViewCellSelectionStyleBlue;
+                }
+            }
             break;
         }
         case SectionActions: {
@@ -450,6 +474,24 @@ typedef enum {
         return;
     }
 
+    if (indexPath.section == SectionDevice && indexPath.row == 1 &&
+        ![self _deviceIsRegistered] && !self.regIdentitySaveInFlight) {
+        [self.view endEditing:YES];
+        self.importingRegIdentity = YES;
+
+        SFPFilePickerFilter *filter = [[SFPFilePickerFilter alloc] init];
+        filter.allowedExtensions = @[@"pem"];
+        SFPFilePickerViewController *picker =
+            [[SFPFilePickerViewController alloc] initWithPath:nil
+                                                       filter:filter
+                                                     delegate:self];
+        picker.showsCancelButton = NO;
+        [self.navigationController pushViewController:picker animated:YES];
+        [picker release];
+        [filter release];
+        return;
+    }
+
     if (indexPath.section == SectionActions && indexPath.row == 0) {
         [self _showUnregisterConfirmation];
     }
@@ -497,6 +539,23 @@ typedef enum {
 }
 
 - (void)filePicker:(SFPFilePickerViewController *)picker didSelectFileAtPath:(NSString *)path {
+    if (self.importingRegIdentity) {
+        self.importingRegIdentity = NO;
+        NSString *capturedPath = [[path copy] autorelease];
+        [SNAlert presentTitle:@"Confirm Registration Cert"
+                      message:[NSString stringWithFormat:
+                               @"Import \"%@\" as this profile's registration certificate?",
+                               [path lastPathComponent]]
+                 cancelButton:@"Cancel"
+                confirmButton:@"Import"
+                  destructive:NO
+                         from:picker
+                    onConfirm:^{
+            [self _importRegistrationIdentityFromPath:capturedPath];
+        }];
+        return;
+    }
+
     NSString *filename  = [path lastPathComponent];
     NSString *message   = [NSString stringWithFormat:
                            @"Import \"%@\" as the server certificate for %@?",
@@ -513,6 +572,46 @@ typedef enum {
                 onConfirm:^{
         [self _confirmImportFromPath:capturedPath serverAddress:capturedAddress];
     }];
+}
+
+- (void)_importRegistrationIdentityFromPath:(NSString *)path {
+    if (self.regIdentitySaveInFlight) return;
+    self.regIdentitySaveInFlight = YES;
+
+    if (self.navigationController.topViewController != self) {
+        [self.navigationController popToViewController:self animated:YES];
+    }
+    [self.tableView reloadData];
+
+    NSString *pathCopy = [[path copy] autorelease];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+        NSString *pem = [[NSString alloc] initWithContentsOfFile:pathCopy
+                                                        encoding:NSUTF8StringEncoding
+                                                           error:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if ([pem length] == 0) {
+                self.regIdentitySaveInFlight = NO;
+                [self.tableView reloadData];
+                [SNAlert presentMessage:@"Could not read the selected .pem file."
+                                  title:@"Import Failed"
+                                   from:self];
+                [pem release];
+                return;
+            }
+            [SNChannelGateway setRegistrationIdentityAtIndex:self.profileIndex
+                                                 identityPEM:pem
+                                                  completion:^(BOOL ok, NSString *message) {
+                self.regIdentitySaveInFlight = NO;
+                [self.tableView reloadData];
+                if (!ok) {
+                    [SNAlert presentMessage:message title:@"Import Failed" from:self];
+                }
+            }];
+            [pem release];
+        });
+        [pool drain];
+    });
 }
 
 - (void)_beginAutoFetchCertificate {

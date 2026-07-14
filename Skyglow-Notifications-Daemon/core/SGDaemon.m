@@ -50,6 +50,17 @@ static BOOL SGCertificatePEMLooksValid(NSString *pem) {
     return YES;
 }
 
+static BOOL SGRegistrationIdentityPEMLooksValid(NSString *pem) {
+    if (!SGCertificatePEMLooksValid(pem)) return NO;
+    BIO *bio = BIO_new_mem_buf((void *)[pem UTF8String], (int)[pem lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
+    if (!bio) return NO;
+    EVP_PKEY *key = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    if (!key) return NO;
+    EVP_PKEY_free(key);
+    return YES;
+}
+
 static BOOL isValidPort(NSString *port) {
     if (!port || [port length] == 0) return NO;
     NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
@@ -393,11 +404,17 @@ static BOOL isValidPort(NSString *port) {
                 strlcpy(_lastErrorDetail, "Registration succeeded but key could not be stored", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
             } else if (event == SGEventRegistrationRejected) {
-                NSString *reason = [payload isKindOfClass:[NSString class]] ? (NSString *)payload : nil;
+                NSDictionary *info = [payload isKindOfClass:[NSDictionary class]] ? (NSDictionary *)payload : nil;
+                NSString *reason = [info objectForKey:@"reason"];
+                uint8_t code = (uint8_t)[[info objectForKey:@"code"] unsignedCharValue];
                 snprintf(_lastErrorDetail, sizeof(_lastErrorDetail),
-                         "Server rejected registration: %s",
+                         "Registration Failed: %s",
                          reason ? [reason UTF8String] : "unknown reason");
-                [self executeFailureBackoff];
+                if (code == 0x05) {
+                    [self executeTransitionToState:SGStateErrorAuth backoff:0 ip:NULL];
+                } else {
+                    [self executeFailureBackoff];
+                }
             } else if (event == SGEventDisconnected) {
                 strlcpy(_lastErrorDetail, "Disconnected during registration", sizeof(_lastErrorDetail));
                 [self executeFailureBackoff];
@@ -690,7 +707,10 @@ static BOOL isValidPort(NSString *port) {
     const char *reasonUTF8 = [reason UTF8String];
     SGLOGE(SGDaemon, "code=%s server_code=%u reason=%s action=backoff",
            SGND_REGISTRATION_SERVER_REJECTED, (unsigned)code, reasonUTF8 ? reasonUTF8 : "unknown");
-    [self handleEvent:SGEventRegistrationRejected payload:reason];
+    NSDictionary *info = [NSDictionary dictionaryWithObjectsAndKeys:
+        [NSNumber numberWithUnsignedChar:code], @"code",
+        reason ?: @"Unknown", @"reason", nil];
+    [self handleEvent:SGEventRegistrationRejected payload:info];
 }
 
 - (void)protocolDidCompleteRegistrationWithAddress:(NSString *)deviceAddress privateKey:(char *)pemKey serverVersion:(uint32_t)serverVersion {
@@ -884,6 +904,26 @@ static BOOL isValidPort(NSString *port) {
     }
 
     [_stateStore drainDurableEventInbox];
+    return YES;
+}
+
+- (BOOL)performSetRegistrationIdentityAtIndex:(NSInteger)profileIdx
+                                  identityPEM:(NSString *)identityPEM {
+    if (profileIdx < 1 || profileIdx > 5) return NO;
+
+    BOOL hasIdentity = ([identityPEM length] > 0);
+    if (hasIdentity && !SGRegistrationIdentityPEMLooksValid(identityPEM)) return NO;
+
+    if (![_stateStore setRegistrationIdentityAtIndex:profileIdx
+                                         identityPEM:(hasIdentity ? identityPEM : nil)]) {
+        return NO;
+    }
+
+    if ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx) {
+        [[SGConfiguration sharedConfiguration] reloadFromDisk];
+
+        [self handleEvent:SGEventConfigReloaded payload:nil];
+    }
     return YES;
 }
 
@@ -1169,6 +1209,11 @@ static BOOL isValidPort(NSString *port) {
     NSString *certCopy = [cert copy];
     int port = [portStr intValue];
 
+    NSString *regIdentityCopy = nil;
+    if ([[[SGConfiguration sharedConfiguration] deviceAddress] length] == 0) {
+        regIdentityCopy = [[[SGConfiguration sharedConfiguration] registrationIdentityPEM] copy];
+    }
+
     dispatch_async(_connectionQueue, ^{
         @autoreleasepool {
             [self->_stateLock lock];
@@ -1178,9 +1223,12 @@ static BOOL isValidPort(NSString *port) {
             if (isStale) {
                 [ipCopy release];
                 [certCopy release];
+                [regIdentityCopy release];
                 return;
             }
 
+            SGP_SetRegistrationIdentity(regIdentityCopy);
+            [regIdentityCopy release];
             int rc = SGP_ConnectToServer([ipCopy UTF8String], port, certCopy);
             [certCopy release];
 

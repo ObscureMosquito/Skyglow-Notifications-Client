@@ -71,6 +71,7 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
     NSString *_deviceAddress;
     NSMutableData *_privateKeyPEM;
     NSString *_serverPubKeyPEM;
+    NSString *_registrationIdentityPEM;
     NSInteger _activeProfileIndex;
     NSInteger _logLevel;
 
@@ -114,6 +115,7 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
     NSString *nextDeviceAddress = nil;
     NSMutableData *nextPrivateKeyPEM = nil;
     NSString *nextServerPubKeyPEM = nil;
+    NSString *nextRegistrationIdentityPEM = nil;
 
     NSString *profilePath = SGPath([NSString stringWithFormat:
         SG_PROFILE_PLIST_FORMAT, (long)nextActiveProfileIndex]);
@@ -124,6 +126,7 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
         nextDeviceAddress = [profilePrefs[@"device_address"] copy];
         nextPrivateKeyPEM = [SGKeychain_FetchPrivateKeyPEM(nextActiveProfileIndex) mutableCopy];
         nextServerPubKeyPEM = [[self readKeyFromFile:profilePrefs[@"server_pub_key"]] copy];
+        nextRegistrationIdentityPEM = [[self readKeyFromFile:profilePrefs[@"registration_identity"]] copy];
     }
 
     dispatch_barrier_sync(_isolationQueue, ^{
@@ -140,6 +143,8 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
         self->_privateKeyPEM = nextPrivateKeyPEM;
         [self->_serverPubKeyPEM release];
         self->_serverPubKeyPEM = nextServerPubKeyPEM;
+        [self->_registrationIdentityPEM release];
+        self->_registrationIdentityPEM = nextRegistrationIdentityPEM;
 
         [self->_serverIPAddress release];
         self->_serverIPAddress = nil;
@@ -216,6 +221,7 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
     [_deviceAddress release];
     SG_ZeroAndReleaseData(_privateKeyPEM);
     [_serverPubKeyPEM release];
+    [_registrationIdentityPEM release];
     if (_isolationQueue) dispatch_release(_isolationQueue);
     [super dealloc];
 }
@@ -300,6 +306,14 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
     __block NSString *result = nil;
     dispatch_sync(_isolationQueue, ^{
         result = [self->_serverPubKeyPEM retain];
+    });
+    return [result autorelease];
+}
+
+- (NSString *)registrationIdentityPEM {
+    __block NSString *result = nil;
+    dispatch_sync(_isolationQueue, ^{
+        result = [self->_registrationIdentityPEM retain];
     });
     return [result autorelease];
 }

@@ -73,6 +73,51 @@ static void SGP_ClearPendingRegistrationKeypair(void) {
     pthread_mutex_unlock(&_regKeyLock);
 }
 
+static char  *_regIdentityPEM = NULL;
+static size_t _regIdentityPEMLen = 0;
+
+void SGP_SetRegistrationIdentity(NSString *identityPEM) {
+    if (_regIdentityPEM) {
+        SGP_ZeroAndFreeKeyMaterial(_regIdentityPEM, _regIdentityPEMLen);
+        _regIdentityPEM = NULL;
+        _regIdentityPEMLen = 0;
+    }
+    const char *utf8 = [identityPEM UTF8String];
+    if (utf8 && utf8[0]) {
+        _regIdentityPEMLen = strlen(utf8);
+        _regIdentityPEM = malloc(_regIdentityPEMLen + 1);
+        if (_regIdentityPEM) memcpy(_regIdentityPEM, utf8, _regIdentityPEMLen + 1);
+        else _regIdentityPEMLen = 0;
+    }
+}
+
+static BOOL SGP_LoadRegistrationIdentity(SSL_CTX *ctx) {
+    BIO *b = BIO_new_mem_buf(_regIdentityPEM, (int)_regIdentityPEMLen);
+    if (!b) return NO;
+    X509 *leaf = PEM_read_bio_X509(b, NULL, 0, NULL);
+    if (!leaf || SSL_CTX_use_certificate(ctx, leaf) != 1) {
+        if (leaf) X509_free(leaf);
+        BIO_free(b);
+        return NO;
+    }
+    X509_free(leaf);
+    X509 *chain;
+    while ((chain = PEM_read_bio_X509(b, NULL, 0, NULL)) != NULL) {
+        if (SSL_CTX_add_extra_chain_cert(ctx, chain) != 1) { X509_free(chain); break; }
+    }
+    ERR_clear_error();
+    BIO_free(b);
+
+    b = BIO_new_mem_buf(_regIdentityPEM, (int)_regIdentityPEMLen);
+    if (!b) return NO;
+    EVP_PKEY *key = PEM_read_bio_PrivateKey(b, NULL, 0, NULL);
+    BIO_free(b);
+    if (!key) return NO;
+    int ok = (SSL_CTX_use_PrivateKey(ctx, key) == 1 && SSL_CTX_check_private_key(ctx) == 1);
+    EVP_PKEY_free(key);
+    return ok ? YES : NO;
+}
+
 typedef enum {
     SGPProtoPreHello       = 0,
     SGPProtoHelloReceived  = 1,
@@ -155,6 +200,7 @@ const char *SGP_ConnectErrorName(int code) {
         case -8: return "SGP_CONNECT_PINNED_CERT_INVALID";
         case -9: return "SGP_CONNECT_NO_PEER_CERT";
         case -10: return "SGP_CONNECT_PIN_MISMATCH";
+        case -11: return "SGP_CONNECT_REG_IDENTITY_INVALID";
         default: return "SGP_CONNECT_UNKNOWN";
     }
 }
@@ -484,6 +530,12 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     if (!_sslctx) return -6;
     SSL_CTX_set_options(_sslctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
     SSL_CTX_set_verify(_sslctx, SSL_VERIFY_NONE, NULL);
+
+    if (_regIdentityPEM && !SGP_LoadRegistrationIdentity(_sslctx)) {
+        SGLOGE(SGP, "code=%s result=failed reason=registration_identity_invalid", SGND_PROTOCOL_CONNECT_CERT_FAILED);
+        SGP_DisconnectFromServer();
+        return -11;
+    }
 
     _sock = socket(addressFamily, SOCK_STREAM, 0);
     if (_sock < 0) { SGP_DisconnectFromServer(); return -1; }
@@ -954,7 +1006,11 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             break;
         }
         case SGP_S_REGISTER_FAIL: {
-            if (!_regPendingRSA || _phase != SGPProtoAuthWait) {
+            /* The server may reject C_REGISTER immediately (cert gate, clock,
+             * bad key) while we still await S_CHALLENGE, or after the
+             * challenge round — both phases are solicited. */
+            if (!_regPendingRSA ||
+                (_phase != SGPProtoAuthWait && _phase != SGPProtoChallengeWait)) {
                 SGLOGW(SGP, "code=%s type=S_REGISTER_FAIL phase=%d hasRegister=%d result=unsolicited",
                        SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase, _regPendingRSA != NULL);
                 result = SGP_ERR_PROTO;

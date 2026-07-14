@@ -4,6 +4,7 @@
 
 @interface SNLogViewController ()
 @property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, strong) UIImageView *glossOverlay;
 @property (nonatomic, assign) SGState lastKnownState;
 @property (nonatomic, strong) CAGradientLayer *gradientLayer;
 @property (nonatomic, copy)   NSString *currentErrorDetail;
@@ -12,9 +13,6 @@
 
 @implementation SNLogViewController
 
-/* iOS 4-5 PSRootController calls these on every pushed VC during the
- * back-pop sequence, even on plain UIViewControllers.  Crashes with
- * "unrecognized selector" otherwise. */
 - (void)setRootController:(id)controller   {}
 - (void)setParentController:(id)controller {}
 - (void)setSpecifier:(id)specifier         {}
@@ -51,13 +49,16 @@
     UIImageView *overlay = [[UIImageView alloc]
         initWithImage:[UIImage imageWithContentsOfFile:
                         [bundle pathForResource:@"Gloss" ofType:@"png"]]];
-    overlay.frame             = self.statusLabel.bounds;
-    overlay.autoresizingMask  = UIViewAutoresizingFlexibleWidth |
-                                UIViewAutoresizingFlexibleHeight;
-    overlay.contentMode       = UIViewContentModeScaleToFill;
-    overlay.userInteractionEnabled = NO;
-    overlay.alpha = 0.4;
-    [self.statusLabel addSubview:overlay];
+    self.glossOverlay = overlay;
+    self.glossOverlay.frame = CGRectMake(0.0f, -2.0f,
+                                         self.statusLabel.bounds.size.width,
+                                         self.statusLabel.bounds.size.height + 4.0f);
+    self.glossOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                         UIViewAutoresizingFlexibleHeight;
+    self.glossOverlay.contentMode  = UIViewContentModeScaleToFill;
+    self.glossOverlay.userInteractionEnabled = NO;
+    self.glossOverlay.alpha = 0.4;
+    [self.statusLabel addSubview:self.glossOverlay];
 
     [overlay release];
 
@@ -85,6 +86,47 @@
     }
     self.statusLabel.frame = self.view.bounds;
     self.gradientLayer.frame = self.statusLabel.bounds;
+    if (self.glossOverlay) {
+        self.glossOverlay.frame = CGRectMake(0.0f, -2.0f,
+                                             self.statusLabel.bounds.size.width,
+                                             self.statusLabel.bounds.size.height + 4.0f);
+    }
+}
+
+- (void)_applyStatusText:(NSString *)text {
+    if (!self.statusLabel) {
+        return;
+    }
+
+    if (text.length == 0) {
+        self.statusLabel.text = @"";
+        self.statusLabel.attributedText = nil;
+        return;
+    }
+
+    CGSize constrainedSize = CGSizeMake(self.statusLabel.bounds.size.width, CGFLOAT_MAX);
+    CGRect textRect = [text boundingRectWithSize:constrainedSize
+                                         options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                      attributes:@{NSFontAttributeName: self.statusLabel.font}
+                                         context:nil];
+    CGFloat singleLineHeight = [@"A" sizeWithFont:self.statusLabel.font].height;
+    BOOL requiresExtraSpacing = (textRect.size.height > singleLineHeight * 1.15f);
+
+    if (requiresExtraSpacing) {
+        NSMutableParagraphStyle *paragraphStyle = [[[NSMutableParagraphStyle alloc] init] autorelease];
+        paragraphStyle.alignment = NSTextAlignmentCenter;
+        paragraphStyle.lineBreakMode = NSLineBreakByWordWrapping;
+        paragraphStyle.lineSpacing = 5.0f;
+
+        NSDictionary *attributes = @{NSFontAttributeName: self.statusLabel.font,
+                                     NSForegroundColorAttributeName: self.statusLabel.textColor,
+                                     NSParagraphStyleAttributeName: paragraphStyle};
+        self.statusLabel.attributedText = [[[NSAttributedString alloc] initWithString:text
+                                                                                 attributes:attributes] autorelease];
+    } else {
+        self.statusLabel.attributedText = nil;
+        self.statusLabel.text = text;
+    }
 }
 
 - (void)viewDidUnload {
@@ -106,6 +148,7 @@
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 
     [_statusLabel release];
+    [_glossOverlay release];
     [_gradientLayer release];
     [_currentErrorDetail release];
     [_currentRecoverySuggestion release];
@@ -158,7 +201,7 @@
     NSString *capturedText = labelText;
     void (^updateBlock)(void) = ^{
         self.statusLabel.backgroundColor = [bgColor colorWithAlphaComponent:0.9];
-        self.statusLabel.text = capturedText;
+        [self _applyStatusText:capturedText];
     };
 
     if (animate) {

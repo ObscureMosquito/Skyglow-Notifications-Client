@@ -5,11 +5,6 @@
 #import "SGSharedConstants.h"
 #include <sys/stat.h>
 
-/**
- * The log file path mirrors the daemon's choice in main.m via SG_LOG_PATH
- * and is resolved through the same rootless-aware probe used elsewhere in
- * the bundle.  A missing file simply renders as the empty-state message.
- */
 static NSString *SNLogTailPath(void) {
     static NSString *cached = nil;
     if (!cached) {
@@ -19,16 +14,8 @@ static NSString *SNLogTailPath(void) {
     return cached;
 }
 
-/**
- * Tail window — large enough for diagnostic context, small enough that a
- * full re-render is bounded even on the rare ticks that hit the slow path.
- */
 static const NSUInteger kSNLogTailWindowBytes = 64 * 1024;
-
-/** Poll cadence. */
 static const NSTimeInterval kSNLogTailRefreshSeconds = 1.0;
-
-/** Steady-state heights. */
 static const CGFloat kSNLogHeaderTopPad      = 10.0f;
 static const CGFloat kSNLogHeaderBottomPad   = 10.0f;
 static const CGFloat kSNLogSegmentHeight     = 32.0f;
@@ -96,9 +83,6 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
 
 @implementation SNLogTailViewController
 
-/* iOS 4-5 PSRootController calls these on every pushed VC during the
- * back-pop sequence, even on plain UIViewControllers.  Crashes with
- * "unrecognized selector" otherwise. */
 - (void)setRootController:(id)controller   {}
 - (void)setParentController:(id)controller {}
 - (void)setSpecifier:(id)specifier         {}
@@ -128,48 +112,25 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
     [self buildTextView];
     [self buildNavItems];
 
-    /**
-     * The log cell is the only row and lives inside its standard grouped
-     * background.  Separator lines would draw across the otherwise-blank
-     * cell, so they are disabled.
-     */
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
-
-    /**
-     * Disable scrolling on the outer UITableView entirely.  Its content
-     * always fits exactly (header + one cell + footer, sized in
-     * heightForRowAtIndexPath:), so the only legitimate scroll target is
-     * the UITextView inside the cell.  Leaving the table scrollable made
-     * touches near the cell edges race between the two scroll views.
-     */
     self.tableView.scrollEnabled = NO;
     self.tableView.alwaysBounceHorizontal = NO;
     self.tableView.alwaysBounceVertical   = NO;
     self.tableView.showsHorizontalScrollIndicator = NO;
     self.tableView.showsVerticalScrollIndicator   = NO;
 
-    /* Initial placeholder so the view never appears blank before the
-     * first read completes in viewDidAppear:. */
     [self setPlaceholderText:@"Loading log…"];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     self.userScrolledAway = NO;
-    /* Footer text is cheap; safe to compute now so the chrome looks ready
-     * even before the first read lands. */
     [self updateFooterStatus];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    /**
-     * The first read + parse + text assignment is the slowest single
-     * operation in this VC's lifetime. Doing it in viewWillAppear: blocked
-     * the navigation push animation, which the user perceived as "load
-     * lag".  Deferring to viewDidAppear: lets the push complete cleanly;
-     * the placeholder set in viewDidLoad covers the visible gap.
-     */
+
     if (!self.refreshTimer) {
         [self refreshLogs];
         [self startTimerIfNeeded];
@@ -270,12 +231,6 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
 }
 
 - (void)buildTableFooter {
-    /**
-     * Custom footer view so we can update the status text in place at 1Hz
-     * without calling reloadSections: (which rebuilds the cell, blows the
-     * scroll position on the text view, and accounts for most of the
-     * scrolling lag in the previous version).
-     */
     CGFloat width = self.view.bounds.size.width > 10.0f
                   ? self.view.bounds.size.width
                   : 320.0f;
@@ -320,13 +275,6 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
                        ?: [UIFont fontWithName:@"Courier" size:10.5f]
                        ?: [UIFont systemFontOfSize:10.5f];
 
-    /**
-     * Clear background so the cell's own (already-rounded) background view
-     * shows through — that fixes the cosmetic "corner clip" issue.  The
-     * text floats above whatever the grouped cell paints, instead of
-     * painting its own white rectangle that ignores the cell's corner
-     * radius.
-     */
     self.textView.backgroundColor = [UIColor clearColor];
 
     UIEdgeInsets inset = UIEdgeInsetsMake(8, 6, 8, 6);
@@ -359,8 +307,6 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
     self.pauseItem = pause;
     [pause release];
 
-    /* rightBarButtonItems: (plural, takes an array) is iOS 5+.  On iOS 4
-     * the action sheet also exposes Pause/Resume, so one item is enough. */
     if ([self.navigationItem respondsToSelector:@selector(setRightBarButtonItems:)]) {
         self.navigationItem.rightBarButtonItems = @[self.pasteboardItem, self.pauseItem];
     } else {
@@ -372,8 +318,7 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
 
 - (void)startTimerIfNeeded {
     if (self.refreshTimer || self.paused) return;
-    /* NSRunLoopCommonModes keeps refreshes ticking during table-scroll
-     * tracking; the default mode pauses the timer while the user drags. */
+
     self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:kSNLogTailRefreshSeconds
                                                          target:self
                                                        selector:@selector(refreshLogs)
@@ -398,11 +343,6 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    /**
-     * Fill remaining vertical space.  Header/footer heights are known
-     * statics; everything else (nav bar, status bar) is already excluded
-     * from tableView.bounds.height by UIKit.
-     */
     CGFloat total = tableView.bounds.size.height;
     CGFloat header = kSNLogHeaderTopPad
                    + kSNLogSegmentHeight * 3.0f
@@ -457,9 +397,7 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
 }
 
 - (void)invalidateRenderedLogAndRefresh {
-    self.userScrolledAway = NO;   /* new filter → resume auto-follow */
-    /* Filter change invalidates the cached render even if the file hasn't
-     * moved — force the next refreshLogs through the slow path. */
+    self.userScrolledAway = NO;
     self.cachedFilterLevel = -1;
     [self refreshLogs];
     [self updateFooterStatus];
@@ -720,8 +658,6 @@ passesFiltersAllowingUnstructured:(BOOL)allowUnstructured {
     NSFileHandle *fh = [NSFileHandle fileHandleForReadingAtPath:path];
     if (!fh) return nil;
 
-    /* Seek by stat'd size — we've already stat'd in refreshLogs but a
-     * second call is cheap and saves passing the off_t around. */
     struct stat st;
     if (stat([path fileSystemRepresentation], &st) != 0) {
         [fh closeFile];
@@ -753,11 +689,6 @@ passesFiltersAllowingUnstructured:(BOOL)allowUnstructured {
     return raw;
 }
 
-/**
- * Strip the date and process-name prefix to keep the column tight.
- * Input  shape: "YYYY-MM-DD HH:MM:SS.mmm PROC[PID] L [TAG] body"
- * Output shape: "HH:MM:SS.mmm L [TAG] body"
- */
 static BOOL SNLogParseLine(NSString *line, NSString **outTrimmed, unichar *outLevel) {
     NSRange firstSpace = [line rangeOfString:@" "];
     if (firstSpace.location == NSNotFound || line.length <= firstSpace.location + 1) {
@@ -921,12 +852,6 @@ passesFiltersAllowingUnstructured:NO]) {
 - (void)refreshLogs {
     NSString *path = SNLogTailPath();
 
-    /**
-     * Fast path: stat the file and bail if neither size nor mtime nor the
-     * active filter has changed since the last render.  This makes the
-     * steady-state cost of a tick a single stat() syscall — no allocs, no
-     * UI work, no scroll position perturbation.  That fixes the scroll lag.
-     */
     struct stat st;
     if (stat([path fileSystemRepresentation], &st) != 0) {
         if (self.cachedSize != 0 || self.rawTailContent.length != 0) {
@@ -1016,8 +941,6 @@ passesFiltersAllowingUnstructured:NO]) {
                 (unsigned long)self.lastVisibleLineCount, pluralUnit, state];
     }
 
-    /* In-place label mutation — no table reload, no flicker, no scroll
-     * perturbation, no cell rebuild.  This was the second big lag source. */
     self.footerLabel.text = text;
 }
 

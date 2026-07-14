@@ -157,6 +157,50 @@
     [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                       SGControlReplyBlock reply,
                                       SGControlReplyErrorBlock replyError) {
+        if (req->payloadLength < sizeof(SGCRegIdentityPayload)) {
+            replyError(SGCERR_INVALID_REQUEST, @"reg-identity payload too short");
+            return;
+        }
+        SGCRegIdentityPayload *p = (SGCRegIdentityPayload *)req->payload;
+        NSInteger idx = p->profileIndex;
+        if (idx < 1 || idx > 5 ||
+            p->identityPEMLength > SG_CONTROL_MAX_REG_IDENTITY_PEM_SIZE) {
+            replyError(SGCERR_INVALID_REQUEST, @"reg-identity payload invalid");
+            return;
+        }
+
+        NSString *pem = nil;
+        if (p->identityPEMLength > 0) {
+            pem = [[NSString alloc] initWithBytes:p->identityPEM
+                                           length:p->identityPEMLength
+                                         encoding:NSUTF8StringEncoding];
+            if ([pem length] == 0) {
+                [pem release];
+                replyError(SGCERR_INVALID_REQUEST, @"reg-identity payload strings invalid");
+                return;
+            }
+        }
+
+        SGControlReplyBlock      replyCopy      = [reply copy];
+        SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
+        NSString *pemCopy = [pem copy];
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            @autoreleasepool {
+                BOOL ok = [daemon performSetRegistrationIdentityAtIndex:idx
+                                                            identityPEM:pemCopy];
+                if (ok) replyCopy(SGCMSG_GENERIC_ACK, nil);
+                else    replyErrorCopy(SGCERR_INTERNAL, @"reg-identity update failed");
+            }
+            [pemCopy release];
+            [replyCopy release];
+            [replyErrorCopy release];
+        });
+        [pem release];
+    } forMessageType:SGCMSG_SET_REG_IDENTITY];
+
+    [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                      SGControlReplyBlock reply,
+                                      SGControlReplyErrorBlock replyError) {
         if (req->payloadLength < sizeof(SGCProfileIndexPayload)) {
             replyError(SGCERR_INVALID_REQUEST, @"delete-profile payload too short");
             return;

@@ -199,6 +199,9 @@ void SGP_AbortConnection(void);
  */
 int  SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert);
 
+/* Client identity presented during the TLS handshake */
+void SGP_SetRegistrationIdentity(NSString *identityPEM);
+
 /**
  * Gracefully tears down the SSL session and frees all connection resources.
  */
