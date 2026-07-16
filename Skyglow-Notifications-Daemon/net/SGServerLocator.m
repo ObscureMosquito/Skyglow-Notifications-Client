@@ -4,8 +4,13 @@
 #import "SGLog.h"
 #include <dns_sd.h>
 #include <arpa/inet.h>
+#include <stdatomic.h>
+#include <math.h>
 
-#define DNS_CACHE_MAX_AGE_SECONDS 3600.0
+#define DNS_CACHE_FRESH_SECONDS 3600.0
+#define DNS_CACHE_ANY_AGE       INFINITY
+
+static atomic_bool _refreshInFlight = ATOMIC_VAR_INIT(false);
 
 
 static BOOL SG_DNSEndpointValid(NSString *ip, NSString *port) {
@@ -28,14 +33,47 @@ static BOOL SG_DNSEndpointValid(NSString *ip, NSString *port) {
 
 @implementation SGServerLocator
 
+static NSString *SG_DNSNameForServerAddress(NSString *serverAddress) {
+    return [serverAddress hasPrefix:@"_sgn."]
+        ? serverAddress
+        : [NSString stringWithFormat:@"_sgn.%@", serverAddress];
+}
+
 + (NSDictionary *)resolveEndpointForServerAddress:(NSString *)serverAddress {
     if (!serverAddress || [serverAddress length] == 0) return nil;
-    
-    NSString *dnsName = [serverAddress hasPrefix:@"_sgn."] ? serverAddress : [NSString stringWithFormat:@"_sgn.%@", serverAddress];
-    
-    NSDictionary *cached = [[SGDatabaseManager sharedManager] cachedDNSForDomain:dnsName maxAge:DNS_CACHE_MAX_AGE_SECONDS];
-    if (cached) return cached;
 
+    NSString *dnsName = SG_DNSNameForServerAddress(serverAddress);
+    SGDatabaseManager *db = [SGDatabaseManager sharedManager];
+
+    NSDictionary *fresh = [db cachedDNSForDomain:dnsName maxAge:DNS_CACHE_FRESH_SECONDS];
+    if (fresh) return fresh;
+
+    NSDictionary *stale = [db cachedDNSForDomain:dnsName maxAge:DNS_CACHE_ANY_AGE];
+    if (stale) {
+        SGLOGI(SGServerLocator, "code=%s name=%s result=stale_cache_used action=refresh_async",
+               SGND_DNS_LOOKUP_STARTED, [dnsName UTF8String]);
+        [self refreshDNSCacheAsynchronouslyForAddress:serverAddress];
+        return stale;
+    }
+
+    return [self performLookupAndStore:dnsName];
+}
+
++ (void)refreshDNSCacheAsynchronouslyForAddress:(NSString *)serverAddress {
+    if (!serverAddress || [serverAddress length] == 0) return;
+
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&_refreshInFlight, &expected, true)) return;
+
+    NSString *dnsName = [SG_DNSNameForServerAddress(serverAddress) copy];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        @autoreleasepool { [self performLookupAndStore:dnsName]; }
+        [dnsName release];
+        atomic_store(&_refreshInFlight, false);
+    });
+}
+
++ (NSDictionary *)performLookupAndStore:(NSString *)dnsName {
     SGLOGI(SGServerLocator, "code=%s name=%s", SGND_DNS_LOOKUP_STARTED, [dnsName UTF8String]);
     NSDictionary *txt = [self performLiveDNSLookup:dnsName];
 
@@ -43,19 +81,14 @@ static BOOL SG_DNSEndpointValid(NSString *ip, NSString *port) {
         SGLOGI(SGServerLocator, "code=%s name=%s ip=%s port=%s result=ok", SGND_DNS_LOOKUP_SUCCEEDED,
                     [dnsName UTF8String], [txt[@"tcp_addr"] UTF8String],
                     [txt[@"tcp_port"] UTF8String]);
-        [[SGDatabaseManager sharedManager] storeDNSCacheForDomain:dnsName ip:txt[@"tcp_addr"] port:txt[@"tcp_port"]];
+        [[SGDatabaseManager sharedManager] storeDNSCacheForDomain:dnsName
+                                                               ip:txt[@"tcp_addr"]
+                                                             port:txt[@"tcp_port"]];
         return txt;
     }
 
     SGLOGW(SGServerLocator, "code=%s name=%s result=failed", SGND_DNS_LOOKUP_FAILED, [dnsName UTF8String]);
     return nil;
-}
-
-+ (void)refreshDNSCacheAsynchronouslyForAddress:(NSString *)serverAddress {
-    if (!serverAddress || [serverAddress length] == 0) return;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-        @autoreleasepool { [self resolveEndpointForServerAddress:serverAddress]; }
-    });
 }
 
 static void DNSSD_API query_callback(DNSServiceRef sdRef, DNSServiceFlags flags, uint32_t interfaceIndex,

@@ -40,6 +40,10 @@ static inline UIColor *SNSystemRedColor(UIColor *fallback) {
     return SNInterfaceColor(@"systemRedColor", fallback);
 }
 
+static inline UIColor *SNSystemGreenColor(UIColor *fallback) {
+    return SNInterfaceColor(@"systemGreenColor", fallback);
+}
+
 static inline UIColor *SNLegacyTextShadowColor(UIColor *fallback) {
     return SNSupportsSemanticColors() ? nil : fallback;
 }

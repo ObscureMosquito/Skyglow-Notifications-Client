@@ -4,13 +4,10 @@
 #import "SNDeferredActivity.h"
 #import "../libraries/SFPFilePicker/include/SFPFilePicker.h"
 #import <CoreFoundation/CoreFoundation.h>
+#import <QuartzCore/QuartzCore.h>
 #import "SNAlert.h"
 #import "SNInterfaceColors.h"
 
-/* SFPFilePicker is a non-PS UIViewController subclass, so iOS 4-5
- * PSRootController hits the same "unrecognized selector" crash on
- * back-pop as our own non-PS VCs do.  Same fix: empty stubs.  We can't
- * edit the library source from here, so attach them via a category. */
 @interface SFPFilePickerViewController (SkyglowPSStubs)
 - (void)setRootController:(id)controller;
 - (void)setParentController:(id)controller;
@@ -65,9 +62,6 @@ typedef enum {
 
 @implementation SNServerInfoViewController
 
-/* iOS 4-5 PSRootController calls these on every pushed VC during the
- * back-pop sequence, even on plain UIViewControllers.  Crashes with
- * "unrecognized selector" otherwise. */
 - (void)setRootController:(id)controller   {}
 - (void)setParentController:(id)controller {}
 - (void)setSpecifier:(id)specifier         {}
@@ -165,7 +159,7 @@ typedef enum {
         titleLabel.frame = CGRectMake((w - titleLabel.frame.size.width) / 2.0f, titleY, titleLabel.frame.size.width, titleLabel.frame.size.height);
 
         UILabel *bodyLabel      = [[[UILabel alloc] init] autorelease];
-        bodyLabel.text          = @"Enter your server address below, then select\nyour server\xe2\x80\x99s public certificate to get started.";
+        bodyLabel.text          = @"Enter your server address below, then select\nyour server's public certificate to get started.";
         bodyLabel.font          = [UIFont systemFontOfSize:13.0f];
         bodyLabel.textColor     = SNSecondaryLabelColor([UIColor colorWithRed:0.38f green:0.38f blue:0.42f alpha:1.0f]);
         bodyLabel.shadowColor   = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.6f]);
@@ -216,11 +210,12 @@ typedef enum {
     }
 }
 
-/* Profile exists but no device address yet — the state where cert-gated
- * registration may need an operator identity. */
+- (SNRegistrationStatus)_registrationStatus {
+    return [[SNDataManager shared] registrationStatusForProfileAtIndex:self.profileIndex];
+}
+
 - (BOOL)_deviceIsRegistered {
-    NSDictionary *profile = [[SNDataManager shared] profileForIndex:self.profileIndex];
-    return [[profile objectForKey:@"device_address"] length] > 0;
+    return [self _registrationStatus] == SNRegistrationRegistered;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -248,11 +243,78 @@ typedef enum {
             default: return nil;
         }
     }
-    if (section == SectionDevice && ![self _deviceIsRegistered])
-        return @"If your server restricts who can register, import the registration certificate (.pem with certificate and key) issued by its operator.";
+
     if (section == SectionActions)
         return @"Unregistering disables the daemon and deletes your cryptographic keys. App toggles are preserved.";
     return nil;
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section {
+    if (![self isRegistered] || section != SectionDevice) return nil;
+
+    SNRegistrationStatus status = [self _registrationStatus];
+    CGFloat width = self.tableView.bounds.size.width;
+    if (width < 10.0f) width = 320.0f;
+
+    NSString *text;
+    switch (status) {
+        case SNRegistrationRegistered:
+            text = @"Registered with this server."; break;
+        case SNRegistrationNeedsCertificate:
+            text = @"This server only accepts registrations authorized by a certificate. Import the .pem its operator issued you."; break;
+        default:
+            text = @"Not registered yet."; break;
+    }
+
+    UIFont *font = [UIFont systemFontOfSize:13.0f];
+    CGFloat textLeft  = 16.0f + 10.0f + 8.0f;
+    CGFloat textWidth = width - textLeft - 16.0f;
+
+    UILabel *label = [[[UILabel alloc] init] autorelease];
+    label.text          = text;
+    label.font          = font;
+    label.textColor     = SNSecondaryLabelColor([UIColor grayColor]);
+    label.backgroundColor = [UIColor clearColor];
+    label.numberOfLines = 0;
+    label.lineBreakMode = NSLineBreakByWordWrapping;
+
+    CGSize textSize = [text sizeWithFont:font
+                       constrainedToSize:CGSizeMake(textWidth, 200.0f)
+                           lineBreakMode:NSLineBreakByWordWrapping];
+    label.frame = CGRectMake(textLeft, 8.0f, textWidth, textSize.height);
+
+    UIView *dot = [[[UIView alloc] initWithFrame:CGRectMake(18.0f, 11.4f, 9.0f, 9.0f)] autorelease];
+    if (status == SNRegistrationRegistered) {
+        dot.backgroundColor = SNSystemGreenColor([UIColor colorWithRed:0.20f green:0.72f blue:0.30f alpha:1.0f]);
+    } else if (status == SNRegistrationNeedsCertificate) {
+        dot.backgroundColor = SNSystemRedColor([UIColor redColor]);
+    } else {
+        dot.backgroundColor = SNSecondaryLabelColor([UIColor grayColor]);
+    }
+    dot.layer.cornerRadius = 5.0f;
+    dot.layer.masksToBounds = YES;
+
+    UIView *footer = [[[UIView alloc] initWithFrame:
+        CGRectMake(0, 0, width, textSize.height + 18.0f)] autorelease];
+    footer.backgroundColor = [UIColor clearColor];
+    [footer addSubview:dot];
+    [footer addSubview:label];
+    return footer;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
+    UIView *footer = [self tableView:tableView viewForFooterInSection:section];
+    if (footer) return footer.frame.size.height;
+
+    NSString *title = [self tableView:tableView titleForFooterInSection:section];
+    if ([title length] == 0) return 0.0f;
+
+    CGFloat width = self.tableView.bounds.size.width;
+    if (width < 10.0f) width = 320.0f;
+    CGSize size = [title sizeWithFont:[UIFont systemFontOfSize:13.0f]
+                    constrainedToSize:CGSizeMake(width - 32.0f, 200.0f)
+                        lineBreakMode:NSLineBreakByWordWrapping];
+    return size.height + 18.0f;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -354,6 +416,7 @@ typedef enum {
     cell.textLabel.textColor       = SNLabelColor([UIColor blackColor]);
     cell.detailTextLabel.textColor = SNSecondaryLabelColor([UIColor grayColor]);
     cell.detailTextLabel.adjustsFontSizeToFitWidth = NO;
+    cell.detailTextLabel.text = @"";
 
     UIView *oldTF = [cell.contentView viewWithTag:200];
     if (oldTF) [oldTF removeFromSuperview];
@@ -387,18 +450,16 @@ typedef enum {
                 CGRect b = cell.contentView.bounds;
                 tf.frame = CGRectMake(90.0f, 0, b.size.width - 106.0f, b.size.height);
 
-            } else if (indexPath.row == 1) {
-                NSString *addr = [prof objectForKey:@"server_address"];
-                NSDictionary *dns = [dm cachedDNSForServerAddress:addr];
-                cell.textLabel.text       = @"Resolved IP";
-                cell.detailTextLabel.text = (dns && dns[@"ip"]) ? dns[@"ip"] : @"Waiting\xe2\x80\xa6";
             } else {
                 NSString *addr = [prof objectForKey:@"server_address"];
-                NSDictionary *dns = [dm cachedDNSForServerAddress:addr];
-                cell.textLabel.text       = @"Port";
-                cell.detailTextLabel.text = (dns && dns[@"port"])
-                                                ? [dns[@"port"] description]
-                                                : @"Waiting\xe2\x80\xa6";
+                NSDictionary *dns = [dm cachedDNSForServerAddress:addr
+                                                     profileIndex:self.profileIndex];
+                BOOL wantsPort = (indexPath.row == 2);
+
+                cell.textLabel.text = wantsPort ? @"Port" : @"Last Known IP";
+
+                NSString *value = wantsPort ? [dns[@"port"] description] : dns[@"ip"];
+                cell.detailTextLabel.text = ([value length] > 0) ? value : @"Not resolved yet";
             }
             break;
         }

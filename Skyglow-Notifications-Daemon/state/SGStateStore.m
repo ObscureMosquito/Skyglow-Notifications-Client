@@ -123,6 +123,7 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
         BOOL persisted = [self _updateProfileAtIndex:profileIdx
                                             mutation:^(NSMutableDictionary *profile) {
             [profile setObject:deviceAddress forKey:@"device_address"];
+            [profile removeObjectForKey:@"last_reg_fail"];
         }];
         if (!persisted) {
             SGKeychain_DeletePrivateKey(profileIdx);
@@ -140,6 +141,7 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
                                   mutation:^(NSMutableDictionary *profile) {
             [profile removeObjectForKey:@"device_address"];
             [profile removeObjectForKey:@"privateKey"];
+            [profile removeObjectForKey:@"last_reg_fail"];
         }];
     }
 }
@@ -208,6 +210,17 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
     }
 }
 
+- (BOOL)setLastRegistrationFailureCode:(uint8_t)code atIndex:(NSInteger)profileIdx {
+    if (!SGProfileIndexIsValid(profileIdx)) return NO;
+    @synchronized(self) {
+        return [self _updateProfileAtIndex:profileIdx
+                                  mutation:^(NSMutableDictionary *profile) {
+            [profile setObject:[NSNumber numberWithUnsignedChar:code]
+                        forKey:@"last_reg_fail"];
+        }];
+    }
+}
+
 - (BOOL)setRegistrationIdentityAtIndex:(NSInteger)profileIdx
                            identityPEM:(NSString *)identityPEM {
     if (!SGProfileIndexIsValid(profileIdx)) return NO;
@@ -227,6 +240,8 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
             return [self _updateProfileAtIndex:profileIdx
                                       mutation:^(NSMutableDictionary *profile) {
                 [profile setObject:storedPath forKey:@"registration_identity"];
+                /* A new identity invalidates the previous refusal. */
+                [profile removeObjectForKey:@"last_reg_fail"];
             }];
         }
 

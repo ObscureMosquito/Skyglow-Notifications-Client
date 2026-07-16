@@ -3,6 +3,12 @@
 
 #include "SGStatusServer.h"
 
+typedef enum {
+    SNRegistrationNotRegistered     = 0,
+    SNRegistrationRegistered        = 1,
+    SNRegistrationNeedsCertificate  = 2
+} SNRegistrationStatus;
+
 @interface SNDataManager : NSObject
 
 + (SNDataManager *)shared;
@@ -50,8 +56,12 @@
 - (NSInteger)registeredTokenCount;
 - (unsigned long long)dbFileSize;
 - (NSDictionary *)cachedDNSForServerAddress:(NSString *)serverAddr;
+- (NSDictionary *)cachedDNSForServerAddress:(NSString *)serverAddr
+                               profileIndex:(NSInteger)profileIndex;
 
-/** Certificate Parsing */
+- (SNRegistrationStatus)registrationStatusForProfileAtIndex:(NSInteger)profileIndex;
+
+/* Certificate Parsing */
 - (NSDictionary *)parseCertificatePEM:(NSString *)pem;
 
 /** Unregistration */

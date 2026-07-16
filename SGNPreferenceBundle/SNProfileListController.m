@@ -5,6 +5,7 @@
 #import "SNChannelGateway.h"
 #import "SNDeferredActivity.h"
 #import <CoreFoundation/CoreFoundation.h>
+#import <QuartzCore/QuartzCore.h>
 #import "SNAlert.h"
 
 enum {
@@ -70,6 +71,32 @@ enum {
     [super viewWillAppear:animated];
     [self _reloadProfileIndices];
     [self.tableView reloadData];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(_daemonStatusUpdated:)
+                                                 name:@"SNDaemonStatusUpdated"
+                                               object:nil];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:@"SNDaemonStatusUpdated"
+                                                  object:nil];
+}
+
+- (void)_daemonStatusUpdated:(NSNotification *)note {
+    [self.tableView reloadData];
+}
+
+- (BOOL)_activeProfileHasError {
+    uint32_t state = [SNDataManager shared].latestPayload.state;
+    return (state == SGStateErrorAuth ||
+            state == SGStateErrorBadConfig ||
+            state == SGStateErrorVersionMismatch);
 }
 
 - (void)_reloadProfileIndices {
@@ -142,6 +169,20 @@ enum {
             cell.accessoryView = spin;
             [spin release];
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        } else if ((isActive && [self _activeProfileHasError]) ||
+                   [dm registrationStatusForProfileAtIndex:idx] == SNRegistrationNeedsCertificate) {
+            UILabel *warning = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 22.0f, 22.0f)];
+            warning.text            = @"!";
+            warning.font            = [UIFont boldSystemFontOfSize:15.0f];
+            warning.textAlignment   = NSTextAlignmentCenter;
+            warning.textColor       = [UIColor whiteColor];
+            warning.backgroundColor = SNSystemRedColor([UIColor redColor]);
+            warning.layer.cornerRadius  = 11.0f;
+            warning.layer.masksToBounds = YES;
+            cell.accessoryView  = warning;
+            cell.accessoryType  = UITableViewCellAccessoryNone;
+            [warning release];
+            cell.selectionStyle = UITableViewCellSelectionStyleBlue;
         } else {
             cell.accessoryView = nil;
             cell.accessoryType = isActive ? UITableViewCellAccessoryCheckmark
@@ -338,6 +379,7 @@ enum {
 }
 
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [_profileIndices release];
     [_pendingDeletionIndices release];
     [_deletingIndices release];

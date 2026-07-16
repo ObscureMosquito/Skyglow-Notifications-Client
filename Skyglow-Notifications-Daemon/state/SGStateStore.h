@@ -41,6 +41,9 @@
 - (BOOL)setRegistrationIdentityAtIndex:(NSInteger)profileIdx
                            identityPEM:(NSString *)identityPEM;
 
+/* Servers S_REGISTER_FAIL code from the last attempt */
+- (BOOL)setLastRegistrationFailureCode:(uint8_t)code atIndex:(NSInteger)profileIdx;
+
 /**
  * Removes the slot, keychain entry, certificate, and operational database
  * state as one serialized operation.

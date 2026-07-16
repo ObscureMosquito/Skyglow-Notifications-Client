@@ -707,6 +707,9 @@ static BOOL isValidPort(NSString *port) {
     const char *reasonUTF8 = [reason UTF8String];
     SGLOGE(SGDaemon, "code=%s server_code=%u reason=%s action=backoff",
            SGND_REGISTRATION_SERVER_REJECTED, (unsigned)code, reasonUTF8 ? reasonUTF8 : "unknown");
+
+    [_stateStore setLastRegistrationFailureCode:code
+                                        atIndex:[[SGConfiguration sharedConfiguration] activeProfileIndex]];
     NSDictionary *info = [NSDictionary dictionaryWithObjectsAndKeys:
         [NSNumber numberWithUnsignedChar:code], @"code",
         reason ?: @"Unknown", @"reason", nil];
@@ -884,6 +887,9 @@ static BOOL isValidPort(NSString *port) {
     if (hasNewCertificate && !SGCertificatePEMLooksValid(certificatePEM)) return NO;
 
     BOOL isActive = ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx);
+    NSString *previousAddress = isActive
+        ? [[SGConfiguration sharedConfiguration] serverAddress] : nil;
+    BOOL addressChanged = (previousAddress && ![previousAddress isEqualToString:address]);
 
     BOOL credentialsInvalidated = NO;
     if (![_stateStore saveProfileAtIndex:profileIdx
@@ -898,6 +904,9 @@ static BOOL isValidPort(NSString *port) {
     if (isActive) {
         if (credentialsInvalidated) {
             [[SGDatabaseManager sharedManager] clearAllTokens];
+        }
+
+        if (addressChanged) {
             [[SGDatabaseManager sharedManager] clearAllDNSCache];
         }
         [self handleEvent:SGEventConfigReloaded payload:nil];
@@ -1250,6 +1259,15 @@ static BOOL isValidPort(NSString *port) {
             } else {
                 SGLOGW(SGDaemon, "code=%s ip=%s port=%d rc=%d name=%s result=failed", SGND_PROTOCOL_CONNECT_FAILED,
                             [ipCopy UTF8String], port, rc, SGP_ConnectErrorName(rc));
+
+                NSString *serverAddr = [[SGConfiguration sharedConfiguration] serverAddress];
+                if (rc == -9 || rc == -10) {
+                    SGLOGW(SGDaemon, "code=%s rc=%d action=purge_dns_cache",
+                           SGND_PROTOCOL_CONNECT_FAILED, rc);
+                    [[SGDatabaseManager sharedManager] clearAllDNSCache];
+                }
+                [SGServerLocator refreshDNSCacheAsynchronouslyForAddress:serverAddr];
+
                 [self handleEvent:SGEventConnectFailed payload:nil];
             }
             [ipCopy release];

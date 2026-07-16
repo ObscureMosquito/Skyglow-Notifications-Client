@@ -4,11 +4,14 @@
 
 @interface SNLogViewController ()
 @property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, strong) UILabel *primaryLabel;
+@property (nonatomic, strong) UILabel *detailLabel;
 @property (nonatomic, strong) UIImageView *glossOverlay;
 @property (nonatomic, assign) SGState lastKnownState;
 @property (nonatomic, strong) CAGradientLayer *gradientLayer;
 @property (nonatomic, copy)   NSString *currentErrorDetail;
 @property (nonatomic, copy)   NSString *currentRecoverySuggestion;
+@property (nonatomic, assign) CGFloat statusLineSpacing;
 @end
 
 @implementation SNLogViewController
@@ -50,9 +53,9 @@
         initWithImage:[UIImage imageWithContentsOfFile:
                         [bundle pathForResource:@"Gloss" ofType:@"png"]]];
     self.glossOverlay = overlay;
-    self.glossOverlay.frame = CGRectMake(0.0f, -2.0f,
-                                         self.statusLabel.bounds.size.width,
-                                         self.statusLabel.bounds.size.height + 4.0f);
+    [overlay release];
+
+    self.glossOverlay.frame = [self _glossFrameForBounds:self.statusLabel.bounds];
     self.glossOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth |
                                          UIViewAutoresizingFlexibleHeight;
     self.glossOverlay.contentMode  = UIViewContentModeScaleToFill;
@@ -60,10 +63,13 @@
     self.glossOverlay.alpha = 0.4;
     [self.statusLabel addSubview:self.glossOverlay];
 
-    [overlay release];
-
-    self.statusLabel.numberOfLines = 2;
     self.statusLabel.userInteractionEnabled = NO;
+    self.statusLineSpacing = 6.0f;
+    self.primaryLabel = [self _makeLineLabel];
+    self.detailLabel  = [self _makeLineLabel];
+    [self.statusLabel insertSubview:self.primaryLabel belowSubview:self.glossOverlay];
+    [self.statusLabel insertSubview:self.detailLabel  belowSubview:self.glossOverlay];
+
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc]
         initWithTarget:self action:@selector(_statusLabelTapped)];
     tap.cancelsTouchesInView = NO;
@@ -87,10 +93,30 @@
     self.statusLabel.frame = self.view.bounds;
     self.gradientLayer.frame = self.statusLabel.bounds;
     if (self.glossOverlay) {
-        self.glossOverlay.frame = CGRectMake(0.0f, -2.0f,
-                                             self.statusLabel.bounds.size.width,
-                                             self.statusLabel.bounds.size.height + 4.0f);
+        self.glossOverlay.frame = [self _glossFrameForBounds:self.statusLabel.bounds];
     }
+    [self _layoutStatusLabels];
+}
+
+- (CGRect)_glossFrameForBounds:(CGRect)bounds {
+    if ([[[UIDevice currentDevice] systemVersion] floatValue] >= 7.0f) {
+        return CGRectMake(0.0f, -2.0f,
+                          bounds.size.width, bounds.size.height + 4.0f);
+    }
+    return bounds;
+}
+
+- (UILabel *)_makeLineLabel {
+    UILabel *label = [[[UILabel alloc] init] autorelease];
+    label.backgroundColor          = [UIColor clearColor];
+    label.textAlignment            = (NSTextAlignment)UITextAlignmentCenter;
+    label.font                     = [UIFont boldSystemFontOfSize:13.0];
+    label.textColor                = [UIColor whiteColor];
+    label.adjustsFontSizeToFitWidth = YES;
+    label.minimumFontSize          = 9.0;
+    label.numberOfLines            = 1;
+    label.userInteractionEnabled   = NO;  /* let taps reach statusLabel's recognizer */
+    return label;
 }
 
 - (void)_applyStatusText:(NSString *)text {
@@ -98,40 +124,46 @@
         return;
     }
 
-    if (text.length == 0) {
-        self.statusLabel.text = @"";
-        self.statusLabel.attributedText = nil;
-        return;
+    NSString *primary = text ?: @"";
+    NSString *detail  = nil;
+    NSRange nl = [primary rangeOfString:@"\n"];
+    if (nl.location != NSNotFound) {
+        detail  = [primary substringFromIndex:nl.location + 1];
+        primary = [primary substringToIndex:nl.location];
     }
 
-    CGSize constrainedSize = CGSizeMake(self.statusLabel.bounds.size.width, CGFLOAT_MAX);
-    CGRect textRect = [text boundingRectWithSize:constrainedSize
-                                         options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                      attributes:@{NSFontAttributeName: self.statusLabel.font}
-                                         context:nil];
-    CGFloat singleLineHeight = [@"A" sizeWithFont:self.statusLabel.font].height;
-    BOOL requiresExtraSpacing = (textRect.size.height > singleLineHeight * 1.15f);
+    self.primaryLabel.text = primary;
+    self.detailLabel.text  = detail ?: @"";
+    self.detailLabel.hidden = (detail.length == 0);
+    [self _layoutStatusLabels];
+}
 
-    if (requiresExtraSpacing) {
-        NSMutableParagraphStyle *paragraphStyle = [[[NSMutableParagraphStyle alloc] init] autorelease];
-        paragraphStyle.alignment = NSTextAlignmentCenter;
-        paragraphStyle.lineBreakMode = NSLineBreakByWordWrapping;
-        paragraphStyle.lineSpacing = 5.0f;
+- (void)_layoutStatusLabels {
+    BOOL animationsWereEnabled = [UIView areAnimationsEnabled];
+    [UIView setAnimationsEnabled:NO];
 
-        NSDictionary *attributes = @{NSFontAttributeName: self.statusLabel.font,
-                                     NSForegroundColorAttributeName: self.statusLabel.textColor,
-                                     NSParagraphStyleAttributeName: paragraphStyle};
-        self.statusLabel.attributedText = [[[NSAttributedString alloc] initWithString:text
-                                                                                 attributes:attributes] autorelease];
+    CGRect bounds = self.statusLabel.bounds;
+    CGFloat lineHeight = ceilf([@"Ag" sizeWithFont:self.primaryLabel.font].height);
+
+    if (self.detailLabel.hidden) {
+        self.primaryLabel.frame = bounds;
     } else {
-        self.statusLabel.attributedText = nil;
-        self.statusLabel.text = text;
+        CGFloat blockHeight = lineHeight * 2.0f + self.statusLineSpacing;
+        CGFloat top = floorf((bounds.size.height - blockHeight) / 2.0f);
+        self.primaryLabel.frame = CGRectMake(0.0f, top, bounds.size.width, lineHeight);
+        self.detailLabel.frame  = CGRectMake(0.0f,
+                                             top + lineHeight + self.statusLineSpacing,
+                                             bounds.size.width, lineHeight);
     }
+
+    [UIView setAnimationsEnabled:animationsWereEnabled];
 }
 
 - (void)viewDidUnload {
     [super viewDidUnload];
     self.statusLabel = nil;
+    self.primaryLabel = nil;
+    self.detailLabel = nil;
     self.gradientLayer = nil;
 }
 
@@ -148,6 +180,8 @@
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 
     [_statusLabel release];
+    [_primaryLabel release];
+    [_detailLabel release];
     [_glossOverlay release];
     [_gradientLayer release];
     [_currentErrorDetail release];

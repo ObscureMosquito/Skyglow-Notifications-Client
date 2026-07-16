@@ -248,7 +248,13 @@ static sqlite3 *openDBReadOnly(void) {
 }
 
 - (NSDictionary *)cachedDNSForServerAddress:(NSString *)serverAddr {
+    return [self cachedDNSForServerAddress:serverAddr profileIndex:SGActiveProfileIndex()];
+}
+
+- (NSDictionary *)cachedDNSForServerAddress:(NSString *)serverAddr
+                               profileIndex:(NSInteger)profileIndex {
     if (!serverAddr) return nil;
+    if (profileIndex < 1 || profileIndex > 5) return nil;
     sqlite3 *db = openDBReadOnly();
     if (!db) return nil;
     NSString *dnsKey = [NSString stringWithFormat:@"_sgn.%@", serverAddr];
@@ -257,7 +263,7 @@ static sqlite3 *openDBReadOnly(void) {
     if (sqlite3_prepare_v2(db,
             "SELECT ip, port FROM dns_cache WHERE profile_id = ? AND domain = ?",
             -1, &stmt, NULL) == SQLITE_OK) {
-        sqlite3_bind_int64(stmt, 1, (sqlite3_int64)SGActiveProfileIndex());
+        sqlite3_bind_int64(stmt, 1, (sqlite3_int64)profileIndex);
         sqlite3_bind_text(stmt, 2, [dnsKey UTF8String], -1, SQLITE_TRANSIENT);
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             const char *ip = (const char *)sqlite3_column_text(stmt, 0);
@@ -268,6 +274,18 @@ static sqlite3 *openDBReadOnly(void) {
     if (stmt) sqlite3_finalize(stmt);
     sqlite3_close(db);
     return result;
+}
+
+- (SNRegistrationStatus)registrationStatusForProfileAtIndex:(NSInteger)profileIndex {
+    NSDictionary *profile = [self profileForIndex:profileIndex];
+    if ([[profile objectForKey:@"device_address"] length] > 0) {
+        return SNRegistrationRegistered;
+    }
+    id lastFail = [profile objectForKey:@"last_reg_fail"];
+    if (lastFail && [lastFail unsignedCharValue] == 0x05) {
+        return SNRegistrationNeedsCertificate;
+    }
+    return SNRegistrationNotRegistered;
 }
 
 - (NSDictionary *)parseCertificatePEM:(NSString *)pem {
