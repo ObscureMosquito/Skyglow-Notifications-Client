@@ -18,8 +18,6 @@ if [ -f "$PLIST_PATH" ] && command -v launchctl >/dev/null 2>&1; then
     launchctl unload "$PLIST_PATH" 2>/dev/null || true
 fi
 
-# Normally dpkg removes the package-owned plist.  This also cleans up the
-# dynamically generated plist used by older releases.
 case "${1:-remove}" in
     remove|purge|failed-upgrade|disappear)
         rm -f "$PLIST_PATH"
