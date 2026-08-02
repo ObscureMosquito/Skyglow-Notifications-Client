@@ -1033,6 +1033,14 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             break;
         }
         case SGP_S_PONG: {
+            /* Keep-alive only runs on an authenticated connection: the ping
+             * timer arms on entry to Connected, and the pre-auth phases are
+             * torn down by their own watchdogs long before a ping is due. */
+            if (_phase != SGPProtoAuthenticated) {
+                SGLOGW(SGP, "code=%s type=S_PONG phase=%d result=unsolicited",
+                       SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase);
+                result = SGP_ERR_PROTO; goto cleanup;
+            }
             pthread_mutex_lock(&_pingLock);
             uint64_t seq = _pingSeq;
             BOOL pingWasPending = (_pingPendingSince > 0.0);
@@ -1052,6 +1060,12 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             break;
         }
         case SGP_S_PING: {
+            /* Never echo for an unauthenticated peer. */
+            if (_phase != SGPProtoAuthenticated) {
+                SGLOGW(SGP, "code=%s type=S_PING phase=%d result=unsolicited",
+                       SGND_PROTOCOL_FRAME_SIZE_INVALID, (int)_phase);
+                result = SGP_ERR_PROTO; goto cleanup;
+            }
             SGP_LowLevelSend(SGP_C_PONG, raw, len);
             break;
         }

@@ -1,21 +1,13 @@
-#import <Foundation/Foundation.h>
-#import "SGControlChannelProtocol.h"
+#pragma once
 
-typedef void (^SGNNativePushBrokerCompletion)(SGControlError error,
-                                               NSString *detail);
+#import "SGNNativePushBroker.h"
 
-/*
- * Stable SpringBoard facade across classic, legacy UserNotifications, and
- * current UserNotificationsCore implementations. Private objects stay behind
- * the selected backend; callers only see bundle IDs and SGControlError.
- */
-@interface SGNNativePushBroker : NSObject {
-@private
-    id _backend;
-}
+/* Private implementation contract.  SpringBoard-facing callers only depend
+ * on SGNNativePushBroker; capability selection and private API objects remain
+ * inside the backends directory. */
+@protocol SGNotificationBackend <NSObject>
 
-+ (instancetype)sharedBroker;
-
++ (BOOL)isSupported;
 - (NSArray *)registeredBundleIdentifiersWithError:(SGControlError *)error
                                              detail:(NSString **)detail;
 - (void)registerBundleIdentifier:(NSString *)bundleIdentifier
@@ -31,3 +23,7 @@ typedef void (^SGNNativePushBrokerCompletion)(SGControlError error,
                                 completion:(SGNNativePushBrokerCompletion)completion;
 
 @end
+
+/* Shared private-API adaptation used by multiple backend generations. */
+id SGNNotificationSourceForBundleIdentifier(NSString *bundleIdentifier);
+NSArray *SGNFilteredSortedBundleIdentifiers(NSArray *identifiers);

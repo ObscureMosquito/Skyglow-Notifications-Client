@@ -1,10 +1,40 @@
 # Standalone macOS build for the Skyglow Notifications daemon core.
-#   make -f Makefile.macos            # build build/macos/SkyglowNotificationsDaemon
+#   make -f Makefile.macos            # native build (arm64 defaults to macOS 11)
+#   make -f Makefile.macos MACOS_ARCH=x86_64 MACOSX_DEPLOYMENT_TARGET=10.8 \
+#       OPENSSL_PREFIX=/path/to/x86_64/openssl
+#   make -f Makefile.macos clean all SG_DAEMON_CONSOLE_LOGGING=1  # also use Console.app
 #   make -f Makefile.macos run        # build + run (needs sudo for /var paths)
 #   make -f Makefile.macos clean
 
+-include Makefile.macos.local
+
 DAEMON_DIR := Skyglow-Notifications-Daemon
-BUILD_DIR  := build/macos
+BUILD_ROOT := build/macos
+
+SG_DAEMON_FILE_LOGGING ?= 1
+SG_DAEMON_CONSOLE_LOGGING ?= 0
+SG_DAEMON_TTY_LOGGING ?= 1
+
+# The legacy System keychain identifies clients by their code-signing
+# designated requirement. Ad-hoc signing reduces that requirement to a cdhash,
+# which changes on every build. Set this to one persistent Code Signing
+# identity for installed builds (Makefile.macos.local is intentionally ignored).
+MACOS_CODESIGN_IDENTITY ?= -
+MACOS_CODESIGN_IDENTIFIER ?= com.skyglow.snd.daemon
+MACOS_CODESIGN_FLAGS ?=
+
+MACOS_ARCH ?= $(shell uname -m)
+ifeq ($(MACOS_ARCH),arm64)
+DEFAULT_MACOSX_DEPLOYMENT_TARGET := 11.0
+else ifeq ($(MACOS_ARCH),x86_64)
+DEFAULT_MACOSX_DEPLOYMENT_TARGET := 10.8
+else
+$(error Unsupported MACOS_ARCH '$(MACOS_ARCH)'; use arm64 or x86_64)
+endif
+MACOSX_DEPLOYMENT_TARGET ?= $(DEFAULT_MACOSX_DEPLOYMENT_TARGET)
+export MACOSX_DEPLOYMENT_TARGET
+
+BUILD_DIR  := $(BUILD_ROOT)/$(MACOS_ARCH)
 BIN        := $(BUILD_DIR)/SkyglowNotificationsDaemon
 
 CC  := xcrun clang
@@ -46,8 +76,11 @@ C_SRCS := \
 OBJS := $(patsubst %,$(BUILD_DIR)/%.o,$(OBJC_SRCS) $(C_SRCS))
 
 OPENSSL_PREFIX ?= $(shell brew --prefix openssl@3 2>/dev/null)
+# The selected OpenSSL must match MACOS_ARCH and be built for no newer macOS
+# than MACOSX_DEPLOYMENT_TARGET. Homebrew bottles generally target the host OS;
+# use an explicitly built prefix for release artifacts supporting older Macs.
 ifeq ($(OPENSSL_PREFIX),)
-ifeq ($(filter install uninstall clean,$(MAKECMDGOALS)),)
+ifeq ($(filter uninstall clean status,$(MAKECMDGOALS)),)
 $(error Could not locate OpenSSL. Install with 'brew install openssl@3' or pass OPENSSL_PREFIX=/path)
 endif
 endif
@@ -63,7 +96,8 @@ SQLITE_DEFS := \
 	-DHAVE_GETHOSTUUID=0
 
 COMMON_FLAGS := \
-	-arch $(shell uname -m) \
+	-arch $(MACOS_ARCH) \
+	-mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) \
 	-fno-objc-arc \
 	-fstack-protector-all -D_FORTIFY_SOURCE=2 \
 	-I$(DAEMON_DIR)/core \
@@ -76,6 +110,9 @@ COMMON_FLAGS := \
 	-I$(DAEMON_DIR)/shared \
 	-Ilibraries/sqlite/include \
 	-I$(OPENSSL_INC) \
+	-DSG_LOG_FILE_DEFAULT_ENABLED=$(SG_DAEMON_FILE_LOGGING) \
+	-DSG_LOG_CONSOLE_DEFAULT_ENABLED=$(SG_DAEMON_CONSOLE_LOGGING) \
+	-DSG_LOG_TTY_DEFAULT_ENABLED=$(SG_DAEMON_TTY_LOGGING) \
 	-DOPENSSL_API_COMPAT=0x10100000L \
 	$(SQLITE_DEFS) \
 	-Wno-unused-result -Wno-unused-but-set-variable -Wno-deprecated-declarations \
@@ -93,20 +130,41 @@ FRAMEWORKS := \
 	-framework IOKit
 
 LDFLAGS := \
+	-arch $(MACOS_ARCH) \
+	-mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) \
 	$(FRAMEWORKS) \
 	$(OPENSSL_LIB)/libssl.a \
 	$(OPENSSL_LIB)/libcrypto.a \
 	-lz
 
 # --- Rules ----------------------------------------------------------------
-.PHONY: all clean run dirs install uninstall reinstall status
-all: $(BIN)
+.PHONY: all sign check-install-signing clean run dirs install uninstall reinstall status
+all: sign
 
 $(BIN): $(OBJS)
 	@mkdir -p $(@D)
 	$(CC) $(OBJS) $(LDFLAGS) -o $@
 	@echo "built $@"
-	@codesign -s - --entitlements /dev/null $@ 2>/dev/null || true
+
+sign: $(BIN)
+	codesign --force --sign "$(MACOS_CODESIGN_IDENTITY)" \
+		--identifier "$(MACOS_CODESIGN_IDENTIFIER)" \
+		$(MACOS_CODESIGN_FLAGS) "$(BIN)"
+
+check-install-signing: sign
+	@if [ -z "$(MACOS_CODESIGN_IDENTITY)" ] || [ "$(MACOS_CODESIGN_IDENTITY)" = "-" ]; then \
+		echo "[Skyglow] ERROR: refusing to install an ad-hoc-signed daemon."; \
+		echo "[Skyglow] Its System-keychain access would break on the next rebuild."; \
+		echo "[Skyglow] Create a persistent Code Signing certificate, then set:"; \
+		echo "[Skyglow]   MACOS_CODESIGN_IDENTITY = <certificate name or SHA-1>"; \
+		echo "[Skyglow] in Makefile.macos.local (or pass it to make)."; \
+		exit 1; \
+	fi
+	@if codesign --display --verbose=2 "$(BIN)" 2>&1 | grep -q 'Signature=adhoc'; then \
+		echo "[Skyglow] ERROR: the selected identity still produced an ad-hoc signature."; \
+		exit 1; \
+	fi
+	@codesign --verify --strict "$(BIN)"
 
 $(BUILD_DIR)/%.m.o: %.m
 	@mkdir -p $(@D)
@@ -116,18 +174,18 @@ $(BUILD_DIR)/%.c.o: %.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS_C) -c $< -o $@
 
-run: $(BIN)
+run: sign
 	sudo $(BIN)
 
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD_ROOT)
 
 # --- Install as a launchd daemon (root) -----------------------------------
 LAUNCHD_LABEL    := com.skyglow.snd
 LAUNCHD_PLIST    := /Library/LaunchDaemons/$(LAUNCHD_LABEL).plist
-INSTALL_BIN      := /usr/local/bin/SkyglowNotificationsDaemon
+INSTALL_BIN      := /usr/local/libexec/skyglow/SkyglowNotificationsDaemon
+LEGACY_INSTALL_BIN := /usr/local/bin/SkyglowNotificationsDaemon
 MACOS_ROOT       := /usr/local/var/skyglow
-STDERR_LOG       := $(MACOS_ROOT)/var/log/snd-err.log
 KEYCHAIN_SERVICE := com.skyglow.daemon.privatekey
 SYSTEM_KEYCHAIN  := /Library/Keychains/System.keychain
 
@@ -146,22 +204,25 @@ define SGN_LAUNCHD_PLIST
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
 	<key>StandardOutPath</key>
 	<string>/dev/null</string>
 	<key>StandardErrorPath</key>
-	<string>$(STDERR_LOG)</string>
+	<string>/dev/null</string>
 </dict>
 </plist>
 endef
 export SGN_LAUNCHD_PLIST
 
-install:
-	@test -f "$(BIN)" || { echo "No build at $(BIN) — run 'make -f Makefile.macos' first (as your user)."; exit 1; }
+install: check-install-signing
 	@echo "[Skyglow] Installing daemon -> $(INSTALL_BIN)"
 	sudo mkdir -p "$(dir $(INSTALL_BIN))" "$(MACOS_ROOT)/var/log"
 	sudo cp "$(BIN)" "$(INSTALL_BIN)"
 	sudo chown root:wheel "$(INSTALL_BIN)"
 	sudo chmod 755 "$(INSTALL_BIN)"
+	@# Remove the path used before the libexec migration.
+	sudo rm -f "$(LEGACY_INSTALL_BIN)"
 	@echo "[Skyglow] Writing $(LAUNCHD_PLIST)"
 	@printf '%s\n' "$$SGN_LAUNCHD_PLIST" | sudo tee "$(LAUNCHD_PLIST)" > /dev/null
 	sudo chown root:wheel "$(LAUNCHD_PLIST)"
@@ -174,7 +235,7 @@ install:
 	-sudo launchctl enable system/$(LAUNCHD_LABEL)
 	sudo launchctl bootstrap system "$(LAUNCHD_PLIST)"
 	@echo "[Skyglow] Installed and loaded. State: make -f Makefile.macos status"
-	@echo "[Skyglow] Daemon log: $(MACOS_ROOT)/var/log/sgn.log  (launchd stderr: $(STDERR_LOG))"
+	@echo "[Skyglow] Daemon log: $(MACOS_ROOT)/var/log/sgn.log"
 
 uninstall:
 	@echo "[Skyglow] Stopping and unloading launchd job"
@@ -182,6 +243,7 @@ uninstall:
 	@echo "[Skyglow] Removing plist, binary, and runtime tree"
 	-sudo rm -f "$(LAUNCHD_PLIST)"
 	-sudo rm -f "$(INSTALL_BIN)"
+	-sudo rm -f "$(LEGACY_INSTALL_BIN)"
 	-sudo rm -rf "$(MACOS_ROOT)"
 	@echo "[Skyglow] Clearing System-keychain private keys"
 	@for i in 1 2 3 4 5; do \
@@ -189,7 +251,9 @@ uninstall:
 	done
 	@echo "[Skyglow] Uninstalled — no files, launchd job, or keychain items left behind."
 
-reinstall: uninstall all install
+reinstall: check-install-signing
+	$(MAKE) -f Makefile.macos uninstall
+	$(MAKE) -f Makefile.macos install
 
 status:
 	@echo "[Skyglow] launchd job:"

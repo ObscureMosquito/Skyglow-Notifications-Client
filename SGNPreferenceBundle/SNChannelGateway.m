@@ -54,6 +54,28 @@ static SGControlChannel *DaemonClient(void) {
                      completion:nil];
 }
 
++ (void)restartDaemonWithCompletion:(SNChannelCommandCompletion)completion {
+    [DaemonClient() sendRequest:SGCMSG_RESTART_DAEMON
+                        payload:nil
+                        timeout:SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC
+                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
+        BOOL ok = (err == SGCERR_OK && response &&
+                   response->messageType == SGCMSG_GENERIC_ACK);
+        NSString *message = nil;
+        if (!ok) {
+            message = SNErrorMessageFromResponse(response);
+            if (message.length == 0) {
+                message = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                    ? @"The daemon could not be reached."
+                    : @"The daemon rejected the restart request.";
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(ok, message);
+        });
+    }];
+}
+
 + (void)postTestInject {
     [DaemonClient() sendRequest:SGCMSG_TEST_INJECT
                         payload:nil

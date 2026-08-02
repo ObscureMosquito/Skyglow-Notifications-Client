@@ -29,12 +29,8 @@ static int64_t _sgDaemonStartTime = 0;
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
-        if (getuid() != 0 || geteuid() != 0) {
-            setgid(0);
-            setuid(0);
-        }
         if (geteuid() != 0) {
-            fprintf(stderr, "code=%s result=failed reason=privilege_elevation\n",
+            fprintf(stderr, "code=%s result=failed reason=root_required\n",
                     SGND_DAEMON_PRIVILEGE_FAILED);
             exit(EXIT_FAILURE);
         }

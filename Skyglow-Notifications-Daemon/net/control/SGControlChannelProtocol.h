@@ -21,6 +21,11 @@ static inline BOOL SG_IsIdentifierStringSafe(NSString *str) {
     return YES;
 }
 
+static inline BOOL SG_LooksLikePEMCertificate(NSString *pem) {
+    return [pem length] > 0 &&
+        [pem rangeOfString:@"-----BEGIN CERTIFICATE-----"].location != NSNotFound;
+}
+
 #define SKYGLOW_CONTROL_SERVICE_DAEMON       "com.skyglow.sgn.control.daemon"
 #define SKYGLOW_CONTROL_SERVICE_SPRINGBOARD  "com.skyglow.sgn.control.springboard"
 #define SKYGLOW_CONTROL_SERVICE_USERNOTIFICATIONS "com.skyglow.sgn.control.usernotifications"
@@ -64,6 +69,7 @@ typedef enum : uint8_t {
     SGCMSG_REGISTER_NATIVE_PUSH_APP = 0x27,  /* SGCBundleIdPayload (broker: in-proc requestToken) */
     SGCMSG_AUTHORIZE_NATIVE_PUSH_APP = 0x28, /* SGCBundleIdPayload (broker: submit Apple prompt) */
     SGCMSG_SET_REG_IDENTITY    = 0x29,  /* SGCRegIdentityPayload */
+    SGCMSG_RESTART_DAEMON      = 0x2A,  /* (empty); ack, then orderly SIGTERM */
     SGCMSG_GENERIC_ACK         = 0x30,  /* (empty) */
     SGCMSG_TOKEN_RESPONSE      = 0x31,  /* SGCTokenResponsePayload */
     SGCMSG_ERROR_RESPONSE      = 0x32,  /* SGCErrorResponsePayload */

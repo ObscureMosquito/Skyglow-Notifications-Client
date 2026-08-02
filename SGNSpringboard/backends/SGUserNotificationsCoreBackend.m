@@ -1,4 +1,4 @@
-#import "SGNNativePushBroker.h"
+#import "SGNotificationBackend.h"
 
 #import "SGNAppIntent.h"
 #import "SGNDaemonBridge.h"
@@ -10,49 +10,17 @@ static id SGNModernUserNotificationServer(void) {
         ? [serverClass sharedInstance] : nil;
 }
 
-static id SGNNotificationSourceForBundleIdentifier(NSString *bundleIdentifier) {
-    Class sourceClass = NSClassFromString(@"UNSNotificationSourceDescription");
-    id source = [sourceClass respondsToSelector:
-        @selector(sourceDescriptionWithBundleIdentifier:)]
-        ? [sourceClass sourceDescriptionWithBundleIdentifier:bundleIdentifier]
-        : nil;
-    if (source) return source;
-
-    Class proxyClass = NSClassFromString(@"LSApplicationProxy");
-    id application = [proxyClass respondsToSelector:
-        @selector(applicationProxyForIdentifier:)]
-        ? [proxyClass applicationProxyForIdentifier:bundleIdentifier]
-        : nil;
-    if (!application || ![sourceClass respondsToSelector:
-        @selector(applicationSourceDescriptionWithApplication:)]) {
-        return nil;
-    }
-    source = [sourceClass applicationSourceDescriptionWithApplication:application];
-    if (source) {
-        NSLog(@"[SGN] Native source resolved through LaunchServices fallback: %@",
-              bundleIdentifier);
-    }
-    return source;
-}
-
-static NSArray *SGNSafeSortedBundleIdentifiers(id repository) {
-    NSArray *identifiers = [repository respondsToSelector:@selector(allBundleIdentifiers)]
+static NSArray *SGNCoreRegisteredBundleIdentifiers(id repository) {
+    NSArray *identifiers = [repository respondsToSelector:
+        @selector(allBundleIdentifiers)]
         ? [repository allBundleIdentifiers] : nil;
-    NSMutableArray *safe = [NSMutableArray array];
-    for (id candidate in identifiers ?: @[]) {
-        if ([candidate isKindOfClass:[NSString class]] &&
-            SG_IsIdentifierStringSafe(candidate)) {
-            [safe addObject:candidate];
-        }
-    }
-    [safe sortUsingSelector:@selector(compare:)];
-    return safe;
+    return SGNFilteredSortedBundleIdentifiers(identifiers);
 }
 
-@interface SGIOS17NotificationBackend : NSObject <SGNotificationBackend>
+@interface SGUserNotificationsCoreBackend : NSObject <SGNotificationBackend>
 @end
 
-@implementation SGIOS17NotificationBackend
+@implementation SGUserNotificationsCoreBackend
 
 + (BOOL)isSupported {
     id server = SGNModernUserNotificationServer();
@@ -82,7 +50,7 @@ static NSArray *SGNSafeSortedBundleIdentifiers(id repository) {
     }
 
     @try {
-        return SGNSafeSortedBundleIdentifiers(repository);
+        return SGNCoreRegisteredBundleIdentifiers(repository);
     } @catch (NSException *exception) {
         NSLog(@"[SGN] Native push enumeration failed: %@", exception);
         if (error) *error = SGCERR_INTERNAL;
@@ -141,7 +109,7 @@ static NSArray *SGNSafeSortedBundleIdentifiers(id repository) {
             @selector(_queue_didReceiveIncomingMessage:)];
     if (!hasValidatedQueuePath) {
         if (completion) completion(SGCERR_UNSUPPORTED,
-                                   @"iOS 17 notification service unavailable");
+                                   @"UserNotificationsCore service unavailable");
         [message release];
         [remoteService release];
         return;
@@ -241,21 +209,21 @@ static NSArray *SGNSafeSortedBundleIdentifiers(id repository) {
                     detail = @"notifications are not authorized for the application";
                 } else if (![repository respondsToSelector:saveSelector]) {
                     result = SGCERR_UNSUPPORTED;
-                    detail = @"iOS 17 notification repository unavailable";
+                    detail = @"UserNotificationsCore repository unavailable";
                 } else {
                     [repository saveNotificationRequest:request
                                            shouldRepost:YES
                                             withMessage:message
                                     forBundleIdentifier:messageBundle];
-                    NSLog(@"[SGN] Delivered through iOS 17 Skyglow repository path: %@",
+                    NSLog(@"[SGN] Delivered through UserNotificationsCore repository: %@",
                           messageBundle);
                 }
             }
         } @catch (NSException *exception) {
-            NSLog(@"[SGN] iOS 17 push delivery failed for %@: %@",
+            NSLog(@"[SGN] UserNotificationsCore delivery failed for %@: %@",
                   bundleCopy, exception);
             result = SGCERR_INTERNAL;
-            detail = [exception reason] ?: @"iOS 17 delivery exception";
+            detail = [exception reason] ?: @"UserNotificationsCore delivery exception";
         }
 
         if (completionCopy) completionCopy(result, detail);
@@ -319,7 +287,7 @@ static NSArray *SGNSafeSortedBundleIdentifiers(id repository) {
         /* The public method enqueues the registration mutation on _queue.
          * Our following block is therefore a FIFO persistence fence. */
         dispatch_async(remoteQueue, ^{
-            BOOL registered = [SGNSafeSortedBundleIdentifiers(repository)
+            BOOL registered = [SGNCoreRegisteredBundleIdentifiers(repository)
                 containsObject:bundleCopy];
             if (completionCopy) {
                 completionCopy(registered ? SGCERR_OK : SGCERR_INTERNAL,
@@ -448,7 +416,7 @@ static NSArray *SGNSafeSortedBundleIdentifiers(id repository) {
         [remoteService
             invalidateTokenForRemoteNotificationsForBundleIdentifier:bundleCopy];
         dispatch_async(remoteQueue, ^{
-            registrationRemoved = ![SGNSafeSortedBundleIdentifiers(repository)
+            registrationRemoved = ![SGNCoreRegisteredBundleIdentifiers(repository)
                 containsObject:bundleCopy];
             dispatch_group_leave(group);
         });

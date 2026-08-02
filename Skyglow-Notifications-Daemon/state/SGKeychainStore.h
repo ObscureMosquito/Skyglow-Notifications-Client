@@ -5,7 +5,9 @@
 
 /**
  * Thin wrapper over Security framework SecItem* APIs for storing the
- * per-profile RSA private key.
+ * per-profile RSA private key. On iOS the credential is device-bound but
+ * intentionally available before first unlock so the daemon can reconnect
+ * immediately after boot.
  */
 
 /* Store the PEM-encoded RSA private key for the given profile slot */
@@ -26,6 +28,12 @@ NSData *SGKeychain_FetchPrivateKeyPEM(NSInteger profileIndex);
 /** Distinguishes a missing entry (YES with nil data) from a keychain failure. */
 BOOL SGKeychain_CopyPrivateKeyPEM(NSInteger profileIndex,
                                   NSMutableData **outPEMData);
+
+/* Rewraps an existing item into the daemon's pre-unlock accessibility class.
+ * This is a storage primitive; one-shot policy and versioning live in
+ * SGMigration. A missing item is success with outFound=NO. */
+BOOL SGKeychain_RewrapPrivateKeyForPreUnlockAccess(NSInteger profileIndex,
+                                                   BOOL *outFound);
 
 /* Delete the keychain entry for the given profile slot */
 BOOL SGKeychain_DeletePrivateKey(NSInteger profileIndex);

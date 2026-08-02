@@ -13,23 +13,18 @@ PLIST_PATH="$JB_PREFIX/Library/LaunchDaemons/com.skyglow.snd.plist"
 
 echo "[SGN] Using prefix: ${JB_PREFIX:-/}"
 
-if [ -f "$PLIST_PATH" ]; then
-    if command -v launchctl >/dev/null 2>&1; then
-        echo "[SGN] Unloading daemon with launchctl"
-        launchctl unload "$PLIST_PATH" 2>/dev/null || true
-    else
-        echo "[SGN] Unloading daemon with launchctl"
-        launchctl unload "$PLIST_PATH" 2>/dev/null || true
-    fi
-else
-    echo "[SGN] Plist not found: $PLIST_PATH"
+if [ -f "$PLIST_PATH" ] && command -v launchctl >/dev/null 2>&1; then
+    echo "[SGN] Unloading daemon with launchctl"
+    launchctl unload "$PLIST_PATH" 2>/dev/null || true
 fi
 
-# Optional: remove plist file
-# rm -f "$PLIST_PATH"
-
-# Optional: remove keys (if you want to wipe state on uninstall)
-# rm -rf "$KEYS_PATH"
+# Normally dpkg removes the package-owned plist.  This also cleans up the
+# dynamically generated plist used by older releases.
+case "${1:-remove}" in
+    remove|purge|failed-upgrade|disappear)
+        rm -f "$PLIST_PATH"
+        ;;
+esac
 
 echo "[SGN] Removal complete"
 exit 0

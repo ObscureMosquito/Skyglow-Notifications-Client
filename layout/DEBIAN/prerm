@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+JB_PREFIX=""
+if [ -d /var/jb ]; then
+    JB_PREFIX="/var/jb"
+fi
+
+PLIST_PATH="$JB_PREFIX/Library/LaunchDaemons/com.skyglow.snd.plist"
+
+if [ -f "$PLIST_PATH" ] && command -v launchctl >/dev/null 2>&1; then
+    echo "[SGN] Unloading daemon before removal"
+    launchctl unload "$PLIST_PATH" 2>/dev/null || true
+fi
+
+exit 0

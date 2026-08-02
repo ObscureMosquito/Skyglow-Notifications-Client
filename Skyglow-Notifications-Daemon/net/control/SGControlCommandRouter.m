@@ -11,6 +11,8 @@
 #import "SGTokenManager.h"
 #import "SGLog.h"
 #import "SGLogDiagnostics.h"
+#include <signal.h>
+#include <unistd.h>
 
 @implementation SGControlCommandRouter {
     SGDaemon   *_daemon;
@@ -96,6 +98,22 @@
     [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                       SGControlReplyBlock reply,
                                       SGControlReplyErrorBlock replyError) {
+        (void)req;
+        (void)replyError;
+        reply(SGCMSG_GENERIC_ACK, nil);
+
+        // Let the acknowledgement leave the socket before beginning bounded
+        // shutdown.  launchd's KeepAlive policy owns starting the replacement.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(250 * NSEC_PER_MSEC)),
+                       dispatch_get_main_queue(), ^{
+            kill(getpid(), SIGTERM);
+        });
+    } forMessageType:SGCMSG_RESTART_DAEMON];
+
+    [controlChannel registerHandler:^(const SGControlChannelMessage *req,
+                                      SGControlReplyBlock reply,
+                                      SGControlReplyErrorBlock replyError) {
         SGStatusPayload snapshot;
         SGStatusServer_Current(&snapshot);
         reply(SGCMSG_STATUS_RESPONSE,
@@ -130,6 +148,13 @@
             [address release];
             [pem release];
             replyError(SGCERR_INVALID_REQUEST, @"save-profile payload strings invalid");
+            return;
+        }
+        if ([pem length] > 0 && !SG_LooksLikePEMCertificate(pem)) {
+            [address release];
+            [pem release];
+            replyError(SGCERR_INVALID_REQUEST,
+                       @"file does not look like a PEM-encoded server certificate");
             return;
         }
 

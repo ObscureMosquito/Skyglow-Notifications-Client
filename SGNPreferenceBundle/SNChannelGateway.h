@@ -24,6 +24,13 @@ typedef void (^SNChannelBundleListCompletion)(BOOL ok, NSArray *bundleIds, NSStr
 + (void)postReloadConfig;
 
 /**
+ * Asks the daemon to acknowledge and then shut down cleanly.  launchd's
+ * KeepAlive policy starts a replacement; no privileged Settings helper is
+ * involved.  Completion fires on the main queue after the acknowledgement.
+ */
++ (void)restartDaemonWithCompletion:(SNChannelCommandCompletion)completion;
+
+/**
  * Triggers the daemon's debug test-inject hook.  Replaces the
  * com.skyglow.test-inject Darwin signal posted from SNDebugViewController.
  */

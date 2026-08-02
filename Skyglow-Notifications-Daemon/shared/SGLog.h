@@ -4,6 +4,20 @@
 #include <stddef.h>
 #include "SGLogDiagnostics.h"
 
+/* Compile-time sink defaults. Override any of these with -D for a particular
+ * build without changing call sites or the daemon's main logic. */
+#ifndef SG_LOG_FILE_DEFAULT_ENABLED
+#define SG_LOG_FILE_DEFAULT_ENABLED 1
+#endif
+
+#ifndef SG_LOG_CONSOLE_DEFAULT_ENABLED
+#define SG_LOG_CONSOLE_DEFAULT_ENABLED 1
+#endif
+
+#ifndef SG_LOG_TTY_DEFAULT_ENABLED
+#define SG_LOG_TTY_DEFAULT_ENABLED 1
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -28,15 +42,13 @@ void SGLog_Flush(void);
 
 void SGLog_SetProcessName(const char *name);
 
-/* Mirror Error/Warn/Info to the system log (ASL on iOS so Console.app sees
- * the daemon as a proper sender with level + tag).  Default ON.  Disable
- * via prefs if the user wants their system log kept clean. */
-void SGLog_SetSyslogEnabled(int enabled);
+/* Runtime switches initialized from the compile-time defaults above. */
+void SGLog_SetFileEnabled(int enabled);
+void SGLog_SetConsoleEnabled(int enabled);
+void SGLog_SetTTYEnabled(int enabled);
 
-/* Echo every emitted line to stdout in addition to the file/syslog sinks.
- * Pass 1 to force on, 0 to force off, -1 to auto-detect
- */
-void SGLog_SetStdoutEnabled(int enabled);
+/* Console uses ASL on legacy systems and Foundation's unified-log path on
+ * modern systems. TTY output is additionally guarded by isatty(stdout). */
 
 #define SGLOGE(tag, fmt, ...) SGLog_Write(SGLogLevelError, #tag, fmt, ##__VA_ARGS__)
 #define SGLOGW(tag, fmt, ...) SGLog_Write(SGLogLevelWarn,  #tag, fmt, ##__VA_ARGS__)

@@ -1,4 +1,5 @@
 #import "SGLog.h"
+#import <Foundation/Foundation.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -10,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
+#include <TargetConditionals.h>
 
 static pthread_mutex_t _logLock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -20,8 +22,18 @@ static size_t     _rotateBytes     = 0;
 static size_t     _bytesWritten    = 0;
 static char       _procName[32]    = {0};
 static aslclient  _aslClient       = NULL;
-static volatile int _syslogEnabled = 1;
-static volatile int _stdoutEnabled = -1;   /* -1 = auto (decide via isatty on first write) */
+static volatile int _fileEnabled = SG_LOG_FILE_DEFAULT_ENABLED ? 1 : 0;
+static volatile int _consoleEnabled = SG_LOG_CONSOLE_DEFAULT_ENABLED ? 1 : 0;
+static volatile int _ttyEnabled = SG_LOG_TTY_DEFAULT_ENABLED ? 1 : 0;
+static volatile int _stdoutIsTTY = -1;
+
+typedef enum {
+    SGLogConsoleBackendUnknown = 0,
+    SGLogConsoleBackendASL,
+    SGLogConsoleBackendNSLog,
+} SGLogConsoleBackend;
+
+static SGLogConsoleBackend _consoleBackend = SGLogConsoleBackendUnknown;
 
 static const char _levelChars[] = { 'E', 'W', 'I', 'D', 'T' };
 
@@ -29,9 +41,40 @@ static const int _aslLevels[] = {
     ASL_LEVEL_ERR,      /* Error */
     ASL_LEVEL_WARNING,  /* Warn  */
     ASL_LEVEL_NOTICE,   /* Info — NOTICE is the default ASL filter cutoff */
-    -1,                 /* Debug — file only */
-    -1,                 /* Trace — file only */
+    ASL_LEVEL_DEBUG,    /* Debug */
+    ASL_LEVEL_DEBUG,    /* Trace (closest legacy severity) */
 };
+
+static SGLogConsoleBackend SG_ResolveConsoleBackend(void) {
+    NSDictionary *systemVersion = [NSDictionary dictionaryWithContentsOfFile:
+        @"/System/Library/CoreServices/SystemVersion.plist"];
+    NSString *version = [systemVersion objectForKey:@"ProductVersion"];
+    NSArray *parts = [version componentsSeparatedByString:@"."];
+    NSInteger major = ([parts count] > 0) ? [[parts objectAtIndex:0] integerValue] : 0;
+
+#if TARGET_OS_IPHONE
+    BOOL hasUnifiedLogging = (major >= 10);
+#else
+    NSInteger minor = ([parts count] > 1) ? [[parts objectAtIndex:1] integerValue] : 0;
+    BOOL hasUnifiedLogging = (major > 10 || (major == 10 && minor >= 12));
+#endif
+    return hasUnifiedLogging ? SGLogConsoleBackendNSLog
+                             : SGLogConsoleBackendASL;
+}
+
+static void SG_EnsureConsoleBackendLocked(void) {
+    if (_consoleBackend == SGLogConsoleBackendUnknown) {
+        _consoleBackend = SG_ResolveConsoleBackend();
+    }
+    if (_consoleBackend == SGLogConsoleBackendASL &&
+        !_aslClient && _procName[0] != '\0') {
+        _aslClient = asl_open(_procName, "com.skyglow.daemon",
+                              ASL_OPT_NO_DELAY);
+        if (_aslClient) {
+            asl_set_filter(_aslClient, ASL_FILTER_MASK_UPTO(ASL_LEVEL_DEBUG));
+        }
+    }
+}
 
 static void SG_RotateLocked(void) {
     if (!_logFile || _rotateBytes == 0 || _logPath[0] == '\0') return;
@@ -47,7 +90,7 @@ static void SG_RotateLocked(void) {
     (void)rename(_logPath, rotated);
 
     _logFile = fopen(_logPath, "a");
-    if (_logFile) {
+    if (_fileEnabled && _logFile) {
         (void)fchmod(fileno(_logFile), 0644);
         _bytesWritten = 0;
     }
@@ -78,12 +121,16 @@ SGLogLevel SGLog_GetMinLevel(void) {
     return _minLevel;
 }
 
-void SGLog_SetSyslogEnabled(int enabled) {
-    _syslogEnabled = enabled ? 1 : 0;
+void SGLog_SetFileEnabled(int enabled) {
+    _fileEnabled = enabled ? 1 : 0;
 }
 
-void SGLog_SetStdoutEnabled(int enabled) {
-    _stdoutEnabled = (enabled < 0) ? -1 : (enabled ? 1 : 0);
+void SGLog_SetConsoleEnabled(int enabled) {
+    _consoleEnabled = enabled ? 1 : 0;
+}
+
+void SGLog_SetTTYEnabled(int enabled) {
+    _ttyEnabled = enabled ? 1 : 0;
 }
 
 void SGLog_SetProcessName(const char *name) {
@@ -91,10 +138,7 @@ void SGLog_SetProcessName(const char *name) {
     if (name && name[0] != '\0') {
         strncpy(_procName, name, sizeof(_procName) - 1);
         _procName[sizeof(_procName) - 1] = '\0';
-        if (!_aslClient) {
-            _aslClient = asl_open(_procName, "com.skyglow.daemon", ASL_OPT_NO_DELAY);
-            asl_set_filter(_aslClient, ASL_FILTER_MASK_UPTO(ASL_LEVEL_DEBUG));
-        }
+        if (_consoleEnabled) SG_EnsureConsoleBackendLocked();
     }
     pthread_mutex_unlock(&_logLock);
 }
@@ -116,6 +160,11 @@ int SGLog_OpenFile(const char *path, size_t rotateBytes) {
     _logPath[sizeof(_logPath) - 1] = '\0';
     _rotateBytes  = rotateBytes;
     _bytesWritten = 0;
+
+    if (!_fileEnabled) {
+        pthread_mutex_unlock(&_logLock);
+        return 0;
+    }
 
     _logFile = fopen(_logPath, "a");
     int rc = 0;
@@ -184,7 +233,7 @@ void SGLog_Write(SGLogLevel level, const char *tag, const char *fmt, ...) {
     }
     if ((size_t)lineLen >= sizeof(line)) lineLen = (int)sizeof(line) - 1;
 
-    if (_logFile) {
+    if (_fileEnabled && _logFile) {
         fwrite(line, 1, (size_t)lineLen, _logFile);
         _bytesWritten += (size_t)lineLen;
         fflush(_logFile);
@@ -194,21 +243,29 @@ void SGLog_Write(SGLogLevel level, const char *tag, const char *fmt, ...) {
         }
     }
 
-    if (_stdoutEnabled < 0) {
-        _stdoutEnabled = isatty(STDOUT_FILENO) ? 1 : 0;
+    if (_ttyEnabled && _stdoutIsTTY < 0) {
+        _stdoutIsTTY = isatty(STDOUT_FILENO) ? 1 : 0;
     }
-    if (_stdoutEnabled > 0) {
+    if (_ttyEnabled && _stdoutIsTTY > 0) {
         fwrite(line, 1, (size_t)lineLen, stdout);
         fflush(stdout);
     }
 
+    if (_consoleEnabled) SG_EnsureConsoleBackendLocked();
     aslclient aslSnapshot = _aslClient;
+    SGLogConsoleBackend consoleBackend = _consoleBackend;
+    int consoleEnabled = _consoleEnabled;
     pthread_mutex_unlock(&_logLock);
 
-    if (_syslogEnabled) {
+    if (consoleEnabled && consoleBackend == SGLogConsoleBackendASL) {
         int aslLevel = _aslLevels[level];
         if (aslLevel >= 0) {
             asl_log(aslSnapshot, NULL, aslLevel, "[%s] %s", safeTag, body);
         }
+    } else if (consoleEnabled && consoleBackend == SGLogConsoleBackendNSLog) {
+        /* NSLog is intentional here: Foundation routes it to ASL on old
+         * releases and unified logging on modern releases without importing
+         * newer SDK headers into the iOS 4-compatible build. */
+        NSLog(@"[%c] [%s] %s", levelChar, safeTag, body);
     }
 }

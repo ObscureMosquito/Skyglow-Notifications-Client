@@ -45,11 +45,6 @@ static inline NSString * SGProfilePath() {
 }
 static inline NSString * SGDBPath()        { return SGPath(SG_DB_PATH); }
 
-static NSString * const kSGNIndicatorPlist  = @"/var/mobile/Library/Preferences/com.skyglow.sndp.indicator.plist";
-static NSString * const kSGNIndicatorKey    = @"enabled";
-static const char * const kSGNIndicatorNote = "com.skyglow.sndp.indicator.changed";
-static inline NSString * SGIndicatorPrefsPath() { return SGPath(kSGNIndicatorPlist); }
-
 @interface SNDataManager ()
 @end
 
@@ -140,23 +135,6 @@ static inline NSString * SGIndicatorPrefsPath() { return SGPath(kSGNIndicatorPli
 
 - (NSString *)serverAddressInput {
     return [[self mainPrefs] objectForKey:@"notificationServerAddress"];
-}
-
-- (BOOL)indicatorEnabled {
-    NSNumber *v = [[NSDictionary dictionaryWithContentsOfFile:SGIndicatorPrefsPath()]
-                      objectForKey:kSGNIndicatorKey];
-    return v ? [v boolValue] : NO;
-}
-
-- (BOOL)setIndicatorEnabled:(BOOL)enabled {
-    NSString *path = SGIndicatorPrefsPath();
-    NSMutableDictionary *ind =
-        [NSMutableDictionary dictionaryWithContentsOfFile:path]
-        ?: [NSMutableDictionary dictionary];
-    [ind setObject:[NSNumber numberWithBool:enabled] forKey:kSGNIndicatorKey];
-    if (![ind writeToFile:path atomically:YES]) return NO;
-    notify_post(kSGNIndicatorNote);
-    return YES;
 }
 
 - (NSDictionary *)profile { return [NSDictionary dictionaryWithContentsOfFile:SGProfilePath()] ?: @{}; }
@@ -490,7 +468,7 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
             }
             NSString *pem = body ? [[[NSString alloc] initWithData:body
                                                           encoding:NSUTF8StringEncoding] autorelease] : nil;
-            if (!pem || [pem rangeOfString:@"BEGIN"].location == NSNotFound) {
+            if (!pem || [pem rangeOfString:@"-----BEGIN CERTIFICATE-----"].location == NSNotFound) {
                 completion(nil, @"Server returned data that is not a PEM certificate.");
                 return;
             }

@@ -23,9 +23,6 @@ typedef enum {
 - (NSDictionary *)appStatus;
 - (NSString *)serverAddressInput;
 
-- (BOOL)indicatorEnabled;
-- (BOOL)setIndicatorEnabled:(BOOL)enabled;
-
 /** Profile — active profile shortcuts (delegates to active profile index) */
 - (NSDictionary *)profile;
 - (NSString *)serverAddress;

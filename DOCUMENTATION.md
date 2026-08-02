@@ -1,7 +1,13 @@
 # Skyglow Notifications Protocol Specification
 
 **Version:** 2 (`SGP_VERSION = 0x02`)  
-**Last Updated:** May 2026
+**Last Updated:** July 2026
+
+> Frame version `0x02` is unchanged. Multi-format payloads (`content_type`, §7.4), payload
+> compression (`is_compressed`, §7.2), the structured-TLV encoding (§7.4.3), and the optional
+> registration client certificate (§5.5) are **backward-compatible** additions: a peer that
+> predates them sends `content_type = 0x00`, leaves the compression flag clear, and presents no
+> client certificate.
 
 ---
 
@@ -49,11 +55,24 @@ If `http_addr` is set, the client's prefs UI can fetch the server's public
 certificate automatically — see §3.4. Without it, users must import the PEM
 file manually.
 
+The daemon's own resolver reads **only** `tcp_addr` and `tcp_port` and discards
+every other key in the record; `http_addr` is consumed exclusively by the prefs
+UI during certificate provisioning. Additional keys are therefore always safe to
+publish — no client component fails on an unrecognized one.
+
 **Important:** `tcp_port` must point to the TLS-enabled TCP protocol listener, **not** the HTTP API port. These are distinct services running on different ports.
 
 ### 2.4. DNS Caching
 
-Clients cache resolved DNS records locally (SQLite) and use cached values on subsequent startups. The cache TTL is **1 hour** (3600 seconds). The cache is refreshed asynchronously in the background after a successful connection.
+Clients cache resolved DNS records locally (SQLite) and use cached values on subsequent startups. The cache TTL is **1 hour** (3600 seconds). An entry older than the TTL is still used: the stale value is returned immediately and a refresh runs in the background, so a DNS outage never blocks a reconnect.
+
+A background refresh is triggered when:
+
+- a lookup is served from an entry older than the TTL,
+- authentication completes successfully (`S_AUTH_OK`), or
+- a connection attempt fails.
+
+A connect failure caused by a missing or mismatched server certificate additionally purges the entire DNS cache, forcing a live lookup on the next attempt (the cached address is assumed to point at the wrong host).
 
 ---
 
@@ -65,11 +84,16 @@ All TCP protocol communication occurs over a TLS connection. The server uses a s
 
 - **Protocol:** TLS 1.2+ (SSLv2, SSLv3, TLS 1.0, and TLS 1.1 are explicitly disabled)
 - **Certificate validation:** Pinned server certificate only; the system CA store is **not** consulted
-- **Pinning mechanism:** The pinned PEM is added to an empty `X509_STORE` via `X509_STORE_add_cert`; the server's presented chain must terminate at that exact certificate
+- **Pinning mechanism:** OpenSSL verification is disabled (`SSL_VERIFY_NONE`) and replaced by a direct comparison — the leaf certificate the server presents is DER-encoded and must be **byte-for-byte identical** to the pinned PEM. No chain is built and no trust anchor is consulted, so intermediates and the certificate's own validity dates are irrelevant
 - **Connection model:** Single persistent long-lived connection; client reconnects with exponential backoff on failure
 - **TCP_NODELAY:** Enabled on the socket
 - **Socket timeouts:** 10 seconds for both send and receive
 - **SIGPIPE:** Must be ignored (`SIG_IGN`) to prevent process termination
+
+> **Operator consequence of exact-leaf pinning.** *Any* re-issue breaks the pin —
+> including renewing an expiring certificate, or re-signing the same public key.
+> Rotating the server certificate requires re-provisioning every client (§3.4).
+> Pick a long validity period at issue time; §11.2 uses 7300 days.
 
 ### 3.2. Frame Format
 
@@ -95,6 +119,10 @@ All messages in both directions use identical binary framing:
 **Header size:** 8 bytes fixed.  
 **Maximum payload:** 4096 bytes (`SGP_MAX_PAYLOAD_LEN`).
 
+The one exception to this framing is the optional legacy compatibility hello a
+v1 server may send as the *first* frame of a connection, which is not
+SGP-framed — see §4.3.
+
 ### 3.3. Byte Order
 
 All multi-byte integers in payloads are encoded in **big-endian** (network byte order). This applies to:
@@ -115,10 +143,13 @@ supported:
 **Auto-fetch (recommended).** The prefs UI:
 
 1. Resolves `_sgn.<server_address>` TXT and reads the `http_addr` value.
-2. Issues `GET <http_addr>/snd/server_cert.pem` over HTTPS. TLS chain
-   validation is intentionally bypassed for this single request — the user
-   sees the parsed Subject/Issuer in a confirmation dialog before the PEM is
-   saved, which serves as the trust gate.
+2. Issues `GET <http_addr>/snd/server_cert.pem`. The scheme comes from
+   `http_addr` as published (`https://` is assumed when it carries none), and
+   TLS chain validation is intentionally bypassed for this request — so the
+   transport authenticates nothing on its own, whichever scheme is used. The
+   trust gate is the user: the parsed Subject, Issuer, and SHA-256 fingerprint
+   are shown in a confirmation dialog before the PEM is saved, and the operator
+   is expected to publish that fingerprint out of band for comparison.
 3. On confirmation, writes the PEM to disk and records its path in the
    profile plist. Every subsequent daemon connection uses strict pinning
    against that file.
@@ -172,6 +203,48 @@ profiles may pin different servers.
 | `0x29` | C_REGISTER_RESP | Response to first-time registration challenge                            |
 | `0x2A` | C_PONG          | Response to server keep-alive ping                                       |
 | `0x2B` | C_FILTER        | Active (routing key, bundle ID) registration set (chunked, full-replace) |
+
+One client frame falls outside the `0x2_` block: `C_UPGRADE` (`0x00`), sent only
+in reply to a legacy v1 compatibility hello — see §4.3.
+
+### 4.3. Legacy (v1) Compatibility Hello
+
+A v1 server greets a new connection with a property-list frame instead of an SGP
+frame. Clients accept this **once**, as the first frame of a connection only, so
+an operator can serve both protocol generations from a single listener.
+
+The legacy frame is:
+
+```
+┌──────────────────┬────────────────────────────────┐
+│ Bytes 0-3        │ Bytes 4+                       │
+│ Length           │ Property list                  │
+│ big-endian u32   │ `bplist00…` (Length bytes)     │
+└──────────────────┴────────────────────────────────┘
+```
+
+The client recognizes it by a first byte that is not the SGP magic `0x53`, and
+requires `12 ≤ Length ≤ 4096` with a body opening on the 8-byte `bplist00`
+magic. Anything else is a protocol error. The plist body itself is **not
+parsed** — it is read and discarded.
+
+The client then replies with `C_UPGRADE` and waits for the server to restart the
+handshake with an ordinary `S_HELLO`:
+
+| Type   | Name      | Payload | Description                    |
+| ------ | --------- | ------- | ------------------------------ |
+| `0x00` | C_UPGRADE | empty   | "I speak v2 — send `S_HELLO`." |
+
+On the wire that reply is a normal 8-byte SGP header with no payload:
+
+```
+53 02 00 00 00 00 00 00       Magic=0x53, Version=0x02, Type=C_UPGRADE(0x00),
+                               Reserved=0x00, PayloadLen=0
+```
+
+The connection remains in the `PreHello` phase (§6.9) across this exchange, and a
+second non-SGP frame is rejected. Servers that never emit the legacy hello can
+ignore this section entirely — nothing else in the protocol depends on it.
 
 ---
 
@@ -248,6 +321,14 @@ issuing addresses outside this charset is treated as malformed.
 | 0      | 1          | code       | Rejection reason code (u8)              |
 | 1      | 2          | reason_len | Length of reason string (BE u16)        |
 | 3      | reason_len | reason     | Human-readable rejection reason (UTF-8) |
+
+### 5.5. Optional Registration Client Certificate (Mutual TLS)
+
+Registration can be gated by **mutual TLS**. A profile may be provisioned (out of band) with a *registration identity* — a PEM bundle containing a client certificate (plus any intermediate chain) and its private key. When one is present, the daemon presents it as its TLS client certificate on the connection used to register, letting the server authorize *who* may create a new device registration.
+
+- The identity is used only while the profile is **unregistered**, and authorizes exactly one successful registration. Committing `S_REGISTER_OK` deletes the PEM from disk and zeros the daemon's in-memory copy in the same step, so every subsequent connection is ordinary (server-authenticated) TLS. Re-registering a profile requires provisioning a fresh identity.
+- It is independent of the RSA identity in §6: the client certificate authorizes the *registration attempt*, whereas the RSA key authenticates the *device* on every later login.
+- Provisioning is purely a client/server deployment concern. A server that does not request a client certificate simply ignores it, so this is fully optional.
 
 ---
 
@@ -354,11 +435,15 @@ To defend against unsolicited server-to-client frames that could be used as sign
 | ----------------- | --------------------------------------- | ------------------------------------------- |
 | PreHello          | TLS handshake complete; (re)connect     | `S_HELLO`                                   |
 | HelloReceived     | Receiving `S_HELLO`                     | *(client will send C_LOGIN or C_REGISTER)*  |
-| ChallengeWait     | Sending `C_LOGIN` or `C_REGISTER`       | `S_CHALLENGE`                               |
+| ChallengeWait     | Sending `C_LOGIN` or `C_REGISTER`       | `S_CHALLENGE`, `S_REGISTER_FAIL`            |
 | AuthWait          | Receiving `S_CHALLENGE` and sending response | `S_AUTH_OK`, `S_REGISTER_OK`, `S_REGISTER_FAIL` |
 | Authenticated     | Receiving `S_AUTH_OK`                   | `S_NOTIFY`, `S_PING`, `S_PONG`, `S_POLL_DONE`, `S_TIME_SYNC` |
 
-`S_DISCONNECT` is accepted in **any** phase. `S_PING` and `S_PONG` are accepted only in `Authenticated`. Any frame outside its allowed phase triggers `SGP_ERR_PROTO` and a clean teardown of the connection (soft error → backoff + reconnect).
+`S_DISCONNECT` is accepted in **any** phase. `S_PING` and `S_PONG` are accepted only in `Authenticated` — keep-alive does not begin until the connection is authenticated, so a ping frame in any earlier phase is unsolicited by definition. Any frame outside its allowed phase triggers `SGP_ERR_PROTO` and a clean teardown of the connection (soft error → backoff + reconnect).
+
+`S_REGISTER_FAIL` is allowed in **both** `ChallengeWait` and `AuthWait`: a server may refuse a registration outright when it sees `C_REGISTER` (client-certificate gate, clock skew, malformed key) rather than spending a challenge round on it. Both are in-phase; either ends the attempt.
+
+Within `Authenticated`, an `S_PONG` is additionally matched against the outstanding client ping. One that arrives with no ping pending, or whose sequence does not match the latest `C_PING`, is **logged and ignored** — it is stale, not a protocol violation, and does not drop the connection.
 
 Servers MUST NOT rely on sending frames out of phase for any side-effect. Sending `S_REGISTER_OK` to an already-authenticated client to "reissue" an identity, or `S_CHALLENGE` mid-session to refresh credentials, is not supported and will be rejected.
 
@@ -381,7 +466,7 @@ Servers MUST NOT rely on sending frames out of phase for any side-effect. Sendin
 | 32     | 16       | msg_id       | Unique notification ID (raw 16 bytes, UUID)           |
 | 48     | 8        | seq          | Server-assigned per-device sequence number (BE i64)   |
 | 56     | 8        | expires_at   | Expiration timestamp (BE i64), 0 = no expiry          |
-| 64     | 1        | flags        | Bit 0: `is_encrypted` (1 = E2EE payload)              |
+| 64     | 1        | flags        | Bit 0 `is_encrypted` (`0x01`, AES-256-GCM); Bit 1 `is_compressed` (`0x02`, raw DEFLATE). Other bits reserved (0). See 7.2. |
 | 65     | 1        | content_type | Payload format identifier (see 7.4)                   |
 | 66     | 4        | data_len     | Length of the data field in bytes (BE u32)            |
 | 70     | data_len | data         | Notification payload (plaintext or ciphertext+tag)    |
@@ -394,11 +479,15 @@ Servers MUST NOT rely on sending frames out of phase for any side-effect. Sendin
 1. Look up `routing_key` in the local database to find the associated **bundle ID** and **E2EE key**.
 2. If `is_encrypted` is set (flags & 0x01):
    - The `data` field contains `ciphertext || 16-byte GCM auth tag`.
-   - Decrypt using AES-256-GCM with the stored E2EE key and the provided `iv`.
-   - The last 16 bytes of `data` are the GCM authentication tag.
-3. Parse the decrypted (or plaintext) data according to the content type (see 7.4).
-4. Deliver the payload to the target application (identified by bundle ID).
-5. Send a `C_ACK` message.
+   - Decrypt using AES-256-GCM with the stored E2EE key and the provided `iv`. The last 16 bytes of `data` are the GCM authentication tag. The GCM **AAD is empty**.
+3. If `is_compressed` is set (flags & 0x02):
+   - Inflate the (now-plaintext) bytes as **raw DEFLATE** — zlib `windowBits = -15`, i.e. no zlib/gzip wrapper.
+   - The inflated result is hard-capped at **65536 bytes** (`SGP_MAX_INFLATED_LEN`) as a decompression-bomb guard; a stream that would exceed it is rejected with `parse_failed`.
+4. Parse the resulting bytes according to `content_type` (see 7.4).
+5. Deliver the canonical payload to the target application (identified by bundle ID).
+6. Send a `C_ACK` message.
+
+> **Ordering when both flags are set.** The server compresses **first**, then encrypts (you cannot usefully compress ciphertext), so the client does the inverse: **decrypt, then inflate**.
 
 ### 7.3. C_ACK (0x23) Payload
 
@@ -418,23 +507,71 @@ Servers MUST NOT rely on sending frames out of phase for any side-effect. Sendin
 
 Acknowledgements are sent immediately if connected. If the connection is down, they are persisted to SQLite and flushed when the connection is restored.
 
-### 7.4. Content Type: TLV Payload Format
+### 7.4. Content Types
 
-Notification payloads use a **Type-Length-Value** encoding:
+The `content_type` byte selects how the payload bytes (after any decryption and decompression) are decoded. **Every** content type describes the *same* object — an APNS-style `userInfo` dictionary, `{ "aps": { ... }, <custom keys> }` — and all decode to one canonical dictionary before delivery.
+
+| Value  | Format         | Notes                                                                          |
+| ------ | -------------- | ------------------------------------------------------------------------------ |
+| `0x00` | Flat TLV       | Compact `title`/`body`/`sound`/`custom_data` only. **Default.**                 |
+| `0x01` | JSON           | UTF-8 JSON object.                                                             |
+| `0x02` | Property list  | Binary (`bplist0`) or XML plist.                                              |
+| `0x03` | Structured TLV | Typed, recursive binary — full fidelity. **Preferred** for new senders needing structure. |
+
+`0x00` is the backward-compatible default: a server predating multi-format support sends a zero byte here, and it can only carry the four flat fields below. Senders needing nested maps/arrays or typed scalars should use `0x03` (or `0x01`/`0x02`).
+
+> **Cross-check.** The decoder sniffs the leading bytes and **rejects** a payload whose `content_type` contradicts them (e.g. `content_type = 0x01` but the bytes begin `bplist0`). This is a sanity check, not the security boundary — the per-format decoder is. Because the GCM AAD is currently empty (§7.2), a sender that needs `content_type` integrity must bind it out of band.
+
+#### 7.4.1. Flat TLV (`0x00`)
+
+A flat sequence of Type-Length-Value records:
 
 ```
-┌──────┬────────┬───────────────┐
-│ Type │ Length │ Value          │
-│ 1 B  │ 2 B   │ Length bytes   │  (repeating)
-└──────┴────────┴───────────────┘
+┌──────┬────────┬──────────────┐
+│ Type │ Length │ Value        │
+│ 1 B  │ 2 B BE │ Length bytes │   (repeating)
+└──────┴────────┴──────────────┘
 ```
 
-| Type | Key         | Value Type | Description               |
-| ---- | ----------- | ---------- | ------------------------- |
-| 0x01 | title       | UTF-8      | Notification title        |
-| 0x02 | body        | UTF-8      | Notification body text    |
-| 0x03 | sound       | UTF-8      | Sound name                |
-| 0x04 | custom_data | Raw bytes  | Application-specific data |
+| Type   | Key           | Value Type | Description               |
+| ------ | ------------- | ---------- | ------------------------- |
+| `0x01` | `title`       | UTF-8      | Notification title        |
+| `0x02` | `body`        | UTF-8      | Notification body text    |
+| `0x03` | `sound`       | UTF-8      | Sound name                |
+| `0x04` | `custom_data` | Raw bytes  | Application-specific data |
+
+These map to `aps.alert.title`, `aps.alert.body`, `aps.sound`, and a top-level `custom_data` respectively.
+
+#### 7.4.2. JSON (`0x01`) and Property List (`0x02`)
+
+The payload is, respectively, a UTF-8 JSON object or an Apple property list (binary `bplist0` or XML). Either is deserialized and canonicalized directly into the `userInfo` dictionary. Non-property-list values (e.g. JSON `null`) are stripped so the result survives the binary-plist IPC hop to SpringBoard. Object nesting is capped at 32 levels.
+
+#### 7.4.3. Structured TLV (`0x03`)
+
+A typed, recursive binary encoding of the same object model JSON/plist describe, tuned for size: only variable-length types carry a length, and every length and integer is a **varint**, so small values cost 1–2 bytes.
+
+**Varint** — unsigned LEB128: base-128, little-endian groups; each byte holds 7 value bits, high bit `0x80` = "another byte follows". At most 10 bytes (a full 64-bit value); overflow is rejected; encoders emit the minimal number of bytes.
+
+Every **VALUE** is:
+
+```
+type    : uint8
+[length : varint]   ← ONLY for MAP, ARRAY, STRING, DATA (byte count of payload)
+payload : depends on type
+```
+
+| Type   | Name   | Length? | Payload                                                                                       |
+| ------ | ------ | ------- | --------------------------------------------------------------------------------------------- |
+| `0x01` | MAP    | yes     | Entries packed until length exhausted. Entry = `keyLen:varint, key:UTF-8, value:VALUE`. Duplicate keys: last wins. |
+| `0x02` | ARRAY  | yes     | VALUEs packed until length exhausted.                                                          |
+| `0x03` | STRING | yes     | UTF-8 bytes (not NUL-terminated); must be valid UTF-8.                                         |
+| `0x04` | INT    | no      | One **zig-zag** varint of a signed int64 (`n → (n<<1) ^ (n>>63)`, so small ± values stay short). |
+| `0x05` | DOUBLE | no      | Exactly 8 bytes, IEEE-754 binary64, **big-endian**. NaN/Inf rejected.                          |
+| `0x06` | BOOL   | no      | Exactly 1 byte: `0x00` false, `0x01` true.                                                     |
+| `0x07` | NULL   | no      | No payload.                                                                                    |
+| `0x08` | DATA   | yes     | Raw bytes (TLV-native; no base64 needed).                                                      |
+
+The top-level VALUE **must** be a MAP. Container lengths must frame their children exactly — a child that would read past the container's declared length, or leftover bytes inside it, is a hard error. Nesting is capped at 32 levels.
 
 ### 7.5. C_POLL (0x22) Payload
 
@@ -558,11 +695,18 @@ The protocol supports **bidirectional** keep-alive pings:
 | ------ | ---- | ----- | ----------------------------- |
 | 0      | 8    | seq   | Echo of the server's sequence |
 
-The client uses an **adaptive keep-alive algorithm** with three stages:
+The client uses an **adaptive keep-alive algorithm** that searches for the longest
+interval the network path will hold open, in four stages:
 
-1. **Growth** — Interval increases until a ping fails
-2. **Steady** — Interval stabilizes at the maximum successful value
-3. **Backoff** — Interval decreases after failures
+1. **Initial growth** — interval climbs in ~300 s steps (±20 s jitter) until a ping fails
+2. **Refined growth** — after a failure, fall back to the last good interval and creep up in ~120 s steps
+3. **Steady state** — settled at a sustainable interval; re-probes for more headroom after `max(24 × interval, 3600 s)`
+4. **Backoff** — halve the interval on each failure until pings succeed again
+
+Interval bounds are **600 s minimum** and a maximum of **3600 s on Wi-Fi** or
+**1680 s on WWAN**; the learned interval is persisted per network type and
+restored on the next connection. This is entirely client-side — a server sees
+only the resulting `C_PING` cadence and needs no knowledge of the algorithm.
 
 **Pong timeout:** 15 seconds (`SGP_PONG_TIMEOUT_SEC`). If no S_PONG is received within this window, the connection is considered dead.
 
@@ -744,7 +888,7 @@ The server must store:
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | address               | Server-assigned device identifier (opaque UTF-8, max 255 bytes)                                                                                                            |
 | public_key            | RSA-2048 public key (DER format, from C_REGISTER)                                                                                                                          |
-| registrations         | Set of `(routing_key, bundle_id)` tuples — full-replace on every C_FILTER. Serves as both the routing filter and the bundle binding table for third-party push addressing. |
+| registrations         | Set of `(tag, routing_key, bundle_id)` tuples — full-replace on every C_FILTER. Serves as both the routing filter and the bundle binding table for third-party push addressing. Entries tagged `0x02` (ignored) are stored but not delivered to — see §8.3. |
 | last_delivered_seq    | Per-device notification sequence counter                                                                                                                                   |
 | unacked_notifications | Queue of notifications not yet acknowledged                                                                                                                                |
 
@@ -755,7 +899,7 @@ The server must store:
 | Client connects (TLS handshake done)   | S_HELLO (with server version)                                                                                                                                         |
 | Client sends C_LOGIN or C_REGISTER     | S_CHALLENGE (32-byte random nonce)                                                                                                                                    |
 | Client sends valid C_LOGIN_RESP        | S_AUTH_OK                                                                                                                                                             |
-| Client sends valid C_REGISTER_RESP     | S_REGISTER_OK (with server version)                                                                                                                                   |
+| Client sends valid C_REGISTER_RESP     | S_REGISTER_OK (with server version **and** the newly assigned device address)                                                                                         |
 | Client sends invalid challenge resp    | S_DISCONNECT (reason: AUTH_FAIL)                                                                                                                                      |
 | Push notification arrives for device   | S_NOTIFY (with routing_key, data, etc.)                                                                                                                               |
 | Client sends C_FILTER chunk(s)         | (No reply.) Buffer chunks until `has_more=0`, then atomically replace the device's registration set. Discard partial buffer if the connection drops mid-transmission. |
@@ -770,8 +914,14 @@ The server must store:
 
 When verifying C_LOGIN_RESP or C_REGISTER_RESP:
 
-1. Reconstruct `digest = SHA-256(nonce || address_utf8 || timestamp_be64)`
-2. Verify the RSA-PSS signature using the client's stored public key
+1. Reconstruct the digest over the signed material for that flow (§6.6). **The
+   address is included for login and omitted for registration**, where no address
+   is bound yet:
+   - `C_LOGIN_RESP`: `digest = SHA-256(nonce || address_utf8 || timestamp_be64)`
+   - `C_REGISTER_RESP`: `digest = SHA-256(nonce || timestamp_be64)`
+2. Verify the RSA-PSS signature. For login, use the public key stored under the
+   claimed address; for registration, use the public key just received in the
+   preceding C_REGISTER frame.
 3. Verify that `timestamp` is within ±300 seconds of the server's current time
 4. If `address` is unknown (for C_LOGIN), reject with S_DISCONNECT
 
@@ -788,18 +938,23 @@ The server should enforce the same payload bounds the client expects:
 | S_DISCONNECT    | 1        | 5        |
 | S_PONG          | 8        | 8        |
 | S_POLL_DONE     | 0        | 0        |
-| S_REGISTER_OK   | 4        | 4        |
+| S_REGISTER_OK   | 7        | 261      |
 | S_REGISTER_FAIL | 1        | 258      |
 | S_PING          | 8        | 8        |
 | S_TIME_SYNC     | 8        | 8        |
+
+`S_REGISTER_OK` is 4 version bytes + 2 length bytes + a 1–255 byte address
+(§5.3), hence 7…261. A frame outside these bounds — or one carrying an address
+with bytes outside `[A-Za-z0-9._@-]` — is a protocol error and drops the
+connection.
 
 ---
 
 ## 12. Security Considerations
 
-1. **TLS with certificate pinning** prevents man-in-the-middle attacks. The client trusts only the specific server certificate obtained during registration.
+1. **TLS with certificate pinning** prevents man-in-the-middle attacks. The client trusts only the specific server certificate provisioned into the profile (§3.4) — obtained before, and independently of, device registration.
 
-2. **RSA-PSS challenge-response authentication** provides strong mutual verification. The client proves possession of the private key corresponding to the public key registered with the server.
+2. **RSA-PSS challenge-response authentication** authenticates the *client to the server*: the client proves possession of the private key corresponding to the public key registered with the server. The server is authenticated separately, by the pinned certificate. The channel is mutually authenticated at the TLS layer only when a registration client certificate is in use (§5.5).
 
 3. **Timestamp validation** on challenges prevents replay attacks (300-second tolerance window).
 

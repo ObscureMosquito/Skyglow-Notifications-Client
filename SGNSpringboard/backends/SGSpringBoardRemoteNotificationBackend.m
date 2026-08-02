@@ -1,4 +1,4 @@
-#import "SGNNativePushBroker.h"
+#import "SGNotificationBackend.h"
 
 #import "SGNAppIntent.h"
 #import "SGNDaemonBridge.h"
@@ -20,21 +20,13 @@ static NSArray *SGNClassicSafeIdentifiers(SBRemoteNotificationServer *server) {
         @selector(_allPushRegisteredThirdPartyBundleIDs)]) {
         identifiers = [server _allPushRegisteredThirdPartyBundleIDs];
     }
-    NSMutableArray *safe = [NSMutableArray array];
-    for (id candidate in identifiers ?: @[]) {
-        if ([candidate isKindOfClass:[NSString class]] &&
-            SG_IsIdentifierStringSafe(candidate)) {
-            [safe addObject:candidate];
-        }
-    }
-    [safe sortUsingSelector:@selector(compare:)];
-    return safe;
+    return SGNFilteredSortedBundleIdentifiers(identifiers);
 }
 
-@interface SGIOSClassicNotificationBackend : NSObject <SGNotificationBackend>
+@interface SGSpringBoardRemoteNotificationBackend : NSObject <SGNotificationBackend>
 @end
 
-@implementation SGIOSClassicNotificationBackend
+@implementation SGSpringBoardRemoteNotificationBackend
 
 + (BOOL)isSupported {
     return SGNClassicServer() != nil;

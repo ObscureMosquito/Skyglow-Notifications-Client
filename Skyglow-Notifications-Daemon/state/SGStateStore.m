@@ -120,15 +120,23 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
                    SGND_REGISTRATION_KEY_WRITE_FAILED, (long)profileIdx);
             return NO;
         }
+        /* The registration client certificate authorizes exactly one attempt to
+         * create a device identity, and that attempt has now succeeded — so the
+         * PEM, which carries a private key, has no further use. Clear its
+         * profile entry in the same write that stores the address, so no state
+         * exists in which a registered profile still points at an identity. */
         BOOL persisted = [self _updateProfileAtIndex:profileIdx
                                             mutation:^(NSMutableDictionary *profile) {
             [profile setObject:deviceAddress forKey:@"device_address"];
             [profile removeObjectForKey:@"last_reg_fail"];
+            [profile removeObjectForKey:@"registration_identity"];
         }];
         if (!persisted) {
             SGKeychain_DeletePrivateKey(profileIdx);
             return NO;
         }
+        unlink([SGPath(SGProfileRegIdentityPathForIndex(profileIdx))
+                   fileSystemRepresentation]);
         return YES;
     }
 }

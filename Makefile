@@ -1,5 +1,12 @@
 include BuildConfig.mk
 
+# Core-daemon logging sinks. File + terminal output are enabled by default;
+# Console is opt-in to avoid duplicating every daemon line in normal builds.
+# Example: make clean package SG_DAEMON_CONSOLE_LOGGING=1
+SG_DAEMON_FILE_LOGGING ?= 1
+SG_DAEMON_CONSOLE_LOGGING ?= 0
+SG_DAEMON_TTY_LOGGING ?= 1
+
 include $(THEOS)/makefiles/common.mk
  
 TOOL_NAME = SkyglowNotificationsDaemon sgnctl
@@ -47,6 +54,9 @@ SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result \
   -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/payload \
   -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/platform \
   -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/shared \
+  -DSG_LOG_FILE_DEFAULT_ENABLED=$(SG_DAEMON_FILE_LOGGING) \
+  -DSG_LOG_CONSOLE_DEFAULT_ENABLED=$(SG_DAEMON_CONSOLE_LOGGING) \
+  -DSG_LOG_TTY_DEFAULT_ENABLED=$(SG_DAEMON_TTY_LOGGING) \
   -DSQLITE_THREADSAFE=1 \
   -DSQLITE_OMIT_LOAD_EXTENSION \
   -DSQLITE_DEFAULT_MEMSTATUS=0 \
@@ -58,13 +68,13 @@ SkyglowNotificationsDaemon_LDFLAGS = \
   $(THEOS_PROJECT_DIR)/libraries/openssl/lib/libssl.a \
   $(THEOS_PROJECT_DIR)/libraries/openssl/lib/libcrypto.a
 SkyglowNotificationsDaemon_CODESIGN_FLAGS = -Sentitlements.plist
-SkyglowNotificationsDaemon_INSTALL_PATH = /usr/local/bin
+SkyglowNotificationsDaemon_INSTALL_PATH = /usr/libexec/skyglow
 SkyglowNotificationsDaemon_FRAMEWORKS = SystemConfiguration CFNetwork Security IOKit
 SkyglowNotificationsDaemon_LIBRARIES += z
 
 # On-device control tool (register / disable / test-inject / list) that drives
 # the daemon over its control channel.  Same sources as tools/Makefile's macOS
-# build, but compiled for iOS and installed alongside the daemon.
+# build, but compiled for iOS and installed in the command-line path.
 sgnctl_FILES = \
     tools/sgnctl.m \
     Skyglow-Notifications-Daemon/net/control/SGControlChannel.m \
@@ -79,7 +89,6 @@ sgnctl_CFLAGS = -fno-objc-arc -Wno-deprecated-declarations \
     -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/state
 sgnctl_FRAMEWORKS = Foundation
 sgnctl_INSTALL_PATH = /usr/local/bin
-sgnctl_CODESIGN_FLAGS = -Sentitlements.plist
 
 
 include $(THEOS_MAKE_PATH)/tool.mk
@@ -88,3 +97,10 @@ SUBPROJECTS += SGNPreferenceBundle
 SUBPROJECTS += SGNSpringboard
 #SUBPROJECTS += SGNSettings
 include $(THEOS_MAKE_PATH)/aggregate.mk
+
+# The plist is package-owned.  Rootless staging later relocates this file into
+# /var/jb while ProgramArguments must already contain the runtime prefix.
+after-stage::
+	$(ECHO_NOTHING)mkdir -p $(THEOS_STAGING_DIR)/Library/LaunchDaemons$(ECHO_END)
+	$(ECHO_NOTHING)sed 's|@DAEMON_PATH@|$(THEOS_PACKAGE_INSTALL_PREFIX)/usr/libexec/skyglow/SkyglowNotificationsDaemon|g' packaging/com.skyglow.snd.plist.in > $(THEOS_STAGING_DIR)/Library/LaunchDaemons/com.skyglow.snd.plist$(ECHO_END)
+	$(ECHO_NOTHING)chmod 644 $(THEOS_STAGING_DIR)/Library/LaunchDaemons/com.skyglow.snd.plist$(ECHO_END)

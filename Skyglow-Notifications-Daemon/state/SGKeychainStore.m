@@ -4,6 +4,15 @@
 
 static NSString * const kSGKeychainService = @"com.skyglow.daemon.privatekey";
 
+#if TARGET_OS_IPHONE
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+static id SGKeychain_PreUnlockAccessibility(void) {
+    return (__bridge id)kSecAttrAccessibleAlwaysThisDeviceOnly;
+}
+#pragma clang diagnostic pop
+#endif
+
 static NSString *SGKeychain_AccountForIndex(NSInteger profileIndex) {
     return [NSString stringWithFormat:@"profile%ld", (long)profileIndex];
 }
@@ -26,17 +35,24 @@ BOOL SGKeychain_StorePrivateKeyPEM(NSString *pem, NSInteger profileIndex) {
 BOOL SGKeychain_StorePrivateKeyData(NSData *pemData, NSInteger profileIndex) {
     if (!pemData || [pemData length] == 0) return NO;
 
-    NSMutableDictionary *delQuery = SGKeychain_BaseQuery(profileIndex);
-    SecItemDelete((__bridge CFDictionaryRef)delQuery);
-
-    NSMutableDictionary *addQuery = SGKeychain_BaseQuery(profileIndex);
-    [addQuery setObject:pemData forKey:(__bridge id)kSecValueData];
+    NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
+    [attributes setObject:pemData forKey:(__bridge id)kSecValueData];
 #if TARGET_OS_IPHONE
-    [addQuery setObject:(__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-                 forKey:(__bridge id)kSecAttrAccessible];
+    /* The daemon must authenticate after a reboot before the first unlock.
+     * ThisDeviceOnly keeps the credential bound to this device, while the
+     * Always class deliberately avoids the passcode-keybag dependency. */
+    [attributes setObject:SGKeychain_PreUnlockAccessibility()
+                   forKey:(__bridge id)kSecAttrAccessible];
 #endif
 
-    OSStatus status = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+    NSMutableDictionary *query = SGKeychain_BaseQuery(profileIndex);
+    OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)query,
+                                    (__bridge CFDictionaryRef)attributes);
+    if (status == errSecItemNotFound) {
+        NSMutableDictionary *addQuery = SGKeychain_BaseQuery(profileIndex);
+        [addQuery addEntriesFromDictionary:attributes];
+        status = SecItemAdd((__bridge CFDictionaryRef)addQuery, NULL);
+    }
     return (status == errSecSuccess);
 }
 
@@ -58,8 +74,44 @@ BOOL SGKeychain_CopyPrivateKeyPEM(NSInteger profileIndex,
     if (status != errSecSuccess || !result) return NO;
 
     NSData *data = [(NSData *)result autorelease];
+    if (![data isKindOfClass:[NSData class]] || [data length] == 0) return NO;
+
     if (outPEMData) *outPEMData = [NSMutableData dataWithData:data];
     return YES;
+}
+
+BOOL SGKeychain_RewrapPrivateKeyForPreUnlockAccess(NSInteger profileIndex,
+                                                   BOOL *outFound) {
+    if (outFound) *outFound = NO;
+#if !TARGET_OS_IPHONE
+    return YES;
+#else
+    NSMutableDictionary *query = SGKeychain_BaseQuery(profileIndex);
+    [query setObject:(__bridge id)kCFBooleanTrue
+              forKey:(__bridge id)kSecReturnData];
+    [query setObject:(__bridge id)kSecMatchLimitOne
+              forKey:(__bridge id)kSecMatchLimit];
+
+    CFTypeRef result = NULL;
+    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query,
+                                          &result);
+    if (status == errSecItemNotFound) return YES;
+    if (status != errSecSuccess || !result) return NO;
+
+    NSData *data = [(NSData *)result autorelease];
+    if (![data isKindOfClass:[NSData class]] || [data length] == 0) return NO;
+    if (outFound) *outFound = YES;
+
+    NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
+    /* Including the value also satisfies iOS 4's accessibility-update rule. */
+    [attributes setObject:data forKey:(__bridge id)kSecValueData];
+    [attributes setObject:SGKeychain_PreUnlockAccessibility()
+                   forKey:(__bridge id)kSecAttrAccessible];
+
+    NSMutableDictionary *updateQuery = SGKeychain_BaseQuery(profileIndex);
+    return SecItemUpdate((__bridge CFDictionaryRef)updateQuery,
+                         (__bridge CFDictionaryRef)attributes) == errSecSuccess;
+#endif
 }
 
 BOOL SGKeychain_DeletePrivateKey(NSInteger profileIndex) {

@@ -70,6 +70,11 @@
 
 @interface UNSUserNotificationServer : NSObject
 + (instancetype)sharedInstance;
+/* Apple's install-time registration entry point. Fans a source description out
+ * to the application service, data provider factory (which creates the
+ * BulletinBoard section), scheduling service, remote notification server, and
+ * the connection listener's bundleId->description registry. */
+- (void)_notificationSourcesDidInstall:(NSArray *)sourceDescriptions;
 @end
 
 @interface UNCPushRegistrationRepository : NSObject
@@ -101,10 +106,15 @@
     (NSString *)bundleIdentifier;
 + (instancetype)applicationSourceDescriptionWithApplication:(id)application;
 - (NSString *)pushEnvironment;
+- (NSString *)bundleIdentifier;
+- (NSString *)displayName;
+- (void)setDisplayName:(NSString *)displayName;
+- (NSURL *)bundleURL;
 @end
 
 @interface LSApplicationProxy : NSObject
 + (instancetype)applicationProxyForIdentifier:(NSString *)bundleIdentifier;
+- (NSString *)localizedName;
 @end
 
 @interface UNSNotificationAuthorizationService : NSObject
@@ -113,6 +123,21 @@
     completionHandler:(void (^)(BOOL granted, NSError *error))completion;
 - (void)requestRemoveAuthorizationForNotificationSourceDescription:(id)source
     completionHandler:(void (^)(BOOL removed, NSError *error))completion;
+@end
+
+/* iOS 10-16 name for the object iOS 17 calls UNSNotificationAuthorizationService;
+ * same selector. Sits behind the connection listener, so it does no caller check. */
+@interface UNSNotificationSettingsService : NSObject
+- (void)requestAuthorizationWithOptions:(NSUInteger)options
+    forNotificationSourceDescription:(id)source
+    completionHandler:(void (^)(BOOL granted, NSError *error))completion;
+@end
+
+/* iOS 10-16 remote server. The listener's identically-named methods are the XPC
+ * entry points and resolve the caller via _currentConnection; these do not. */
+@interface UNSRemoteNotificationServer : NSObject
+- (void)requestRemoteNotificationTokenWithEnvironment:(NSString *)environment
+                                  forBundleIdentifier:(NSString *)bundleIdentifier;
 @end
 
 @interface UNSSettingsGateway : NSObject

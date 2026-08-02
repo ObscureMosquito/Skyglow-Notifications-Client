@@ -4,7 +4,6 @@
 #import "SNRootListController.h"
 #import "SNServerInfoViewController.h"
 #import "SNDebugViewController.h"
-#import "SNCustomizationViewController.h"
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
 #import "SNAlert.h"
@@ -138,12 +137,6 @@
 
 - (void)pushDebugView {
     SNDebugViewController *vc = [[SNDebugViewController alloc] init];
-    [self.navigationController pushViewController:vc animated:YES];
-    [vc release];
-}
-
-- (void)pushCustomizationView {
-    SNCustomizationViewController *vc = [[SNCustomizationViewController alloc] init];
     [self.navigationController pushViewController:vc animated:YES];
     [vc release];
 }

@@ -3,15 +3,11 @@
 #import "SNLogTailViewController.h"
 #import "SNChannelGateway.h"
 #import "SNDeferredActivity.h"
-#include <spawn.h>
-#include <sys/wait.h>
 #import <mach/mach.h>
 #import <mach/message.h>
 #include <bootstrap.h>
 #import "SNAlert.h"
 #import "SNInterfaceColors.h"
-
-extern char **environ;
 
 typedef enum {
     SectionManualReg,
@@ -81,24 +77,11 @@ typedef enum {
     [_savedApps addObjectsFromArray:[dm allRegisteredTokens]];
 }
 
-- (void)reloadDaemon {
-    NSString *path = [[NSBundle bundleForClass:[self class]]
-                      pathForResource:@"sndrestart" ofType:nil];
-    if (!path) {
-        [self showAlert:@"Error" message:@"sndrestart binary not found in bundle."];
-        return;
-    }
-
-    NSString *pathCopy = [path copy];
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        pid_t pid = 0;
-        const char *cpath = [pathCopy fileSystemRepresentation];
-        char *const args[] = { (char *)cpath, NULL };
-        if (posix_spawn(&pid, cpath, NULL, NULL, args, environ) == 0) {
-            waitpid(pid, NULL, 0);
-        }
-        [pathCopy release];
-    });
+- (void)restartDaemon {
+    [SNChannelGateway restartDaemonWithCompletion:^(BOOL ok, NSString *message) {
+        [self showAlert:(ok ? @"Restart Requested" : @"Restart Failed")
+                message:(ok ? @"The daemon is restarting." : message)];
+    }];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -316,8 +299,7 @@ typedef enum {
         [vc release];
 
     } else if (indexPath.section == SectionDaemon) {
-        [self reloadDaemon];
-        [self showAlert:@"Done" message:@"Daemon restarted."];
+        [self restartDaemon];
     }
 }
 

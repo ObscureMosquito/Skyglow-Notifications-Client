@@ -152,6 +152,13 @@ static int CmdSaveProfile(int idx, NSString *address, NSString *pemPath) {
             fprintf(stderr, "sgnctl: cert file too large (max %d bytes)\n", SG_CONTROL_MAX_PROFILE_PEM_SIZE);
             return 2;
         }
+        NSString *pemString = [[[NSString alloc]
+            initWithData:pem encoding:NSUTF8StringEncoding] autorelease];
+        if (!SG_LooksLikePEMCertificate(pemString)) {
+            fprintf(stderr,
+                    "sgnctl: file does not look like a PEM-encoded server certificate\n");
+            return 2;
+        }
     }
 
     SGCProfileSavePayload p; memset(&p, 0, sizeof(p));
@@ -248,6 +255,7 @@ static void Usage(void) {
         "  logs [N]               last N daemon log lines (default 40)\n"
         "  daemon on|off          enable/disable the whole daemon\n"
         "  reload                 reload config from disk\n"
+        "  restart                cleanly restart the daemon through launchd\n"
         "  test-inject <bundle>   deliver a notification through the native pipeline\n\n"
         "  register <bundle>      mint a push token for a bundle (prints token)\n"
         "  enable <bundle>        enable an app\n"
@@ -260,7 +268,7 @@ static void Usage(void) {
         "  authorize-native <id>  present Apple's notification permission prompt\n"
         "  reset-native <id>      remove Apple token and notification permission\n\n"
         "  profiles                       list configured profiles + active\n"
-        "  save-profile <1-5> <addr> [pem] register a server (address + optional cert PEM)\n"
+        "  save-profile <1-5> <addr> [pem] register a server (pinned TLS server certificate PEM)\n"
         "  reg-identity <1-5> [pem]       store/remove the registration cert+key PEM (cert-gated registration)\n"
         "  set-profile <1-5>              switch the active profile\n"
         "  delete-profile <1-5>           delete a profile slot\n");
@@ -276,6 +284,7 @@ int main(int argc, char **argv) {
         if ([cmd isEqualToString:@"status"])          return CmdStatus();
         if ([cmd isEqualToString:@"logs"])            return CmdLogs(arg ? MAX(1, arg.intValue) : 40);
         if ([cmd isEqualToString:@"reload"])          return Send(SGCMSG_RELOAD_CONFIG, nil, ^(const SGControlChannelMessage *r){ (void)r; printf("reloaded\n"); });
+        if ([cmd isEqualToString:@"restart"])         return Send(SGCMSG_RESTART_DAEMON, nil, ^(const SGControlChannelMessage *r){ (void)r; printf("restart requested\n"); });
         if ([cmd isEqualToString:@"test-inject"])     { NEED_ARG(); return AppCommand(SGCMSG_TEST_INJECT, arg, "injected"); }
         if ([cmd isEqualToString:@"register"])        { NEED_ARG(); return CmdRegister(arg); }
         if ([cmd isEqualToString:@"enable"])          { NEED_ARG(); return AppCommand(SGCMSG_ENABLE_APP, arg, "enabled"); }

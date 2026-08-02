@@ -743,6 +743,11 @@ static BOOL isValidPort(NSString *port) {
         return;
     }
 
+    /* The on-disk copy went away with the commit; zero the protocol handler's
+     * heap copy too rather than leaving the private key resident until the next
+     * connection attempt overwrites it. */
+    SGP_SetRegistrationIdentity(nil);
+
     [[SGConfiguration sharedConfiguration] reloadFromDisk];
 
     [self reconcileTokensWithPlist];

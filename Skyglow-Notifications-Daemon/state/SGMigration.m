@@ -9,12 +9,15 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <TargetConditionals.h>
 
 #define SG_MIGRATION_VERSION 2
 #define SG_DATABASE_APPLICATION_ID 0x53474E44
 #define SG_SCHEMA_VERSION 1
 
 static NSString * const kSGMigrationVersionKey = @"storageMigrationVersion";
+static NSString * const kSGKeychainAccessibilityMigrationKey =
+    @"keychainAccessibilityMigrationVersion";
 static NSString * const kSGLegacyPrivateKeyPath =
     @"/var/Library/PreferenceBundles/SGNPreferenceBundle.bundle/com.skyglow.client.pem";
 static NSString * const kSGProfileCertificateDirectory =
@@ -252,6 +255,48 @@ static BOOL SGMigrateLegacyProfileIfNeeded(void) {
            "code=SGN_MIGRATION_PROFILE_APPLIED profile=1 registered=%d",
            shouldCarryRegistration ? 1 : 0);
     return YES;
+}
+
+static BOOL SGMigrateKeychainAccessibilityIfNeeded(void) {
+#if !TARGET_OS_IPHONE
+    return YES;
+#else
+    NSString *mainPath = SGPath(SG_PREFS_PLIST_PATH);
+    NSDictionary *mainPrefs =
+        [NSDictionary dictionaryWithContentsOfFile:mainPath] ?: @{};
+    if ([[mainPrefs objectForKey:kSGKeychainAccessibilityMigrationKey]
+            integerValue] >= 1) {
+        return YES;
+    }
+
+    for (NSInteger profileIdx = 1; profileIdx <= 5; profileIdx++) {
+        BOOL found = NO;
+        if (!SGKeychain_RewrapPrivateKeyForPreUnlockAccess(profileIdx,
+                                                            &found)) {
+            SGLOGW(SGMigration,
+                   "code=SGN_MIGRATION_KEYCHAIN_ACCESSIBILITY_DEFERRED result=deferred profile=%ld",
+                   (long)profileIdx);
+            return NO;
+        }
+        if (found) {
+            SGLOGI(SGMigration,
+                   "code=SGN_MIGRATION_KEYCHAIN_ACCESSIBILITY_REWRAPPED profile=%ld",
+                   (long)profileIdx);
+        }
+    }
+
+    NSMutableDictionary *updatedPrefs =
+        [NSMutableDictionary dictionaryWithDictionary:mainPrefs];
+    [updatedPrefs setObject:[NSNumber numberWithInteger:1]
+                     forKey:kSGKeychainAccessibilityMigrationKey];
+    if (!SGAtomicWritePropertyList(updatedPrefs, mainPath, 0644, NULL)) {
+        SGLOGE(SGMigration,
+               "code=SGN_MIGRATION_KEYCHAIN_ACCESSIBILITY_FAILED result=failed reason=stamp");
+        return NO;
+    }
+
+    return YES;
+#endif
 }
 
 static BOOL SGMSQLiteReadInt(sqlite3 *db, const char *sql, int *outValue) {
@@ -510,6 +555,7 @@ static BOOL SGMigrateLegacyDatabaseIfNeeded(void) {
 
 BOOL SGMigrationRunIfNeeded(void) {
     BOOL profileOK = SGMigrateLegacyProfileIfNeeded();
+    BOOL keychainOK = profileOK && SGMigrateKeychainAccessibilityIfNeeded();
     BOOL databaseOK = SGMigrateLegacyDatabaseIfNeeded();
-    return profileOK && databaseOK;
+    return profileOK && keychainOK && databaseOK;
 }

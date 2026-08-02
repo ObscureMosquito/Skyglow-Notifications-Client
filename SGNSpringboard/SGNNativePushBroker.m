@@ -1,4 +1,5 @@
 #import "SGNNativePushBroker.h"
+#import "SGNotificationBackend.h"
 
 @interface SGUnsupportedNotificationBackend : NSObject <SGNotificationBackend>
 @end
@@ -49,9 +50,9 @@
 
 static id<SGNotificationBackend> SGNotificationBackendCreate(void) {
     NSArray *backendClassNames = @[
-        @"SGIOS17NotificationBackend",
-        @"SGIOSLegacyNotificationBackend",
-        @"SGIOSClassicNotificationBackend"
+        @"SGUserNotificationsCoreBackend",
+        @"SGUserNotificationsServerBackend",
+        @"SGSpringBoardRemoteNotificationBackend"
     ];
     for (NSString *className in backendClassNames) {
         Class backendClass = NSClassFromString(className);
