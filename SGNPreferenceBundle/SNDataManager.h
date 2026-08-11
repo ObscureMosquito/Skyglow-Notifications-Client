@@ -17,37 +17,26 @@ typedef enum {
 @property (nonatomic, readonly) NSString *profilePath;
 @property (nonatomic, readonly) NSString *dbPath;
 
-/** Main Preferences */
 - (NSDictionary *)mainPrefs;
 - (BOOL)isEnabled;
 - (NSDictionary *)appStatus;
 - (NSString *)serverAddressInput;
-
-/** Profile — active profile shortcuts (delegates to active profile index) */
 - (NSDictionary *)profile;
 - (NSString *)serverAddress;
 - (NSString *)deviceAddress;
 - (NSString *)serverPubKeyPEM;
 - (BOOL)isRegistered;
-
-/** Multi-Profile API */
 - (NSInteger)activeProfileIndex;
 - (NSString *)profilePathForIndex:(NSInteger)index;
 - (NSDictionary *)profileForIndex:(NSInteger)index;
 - (BOOL)profileExistsAtIndex:(NSInteger)index;
 
-/** Auto-fetch — resolve _sgn.<addr> TXT for http_addr, then GET <http_addr>/snd/server_cert.pem.
- *  Completion fires on the main queue with either a PEM string or a human-readable error. */
+
 - (void)fetchServerCertificateForAddress:(NSString *)serverAddress
                               completion:(void (^)(NSString *pem, NSString *errorMessage))completion;
 
-/** Daemon Status.  latestPayload is auto-maintained by a subscription to
- *  SGCEVT_STATE_CHANGED on the daemon control channel, seeded at bundle
- *  load by SGCMSG_QUERY_STATUS.  Observe SNDaemonStatusUpdated to react. */
 @property (nonatomic, assign) SGStatusPayload latestPayload;
 
-/** SQLite read model.  These are read-only UI/diagnostic projections; DB
- * mutations stay in the daemon through SGDatabaseManager/SGStateStore. */
 - (NSArray *)allRegisteredTokens;
 - (NSSet *)registeredBundleIDs;
 - (NSInteger)registeredTokenCount;
@@ -55,15 +44,8 @@ typedef enum {
 - (NSDictionary *)cachedDNSForServerAddress:(NSString *)serverAddr;
 - (NSDictionary *)cachedDNSForServerAddress:(NSString *)serverAddr
                                profileIndex:(NSInteger)profileIndex;
-
 - (SNRegistrationStatus)registrationStatusForProfileAtIndex:(NSInteger)profileIndex;
-
-/* Certificate Parsing */
 - (NSDictionary *)parseCertificatePEM:(NSString *)pem;
-
-/** Unregistration */
-
-/** Utilities */
 - (NSString *)hexStringFromData:(NSData *)data;
 - (NSString *)friendlyStringForState:(SGState)state;
 - (UIColor *)colorForState:(SGState)state;

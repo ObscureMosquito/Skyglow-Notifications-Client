@@ -38,9 +38,7 @@ BOOL SGKeychain_StorePrivateKeyData(NSData *pemData, NSInteger profileIndex) {
     NSMutableDictionary *attributes = [NSMutableDictionary dictionary];
     [attributes setObject:pemData forKey:(__bridge id)kSecValueData];
 #if TARGET_OS_IPHONE
-    /* The daemon must authenticate after a reboot before the first unlock.
-     * ThisDeviceOnly keeps the credential bound to this device, while the
-     * Always class deliberately avoids the passcode-keybag dependency. */
+    /* Avoids passcode-keybag dependency so the daemon can auth before first unlock. */
     [attributes setObject:SGKeychain_PreUnlockAccessibility()
                    forKey:(__bridge id)kSecAttrAccessible];
 #endif

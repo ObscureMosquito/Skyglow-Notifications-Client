@@ -95,9 +95,7 @@ void SGNSendDeleteAppCommand(NSString *bundleId) {
         SGNPath(SG_DURABLE_EVENT_INBOX_PATH),
         bundleId, &enqueueError);
     if (!eventPath) {
-        /* The daemon owns persistent app state.  If the missed-uninstall inbox
-         * cannot be recorded, still try live IPC, but do not mutate the daemon
-         * prefs plist from SpringBoard. */
+        /* Still try live IPC; don't mutate the daemon plist from SpringBoard. */
         NSLog(@"[SGN] Durable uninstall enqueue failed for %@: %@; continuing with live IPC only",
               bundleId, enqueueError);
     }
@@ -355,7 +353,6 @@ void StartSpringBoardControlChannel(void) {
             userInfo = [NSPropertyListSerialization propertyListWithData:data
                                                                  options:NSPropertyListImmutable
                                                                   format:NULL error:NULL];
-            // Parse failure or a non-dictionary root means the payload was damaged in transit
             if (![userInfo isKindOfClass:[NSDictionary class]]) {
                 [topic release];
                 replyError(SGCERR_INVALID_REQUEST, @"push delivery userInfo not a plist dictionary");
@@ -520,8 +517,7 @@ void StartSpringBoardControlChannel(void) {
                 beginAuthorizationForBundleIdentifier:bundleCopy
                 detail:&detail];
             if (error == SGCERR_OK) {
-                /* The user decision is intentionally not part of this reply:
-                 * a permission sheet may remain open beyond the IPC timeout. */
+                /* Permission sheet may outlive the IPC timeout. */
                 replyCopy(SGCMSG_GENERIC_ACK, nil);
             } else {
                 replyErrorCopy(error,

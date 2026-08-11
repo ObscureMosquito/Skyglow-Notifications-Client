@@ -1006,9 +1006,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             break;
         }
         case SGP_S_REGISTER_FAIL: {
-            /* The server may reject C_REGISTER immediately (cert gate, clock,
-             * bad key) while we still await S_CHALLENGE, or after the
-             * challenge round — both phases are solicited. */
             if (!_regPendingRSA ||
                 (_phase != SGPProtoAuthWait && _phase != SGPProtoChallengeWait)) {
                 SGLOGW(SGP, "code=%s type=S_REGISTER_FAIL phase=%d hasRegister=%d result=unsolicited",

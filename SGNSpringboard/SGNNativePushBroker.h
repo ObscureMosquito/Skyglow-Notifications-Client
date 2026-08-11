@@ -4,11 +4,6 @@
 typedef void (^SGNNativePushBrokerCompletion)(SGControlError error,
                                                NSString *detail);
 
-/*
- * Stable SpringBoard facade across classic, legacy UserNotifications, and
- * current UserNotificationsCore implementations. Private objects stay behind
- * the selected backend; callers only see bundle IDs and SGControlError.
- */
 @interface SGNNativePushBroker : NSObject {
 @private
     id _backend;

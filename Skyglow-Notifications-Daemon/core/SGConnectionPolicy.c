@@ -12,26 +12,21 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateResolvingDNS,       SGStateBackingOff           },
     { SGStateResolvingDNS,       SGStateIdleCircuitOpen      },
     { SGStateResolvingDNS,       SGStateIdleNoNetwork        },
-
     { SGStateIdleNoNetwork,      SGStateConnecting           },
     { SGStateIdleNoNetwork,      SGStateResolvingDNS         },
-
     { SGStateIdleUnregistered,   SGStateResolvingDNS         },
-
     { SGStateConnecting,         SGStateResolvingDNS         },
     { SGStateConnecting,         SGStateAuthenticating       },
     { SGStateConnecting,         SGStateRegistering          },
     { SGStateConnecting,         SGStateBackingOff           },
     { SGStateConnecting,         SGStateIdleNoNetwork        },
     { SGStateConnecting,         SGStateIdleCircuitOpen      },
-
     { SGStateRegistering,        SGStateAuthenticating       },
     { SGStateRegistering,        SGStateBackingOff           },
     { SGStateRegistering,        SGStateIdleCircuitOpen      },
     { SGStateRegistering,        SGStateIdleNoNetwork        },
     { SGStateRegistering,        SGStateErrorVersionMismatch },
     { SGStateRegistering,        SGStateErrorAuth            },
-
     { SGStateAuthenticating,     SGStateResolvingDNS         },
     { SGStateAuthenticating,     SGStateRegistering          },
     { SGStateAuthenticating,     SGStateConnected            },
@@ -40,7 +35,6 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateAuthenticating,     SGStateErrorAuth            },
     { SGStateAuthenticating,     SGStateIdleNoNetwork        },
     { SGStateAuthenticating,     SGStateErrorVersionMismatch },
-
     { SGStateConnected,          SGStateConnecting           },
     { SGStateConnected,          SGStateBackingOff           },
     { SGStateConnected,          SGStateIdleCircuitOpen      },
@@ -48,20 +42,16 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateConnected,          SGStateResolvingDNS         },
     { SGStateConnected,          SGStateErrorAuth            },
     { SGStateConnected,          SGStateErrorVersionMismatch },
-
     { SGStateBackingOff,         SGStateConnecting           },
     { SGStateBackingOff,         SGStateResolvingDNS         },
     { SGStateBackingOff,         SGStateIdleNoNetwork        },
     { SGStateBackingOff,         SGStateIdleCircuitOpen      },
-
     { SGStateIdleCircuitOpen,    SGStateConnecting           },
     { SGStateIdleCircuitOpen,    SGStateIdleNoNetwork        },
     { SGStateIdleCircuitOpen,    SGStateResolvingDNS         },
-
     { SGStateErrorAuth,          SGStateResolvingDNS         },
     { SGStateErrorBadConfig,     SGStateResolvingDNS         },
     { SGStateErrorVersionMismatch, SGStateResolvingDNS       },
-
     { SGStateDisabled,           SGStateResolvingDNS         },
 };
 

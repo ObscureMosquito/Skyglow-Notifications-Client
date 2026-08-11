@@ -127,8 +127,7 @@ static BOOL SGMWriteMainPreferences(NSDictionary *mainPrefs,
     [outPrefs setObject:[NSNumber numberWithInteger:SG_MIGRATION_VERSION]
                  forKey:kSGMigrationVersionKey];
     if ([legacyServerAddress length] > 0) {
-        /* Kept as a harmless default/input value for older settings panes and
-         * transitional UI code.  The active runtime profile is profile1. */
+        /* Harmless default for older settings panes; active runtime is profile1. */
         [outPrefs setObject:legacyServerAddress
                      forKey:@"notificationServerAddress"];
     }
@@ -206,10 +205,7 @@ static BOOL SGMigrateLegacyProfileIfNeeded(void) {
 
     if (shouldCarryRegistration &&
         !SGKeychain_StorePrivateKeyPEM(privateKeyPEM, 1)) {
-        /* Do not rewrite the legacy plist yet: it may contain the only copy of
-         * the private key, and iOS keychain access can be awkward before first
-         * unlock.  Leaving the old plaintext in place lets the next launch try
-         * again instead of silently unregistering the device. */
+        /* Legacy plist may hold the only key copy; leave it for retry on next launch. */
         SGLOGW(SGMigration,
                "code=SGN_MIGRATION_KEYCHAIN_DEFERRED result=deferred profile=1");
         return YES;

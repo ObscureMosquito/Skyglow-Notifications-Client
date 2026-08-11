@@ -3,13 +3,7 @@
 
 #import <Foundation/Foundation.h>
 
-/**
- * Runs one-shot migrations from published pre-profile/pre-keychain builds.
- *
- * Migration intentionally lives in this quarantine file so legacy plist keys,
- * plaintext PEM handling, and old SQLite schemas do not leak back into the
- * normal storage model.
- */
+/** Runs one-shot migrations from pre-profile/pre-keychain builds. */
 BOOL SGMigrationRunIfNeeded(void);
 
 #endif

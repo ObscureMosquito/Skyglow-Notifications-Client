@@ -7,11 +7,6 @@
 typedef kern_return_t (^SGNotificationDeliveryHandler)(NSString *bundleID,
                                                         NSDictionary *payload);
 
-/**
- * Owns notification disposition after a wire frame has been decoded: durable
- * deduplication, decrypt/decompress/parse, local delivery, ACK selection, and
- * the persistent local-redelivery queue.
- */
 @interface SGNotificationProcessor : NSObject
 
 - (instancetype)initWithDeliveryHandler:(SGNotificationDeliveryHandler)handler;

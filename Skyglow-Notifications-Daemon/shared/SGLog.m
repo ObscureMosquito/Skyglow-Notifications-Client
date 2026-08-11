@@ -1,4 +1,5 @@
 #import "SGLog.h"
+#import "SGAvailability.h"
 #import <Foundation/Foundation.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -38,28 +39,16 @@ static SGLogConsoleBackend _consoleBackend = SGLogConsoleBackendUnknown;
 static const char _levelChars[] = { 'E', 'W', 'I', 'D', 'T' };
 
 static const int _aslLevels[] = {
-    ASL_LEVEL_ERR,      /* Error */
-    ASL_LEVEL_WARNING,  /* Warn  */
-    ASL_LEVEL_NOTICE,   /* Info — NOTICE is the default ASL filter cutoff */
-    ASL_LEVEL_DEBUG,    /* Debug */
-    ASL_LEVEL_DEBUG,    /* Trace (closest legacy severity) */
+    ASL_LEVEL_ERR,
+    ASL_LEVEL_WARNING,
+    ASL_LEVEL_NOTICE,
+    ASL_LEVEL_DEBUG,
+    ASL_LEVEL_DEBUG,
 };
 
 static SGLogConsoleBackend SG_ResolveConsoleBackend(void) {
-    NSDictionary *systemVersion = [NSDictionary dictionaryWithContentsOfFile:
-        @"/System/Library/CoreServices/SystemVersion.plist"];
-    NSString *version = [systemVersion objectForKey:@"ProductVersion"];
-    NSArray *parts = [version componentsSeparatedByString:@"."];
-    NSInteger major = ([parts count] > 0) ? [[parts objectAtIndex:0] integerValue] : 0;
-
-#if TARGET_OS_IPHONE
-    BOOL hasUnifiedLogging = (major >= 10);
-#else
-    NSInteger minor = ([parts count] > 1) ? [[parts objectAtIndex:1] integerValue] : 0;
-    BOOL hasUnifiedLogging = (major > 10 || (major == 10 && minor >= 12));
-#endif
-    return hasUnifiedLogging ? SGLogConsoleBackendNSLog
-                             : SGLogConsoleBackendASL;
+    return SGAvailability_HasUnifiedLogging() ? SGLogConsoleBackendNSLog
+                                              : SGLogConsoleBackendASL;
 }
 
 static void SG_EnsureConsoleBackendLocked(void) {
@@ -263,9 +252,6 @@ void SGLog_Write(SGLogLevel level, const char *tag, const char *fmt, ...) {
             asl_log(aslSnapshot, NULL, aslLevel, "[%s] %s", safeTag, body);
         }
     } else if (consoleEnabled && consoleBackend == SGLogConsoleBackendNSLog) {
-        /* NSLog is intentional here: Foundation routes it to ASL on old
-         * releases and unified logging on modern releases without importing
-         * newer SDK headers into the iOS 4-compatible build. */
         NSLog(@"[%c] [%s] %s", levelChar, safeTag, body);
     }
 }

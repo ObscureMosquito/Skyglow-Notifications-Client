@@ -1,9 +1,5 @@
 #import <Foundation/Foundation.h>
 
-/* Private SpringBoard / ApplePushService / UserNotifications interfaces the
- * tweak talks to
- */
-
 @interface APSIncomingMessage : NSObject
 - (instancetype)initWithTopic:(NSString *)topic userInfo:(NSDictionary *)userInfo;
 - (void)setTimestamp:(NSDate *)date;
@@ -52,8 +48,6 @@
 - (void)invalidateTokenForRemoteNotificationsForBundleIdentifier:(NSString *)bundleIdentifier;
 @end
 
-/* iOS 10+ merged notification authorization and token requests into the
- * UserNotificationsServer connection listener. */
 @interface UNSUserNotificationServerConnectionListener : NSObject
 - (void)requestAuthorizationWithOptions:(NSUInteger)options
                     forBundleIdentifier:(NSString *)bundleIdentifier
@@ -70,10 +64,6 @@
 
 @interface UNSUserNotificationServer : NSObject
 + (instancetype)sharedInstance;
-/* Apple's install-time registration entry point. Fans a source description out
- * to the application service, data provider factory (which creates the
- * BulletinBoard section), scheduling service, remote notification server, and
- * the connection listener's bundleId->description registry. */
 - (void)_notificationSourcesDidInstall:(NSArray *)sourceDescriptions;
 @end
 
@@ -125,16 +115,14 @@
     completionHandler:(void (^)(BOOL removed, NSError *error))completion;
 @end
 
-/* iOS 10-16 name for the object iOS 17 calls UNSNotificationAuthorizationService;
- * same selector. Sits behind the connection listener, so it does no caller check. */
+/** iOS 10-16 equivalent of UNSNotificationAuthorizationService. */
 @interface UNSNotificationSettingsService : NSObject
 - (void)requestAuthorizationWithOptions:(NSUInteger)options
     forNotificationSourceDescription:(id)source
     completionHandler:(void (^)(BOOL granted, NSError *error))completion;
 @end
 
-/* iOS 10-16 remote server. The listener's identically-named methods are the XPC
- * entry points and resolve the caller via _currentConnection; these do not. */
+/** iOS 10-16 equivalent of UNCRemoteNotificationServer. */
 @interface UNSRemoteNotificationServer : NSObject
 - (void)requestRemoteNotificationTokenWithEnvironment:(NSString *)environment
                                   forBundleIdentifier:(NSString *)bundleIdentifier;

@@ -1,7 +1,5 @@
-# Build the sgnctl developer/control tool for the Skyglow daemon (macOS).
-#   make -f tools/Makefile         # builds build/sgnctl
-#   sudo build/sgnctl status       # (run as root — the daemon authorizes euid 0)
-# Run from the repo root.
+# make -f tools/Makefile
+# sudo build/sgnctl status 
 
 DAEMON_DIR := Skyglow-Notifications-Daemon
 BUILD_DIR  := build

@@ -3,12 +3,6 @@
 #include <pthread.h>
 #include <time.h>
 
-/* In-process status cache.  The "server" name is historical — there is no
- * longer a unix socket; status reaches external consumers via the control
- * channel (SGCMSG_QUERY_STATUS for snapshot reads, SGCEVT_STATE_CHANGED
- * events for live updates).  This module is just a thread-safe scratchpad
- * the daemon writes its current state into. */
-
 static SGStatusPayload  _current;
 static pthread_mutex_t  _lock = PTHREAD_MUTEX_INITIALIZER;
 

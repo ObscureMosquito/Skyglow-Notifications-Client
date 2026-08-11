@@ -60,19 +60,12 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
 @property (nonatomic, strong) NSTimer             *refreshTimer;
 @property (nonatomic, strong) UIBarButtonItem     *pauseItem;
 @property (nonatomic, strong) UIBarButtonItem     *pasteboardItem;
-
-/** Last-rendered raw tail, returned by Copy verbatim for bug reports. */
 @property (nonatomic, copy)   NSString            *rawTailContent;
-
-/** Tracks visible (post-filter) lines for the footer counter. */
 @property (nonatomic, assign) NSUInteger           lastVisibleLineCount;
-
-/** Skip-render gate — see refreshLogs. */
 @property (nonatomic, assign) off_t                cachedSize;
 @property (nonatomic, assign) time_t               cachedMTimeSec;
 @property (nonatomic, assign) long                 cachedMTimeNSec;
 @property (nonatomic, assign) NSInteger            cachedFilterLevel;
-
 @property (nonatomic, assign) BOOL                 userScrolledAway;
 @property (nonatomic, assign) BOOL                 paused;
 @property (nonatomic, assign) SNLogFilterLevel     filterLevel;
@@ -98,7 +91,7 @@ typedef NS_ENUM(NSInteger, SNLogScopeFilter) {
         _filterLevel = SNLogFilterAll;
         _contentMode = SNLogContentModeTail;
         _scopeFilter = SNLogScopeAll;
-        _cachedFilterLevel = -1;   /* force first render */
+        _cachedFilterLevel = -1;
         _cachedSize = (off_t)-1;
     }
     return self;
@@ -891,7 +884,6 @@ passesFiltersAllowingUnstructured:NO]) {
     self.cachedMTimeNSec  = mtimeNSec;
     self.cachedFilterLevel = (NSInteger)self.filterLevel;
 
-    /* Slow path — file changed, do the full read + render. */
     NSString *raw = [self readTail];
     self.rawTailContent = raw ?: @"";
 
@@ -927,7 +919,7 @@ passesFiltersAllowingUnstructured:NO]) {
     NSString *state = self.paused
         ? @"Paused"
         : (self.userScrolledAway
-            ? @"Scrolled back — tap log to resume follow"
+            ? @"Tap log to follow"
             : @"Live");
 
     NSString *unit = (self.contentMode == SNLogContentModeSummary) ? @"diagnostic" : @"line";

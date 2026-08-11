@@ -1,11 +1,7 @@
 #ifndef SKYGLOW_SG_COMPATIBILITY_SHIM_H
 #define SKYGLOW_SG_COMPATIBILITY_SHIM_H
 
-/**
- * Cross-version compatibility shim that fills gaps where the iOS 7 SDK build
- * chain emits code that depends on runtime support introduced in later
- * iOS releases than our deployment floor.
- */
+/** Backfills runtime symbols the iOS 7 SDK expects but older iOS lacks. */
 
 #if defined(__OBJC__)
 void SGNInstallCompatibilityShim(void);

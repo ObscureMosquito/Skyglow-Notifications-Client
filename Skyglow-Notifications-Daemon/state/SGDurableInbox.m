@@ -38,8 +38,6 @@ static NSString *SGDurableInboxUUIDString(void) {
     return [(NSString *)string autorelease];
 }
 
-/** Parses one published event file into a dictionary, or nil when the file
- *  is missing, oversized, or not a plist dictionary. */
 static NSDictionary *SGDurableEventParseFile(NSString *path) {
     NSDictionary *attributes = [[NSFileManager defaultManager]
         attributesOfItemAtPath:path error:NULL];

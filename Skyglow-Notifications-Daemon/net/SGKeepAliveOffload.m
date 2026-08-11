@@ -6,13 +6,7 @@
 
 static bool _active = false;
 
-/*
- * Per-version kernel backends. Each is filled in as its kernel path is RE'd and
- * validated on-device, and returns SGKAOffloadOK only when the firmware actually
- * took the keep-alive. Reached only when SGCapabilityKeepAliveOffload is enabled
- * (off by default), so it stays dormant in release until a version is turned on.
- */
-static int sg_offload_ios6(int fd, double interval) {   /* Broadcom keep_alive iovar */
+static int sg_offload_ios6(int fd, double interval) {
     (void)fd; (void)interval;
     return SGKAOffloadUnimplemented;
 }

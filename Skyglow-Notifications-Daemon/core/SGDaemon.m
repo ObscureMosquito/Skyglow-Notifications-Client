@@ -991,7 +991,7 @@ static BOOL isValidPort(NSString *port) {
     return YES;
 }
 
-#pragma mark - Notification Delivery (via the platform layer)
+#pragma mark - Notification Delivery
 
 - (kern_return_t)_deliverPushTopic:(NSString *)topic payload:(NSDictionary *)payload {
     if (!topic || [topic length] == 0) return KERN_INVALID_ARGUMENT;

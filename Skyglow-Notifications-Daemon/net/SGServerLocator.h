@@ -5,15 +5,9 @@
 
 @interface SGServerLocator : NSObject
 
-/**
- * Resolves the TCP endpoint (IP and Port) for a given server domain using DNS-SD TXT records.
- * Results are automatically cached in SGDatabaseManager for one hour.
- */
+/** Resolves IP+port via DNS-SD TXT records; results cached for one hour. */
 + (NSDictionary *)resolveEndpointForServerAddress:(NSString *)serverAddress;
 
-/**
- * Asynchronously refreshes the DNS cache for the specified server in the background.
- */
 + (void)refreshDNSCacheAsynchronouslyForAddress:(NSString *)serverAddress;
 
 @end

@@ -25,9 +25,6 @@ typedef enum : uint32_t {
     SGStateErrorVersionMismatch = 13
 } SGState;
 
-/**
- * Fixed-size binary status snapshot.
- */
 #pragma pack(4)
 typedef struct {
     uint32_t state;
@@ -41,23 +38,14 @@ typedef struct {
 } SGStatusPayload;
 #pragma pack()
 
-/**
- * Initializes the in-process status cache with the daemon start time,
- * subsequent SGStatusServer_Post calls overwrite the cached snapshot.
- */
 void SGStatusServer_Start(int64_t startTime);
 
-/** Atomically updates every field of the cached snapshot. */
 void SGStatusServer_Post(SGState state, uint32_t failures, uint32_t backoff,
                          const char *ip, const char *errorDetail,
                          uint32_t activeProfile);
 
-/** Atomically copies the cached snapshot into outPayload. */
 void SGStatusServer_Current(SGStatusPayload *outPayload);
 
-/**
- * Returns a human-readable string for the given state.
- */
 const char *SGState_GetName(SGState state);
 
 #ifdef __cplusplus

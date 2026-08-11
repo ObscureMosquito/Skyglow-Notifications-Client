@@ -129,8 +129,7 @@ static UIImage *SNImageFromIconRepresentation(id representation) {
         }
     }
 
-    /* Legacy fallback for releases that still publish the installation cache
-     * and store icon artwork directly inside the application bundle. */
+    /* Legacy fallback: icon artwork from the application bundle. */
     NSDictionary *entry = [self entryForBundleId:bundleId];
     NSString *bundlePath = entry[@"Path"];
     if (!bundlePath) return nil;
@@ -171,8 +170,7 @@ static UIImage *SNImageFromIconRepresentation(id representation) {
 @end
 
 @implementation SNAppToggleCell {
-    /* iOS 4's PSTableCell doesn't expose a -specifier getter; calling
-     * self.specifier crashes with unrecognized selector. */
+    /* PSTableCell on iOS 4 lacks -specifier. */
     PSSpecifier *_sgnSpecifier;
 }
 
@@ -204,12 +202,7 @@ static UIImage *SNImageFromIconRepresentation(id representation) {
     return self;
 }
 
-/* iOS 4's PSSwitchCell installs its default UISwitch into the cell's
- * subview tree *after* our -init runs, so an init-time sweep alone
- * leaves the toggle visible on APNs rows.  Walk the cell recursively
- * and remove any UISwitch that isn't our own _toggleSwitch.  Called
- * from syncAccessoryState and layoutSubviews so reused/redrawn cells
- * stay clean. */
+/* PSSwitchCell adds its own UISwitch after init; remove strays. */
 - (void)_sgnRemoveStraySwitchesIn:(UIView *)root {
     for (UIView *sub in [[root.subviews copy] autorelease]) {
         if ([sub isKindOfClass:[UISwitch class]]) {

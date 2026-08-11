@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <unistd.h>
 
+/** OSX compile with arc */
 #if __has_feature(objc_arc)
   #define SGC_RELEASE(x)            do { (void)(x); } while (0)
   #define SGC_RETAIN(x)             (x)
@@ -23,31 +24,27 @@
 #define kSGCDefaultTimeoutSec    SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC
 #define kSGCSendTimeoutMs        ((mach_msg_timeout_t)SG_CONTROL_SEND_TIMEOUT_MS)
 
-#define SGC_RECV_TRAILER_BYTES   256     // kernel-trailer padding for mach_msg recv
-#define SGC_RECV_BACKOFF_USEC    10000   // recv-loop nap when port is transiently NULL
-#define SGC_MAX_SUBSCRIPTIONS    64      // hard cap on live subscriptions (memory-DoS bound)
-#define SGC_MAX_PENDING_QUEUE    256     // hard cap on requests queued while disconnected
+#define SGC_RECV_TRAILER_BYTES 256
+#define SGC_RECV_BACKOFF_USEC  10000
+#define SGC_MAX_SUBSCRIPTIONS  64
+#define SGC_MAX_PENDING_QUEUE  56
 
 @implementation SGControlChannel {
     BOOL                   _isServer;
-    char                  *_serviceName;          /* strdup'd; freed in dealloc */
+    char                  *_serviceName;
     BOOL                   _started;
     volatile BOOL          _stopping;
-
-    /* Server-only state */
-    mach_port_t            _servicePort;          /* receive right, bootstrap-registered */
-    NSMutableDictionary   *_handlers;             /* @(SGControlMessageType) -> [Block copy] */
-    NSMutableSet          *_clientPorts;          /* @(mach_port_t) — held send rights to client reply ports */
-    NSMutableDictionary   *_subscriptions;        /* @(subId) -> @{@"port":@(port), @"event":@(SGControlEventType)} */
+    mach_port_t            _servicePort;
+    NSMutableDictionary   *_handlers;
+    NSMutableSet          *_clientPorts;
+    NSMutableDictionary   *_subscriptions;
     uint64_t               _nextSubscriptionId;
-
-    /* Client-only state */
-    mach_port_t            _replyPort;            /* receive right */
-    mach_port_t            _serverPort;           /* send right; MACH_PORT_NULL while disconnected */
+    mach_port_t            _replyPort;
+    mach_port_t            _serverPort;
     BOOL                   _connected;
-    NSMutableDictionary   *_pendingRequests;     /* @(reqId) -> @{completion, timeoutSource, timeoutDeadline} */
-    NSMutableDictionary   *_eventHandlers;       /* @(subId) -> [Block copy] */
-    NSMutableArray        *_pendingQueue;        /* requests issued while disconnected, replayed on connect */
+    NSMutableDictionary   *_pendingRequests;
+    NSMutableDictionary   *_eventHandlers;
+    NSMutableArray        *_pendingQueue;
     uint64_t               _nextRequestId;
     uint32_t               _lookupFailureCount;
     SGControlConnectionHandler _connectionHandler;
@@ -56,11 +53,6 @@
     dispatch_queue_t       _stateQueue;
 }
 
-#pragma mark - C Helpers
-
-/* COPY_SEND preserves the right (server retains for later events); MOVE_SEND
- * consumes it.  msgh_id mirrors messageType so receivers can demux without
- * parsing the payload. */
 static kern_return_t SGCSendMessage(mach_port_t remotePort,
                                      mach_msg_type_name_t remoteDisposition,
                                      mach_port_t replyPortOrZero,
@@ -222,7 +214,6 @@ static void *SGCRecvThreadEntry(void *arg) {
                 return;
             }
             [self _clientAttemptLookupLocked];
-            /* Client returns YES even if first lookup failed — reconnect is internal. */
         }
 
         _started = YES;
@@ -239,7 +230,6 @@ static void *SGCRecvThreadEntry(void *arg) {
         if (_stopping) return;
         _stopping = YES;
 
-        /* Fail every in-flight pending request so callers unblock. */
         if (!_isServer) {
             NSDictionary *snapshot = SGC_AUTORELEASE([_pendingRequests copy]);
             [_pendingRequests removeAllObjects];
@@ -256,8 +246,6 @@ static void *SGCRecvThreadEntry(void *arg) {
             [_pendingQueue removeAllObjects];
         }
 
-        /* Dropping the receive right unblocks mach_msg with MACH_RCV_PORT_DIED
-         * so the recv thread sees _stopping and exits. */
         if (_isServer && _servicePort != MACH_PORT_NULL) {
             mach_port_mod_refs(mach_task_self(), _servicePort, MACH_PORT_RIGHT_SEND, -1);
             mach_port_mod_refs(mach_task_self(), _servicePort, MACH_PORT_RIGHT_RECEIVE, -1);
@@ -455,8 +443,6 @@ static void *SGCRecvThreadEntry(void *arg) {
     }];
 }
 
-#pragma mark - Introspection
-
 - (BOOL)isConnected {
     __block BOOL c = NO;
     dispatch_sync(_stateQueue, ^{
@@ -465,15 +451,12 @@ static void *SGCRecvThreadEntry(void *arg) {
     return c;
 }
 
-#pragma mark - Receive Loop
-
 - (void)_runReceiveLoop {
     const size_t bufSize = sizeof(SGControlChannelMessage) + SGC_RECV_TRAILER_BYTES;
 
     while (!_stopping) {
         mach_port_t port = _isServer ? _servicePort : _replyPort;
         if (port == MACH_PORT_NULL) {
-            /* Port destroyed by stop or by a reconnect cycle in progress. */
             usleep(SGC_RECV_BACKOFF_USEC);
             continue;
         }
@@ -491,8 +474,6 @@ static void *SGCRecvThreadEntry(void *arg) {
         if (kr != KERN_SUCCESS) {
             free(msg);
             if (_stopping) break;
-            /* MACH_RCV_PORT_DIED/CHANGED during stop/reconnect; transient
-             * errors are also benign — re-check the port next iteration. */
             continue;
         }
 
@@ -540,17 +521,6 @@ static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, 
                     msg->magic, msg->version, mid);
         return;
     }
-
-    /* Frame consistency: payloadLength must fit both the hard wire cap AND
-     * the actual received Mach message size.  The kernel sets msgh_size on
-     * receive to the number of bytes actually delivered, so a peer can't
-     * forge it the way they can forge payloadLength.  Without this check, a
-     * peer can claim payloadLength=4096 while sending a few hundred bytes;
-     * downstream handlers then process up to 4096 bytes of memset-zero
-     * memory as legitimate payload.  Currently safe-by-luck because every
-     * downstream validator rejects zero-filled inputs, but defense at the
-     * parser boundary is what stopped yesterday's protocol bugs and we
-     * want the same property here. */
     {
         mach_msg_size_t machSize = msg->mach_header.msgh_size;
         size_t envelopeSize = offsetof(SGControlChannelMessage, payload);
@@ -578,9 +548,6 @@ static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, 
         else                                            [self _clientDispatchResponseLocked:msg];
     }
 }
-
-#pragma mark - Server-Side Dispatch
-
 
 - (void)_serverDispatchRequestLocked:(SGControlChannelMessage *)msg {
     mach_port_t replyPort = msg->mach_header.msgh_remote_port;
@@ -649,7 +616,6 @@ static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, 
         mach_port_deallocate(mach_task_self(), replyPort);
     }
 
-    /* Built-in SUBSCRIBE / UNSUBSCRIBE handling lives inside the channel. */
     if (type == SGCMSG_SUBSCRIBE) {
         [self _serverHandleSubscribeLocked:msg replyPort:replyPort];
         return;
@@ -671,9 +637,6 @@ static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, 
         return;
     }
 
-    /* Heap-copy the request so it outlives the state-queue frame; the
-     * dispatched block owns its lifetime and frees regardless of whether
-     * the handler responds. */
     SGControlChannelMessage *requestCopy = (SGControlChannelMessage *)malloc(sizeof(*msg));
     if (!requestCopy) {
         SGLOGW(SGControlChannel, "code=%s type=0x%02x result=oom", SGND_CONTROL_ALLOC_FAILED, type);
@@ -764,8 +727,6 @@ static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, 
     }
 }
 
-#pragma mark - Client-Side Dispatch
-
 - (void)_clientAttemptLookupLocked {
     if (_stopping || _connected) return;
 
@@ -808,7 +769,6 @@ static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, 
         });
     }
 
-    /* Replay queued requests in arrival order. */
     NSArray *queued = SGC_AUTORELEASE([_pendingQueue copy]);
     [_pendingQueue removeAllObjects];
     for (NSDictionary *entry in queued) {
@@ -985,7 +945,6 @@ static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, 
 - (void)_clientHandleDeadNameLocked:(SGControlChannelMessage *)msg {
     mach_dead_name_notification_t *note = (mach_dead_name_notification_t *)msg;
     if (note->not_port != _serverPort) {
-        /* A different port died — not our server.  Deallocate and move on. */
         mach_port_deallocate(mach_task_self(), note->not_port);
         return;
     }

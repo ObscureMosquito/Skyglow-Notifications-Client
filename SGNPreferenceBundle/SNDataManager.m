@@ -184,9 +184,6 @@ static sqlite3 *openDBReadOnly(void) {
 }
 
 - (NSSet *)registeredBundleIDs {
-    /* Read the registration set directly from the DB (read-only open). SQLite
-     * handles the concurrent daemon writer, so this needs no daemon round-trip
-     * — it is the same query the daemon would run. */
     sqlite3 *db = openDBReadOnly();
     if (!db) return [NSSet set];
     NSMutableSet *ids = [NSMutableSet set];
@@ -325,7 +322,7 @@ static void SNAutoFetch_DNSCallback(DNSServiceRef sdRef, DNSServiceFlags flags,
                                     uint32_t interfaceIndex, DNSServiceErrorType errorCode,
                                     const char *fullname, uint16_t rrtype, uint16_t rrclass,
                                     uint16_t rdlen, const void *rdata, uint32_t ttl, void *context) {
-    NSMutableDictionary *out = (NSMutableDictionary *)context;   /* plain cast — this is an MRC file */
+    NSMutableDictionary *out = (NSMutableDictionary *)context;
     if (errorCode != kDNSServiceErr_NoError || rdlen == 0) return;
 
     const uint8_t *ptr = (const uint8_t *)rdata;
@@ -440,8 +437,6 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
         }
         if (!del.done) [conn cancel];
 
-        /* Snapshot results onto autoreleased storage that the main-queue
-         * block can safely outlive the delegate/connection cleanup below. */
         NSError   *connErr = [[del.error retain] autorelease];
         NSInteger  code    = del.statusCode;
         NSData    *body    = [[del.buffer retain] autorelease];

@@ -70,21 +70,6 @@ static BOOL SGNLegacyEnsureNotificationSource(NSString *bundleIdentifier) {
         return NO;
     }
 
-    /* Registering is only safe for an app LaunchServices genuinely knows.
-     *
-     * _notificationSourcesDidInstall: creates the UserNotifications-side data
-     * provider, but the BulletinBoard section behind Settings > Notifications is
-     * created by the real install flow. For an app LS has no metadata for, we end
-     * up with a provider and no section, and SpringBoard's later sweep over all
-     * default data providers stores that nil section info into a dictionary keyed
-     * by bundle id and throws. The fan-out is dispatch_async, so that throw lands
-     * on another queue and no @catch here can stop it — the only safe move is not
-     * to register in the first place.
-     *
-     * A nil LaunchServices name is the reliable signal for that state (it is also
-     * what makes the prompt read as a raw bundle id, and what "Error getting name
-     * ... Code=-50" reports). Properly installed apps — including jailbreak ones
-     * like Sileo — have a name and a section, and take this path fine. */
     Class proxyClass = NSClassFromString(@"LSApplicationProxy");
     LSApplicationProxy *proxy = [proxyClass respondsToSelector:
         @selector(applicationProxyForIdentifier:)]
@@ -93,11 +78,6 @@ static BOOL SGNLegacyEnsureNotificationSource(NSString *bundleIdentifier) {
         ? [proxy localizedName] : nil;
 
     if ([lsName length] == 0 || [[source bundleIdentifier] length] == 0) {
-        NSLog(@"[SGN] Legacy source install REFUSED for %@: LaunchServices has no "
-               "name for it, so it has no notification section and registering it "
-               "would crash SpringBoard. The app is not fully installed — try "
-               "'uicache -p /Applications/<App>.app' (or reinstall it), then retry.",
-              bundleIdentifier);
         return NO;
     }
 
@@ -174,10 +154,6 @@ static NSArray *SGNLegacySafeIdentifiers(id remoteServer) {
         return;
     }
 
-    /* Same _currentConnection trap as beginAuthorization: the registrar's
-     * requestTokenForRemoteNotifications... is XPC-facing. Ask the remote server
-     * it delegates to, which is what the UserNotificationsCore backend does. No pass-through is
-     * needed here — we never touch the hooked listener selector. */
     id remoteServer = SGNLegacyRemoteNotificationServer();
     if (![remoteServer respondsToSelector:
         @selector(requestRemoteNotificationTokenWithEnvironment:

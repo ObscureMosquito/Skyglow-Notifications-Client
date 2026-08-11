@@ -102,8 +102,7 @@
         (void)replyError;
         reply(SGCMSG_GENERIC_ACK, nil);
 
-        // Let the acknowledgement leave the socket before beginning bounded
-        // shutdown.  launchd's KeepAlive policy owns starting the replacement.
+        // Let the ack leave before bounded shutdown; launchd owns the restart.
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                      (int64_t)(250 * NSEC_PER_MSEC)),
                        dispatch_get_main_queue(), ^{
@@ -616,9 +615,7 @@
         SGControlReplyErrorBlock replyErrorCopy = [replyError copy];
         [nativePlatform registerInputAppForBundleID:bundleCopy completion:^(SGControlError err, NSString *detail) {
             if (err == SGCERR_OK) {
-                /* The platform has persisted and returned the Skyglow token.
-                 * Commit provider ownership before reporting success so the
-                 * app list and future registration hooks see the same state. */
+                // Commit ownership before acking so the app list stays consistent.
                 BOOL committed = [daemon.stateStore
                     performSetAppEnabled:YES
                     forBundleIdentifier:bundleCopy];

@@ -180,7 +180,6 @@ run: sign
 clean:
 	rm -rf $(BUILD_ROOT)
 
-# --- Install as a launchd daemon (root) -----------------------------------
 LAUNCHD_LABEL    := com.skyglow.snd
 LAUNCHD_PLIST    := /Library/LaunchDaemons/$(LAUNCHD_LABEL).plist
 INSTALL_BIN      := /usr/local/libexec/skyglow/SkyglowNotificationsDaemon
@@ -249,7 +248,6 @@ uninstall:
 	@for i in 1 2 3 4 5; do \
 		sudo security delete-generic-password -s "$(KEYCHAIN_SERVICE)" -a "profile$$i" "$(SYSTEM_KEYCHAIN)" >/dev/null 2>&1 || true; \
 	done
-	@echo "[Skyglow] Uninstalled — no files, launchd job, or keychain items left behind."
 
 reinstall: check-install-signing
 	$(MAKE) -f Makefile.macos uninstall

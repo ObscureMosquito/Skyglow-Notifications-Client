@@ -131,11 +131,7 @@ static void SGApplyDatabaseOwnership(NSString *path) {
         return YES;
     }
 
-    /*
-     * This is the first public schema.  Development databases from older
-     * builds are deliberately rejected instead of being silently rewritten;
-     * remove the unpublished test database once when installing this build.
-     */
+    /* Dev databases from older builds are rejected; delete and reinstall. */
     if (applicationID != 0 || schemaVersion != 0) {
         SGLOGE(SGDatabaseManager,
                "code=%s result=failed reason=incompatible_unpublished_schema app_id=%d version=%d",

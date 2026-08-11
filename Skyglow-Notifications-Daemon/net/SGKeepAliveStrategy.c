@@ -88,7 +88,7 @@ static void sg_steady_state(SGKeepAliveAlgorithm *a, SGKeepAliveAction action) {
     }
     if (a->highWatermark > 0.0 &&
         a->currentInterval >= a->highWatermark - SG_KA_HIGH_WATERMARK) {
-        /* settled */
+        /* no-op: within high watermark */
     } else {
         a->highWatermark = 0.0;
         a->stage = SGKeepAliveStageInitialGrowth;

@@ -66,6 +66,7 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
     [SGCapabilityPowerAssertion]   = { NULL,                          SGPlatformMaskIOS | SGPlatformMaskMacOS,    2.0, 0.0  },
     [SGCapabilityScheduledWake]    = { NULL,                          SGPlatformMaskIOS | SGPlatformMaskMacOS,    2.0, 5.99 },
     [SGCapabilityKeepAliveOffload] = { NULL,                          SGPlatformMaskIOS,                        99.0, 0.0  },
+    [SGCapabilityUnifiedLogging]   = { NULL,                          SGPlatformMaskIOS | SGPlatformMaskMacOS,  10.0, 0.0  },
 };
 
 @interface NSObject (PCPrivateTimerAPI)
@@ -337,6 +338,10 @@ static void SGPowerEventCallback(void *refcon, io_service_t service,
     return [self isCapabilityAvailable:SGCapabilityKeepAliveOffload];
 }
 
+- (BOOL)unifiedLoggingAvailable {
+    return [self isCapabilityAvailable:SGCapabilityUnifiedLogging];
+}
+
 - (SGKeepAliveOffloadBackend)keepAliveOffloadBackend {
     if (![self keepAliveOffloadAvailable]) {
         return SGKeepAliveOffloadBackendNone;
@@ -531,3 +536,17 @@ static void SGPowerEventCallback(void *refcon, io_service_t service,
 }
 
 @end
+
+BOOL SGAvailability_HasUnifiedLogging(void) {
+    static dispatch_once_t once;
+    static BOOL result = NO;
+    dispatch_once(&once, ^{
+        double ver = SGSystemVersionRead();
+#if TARGET_OS_IPHONE
+        result = (ver >= 10.0);
+#else
+        result = (ver >= 10.12);
+#endif
+    });
+    return result;
+}

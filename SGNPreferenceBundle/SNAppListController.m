@@ -378,8 +378,6 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
                 [self _showDeletionErrorForBundleId:bidCopy message:message];
             } else {
                 if ([secCopy isEqualToString:kSGNSectionSkyglow]) {
-                    /* appStatus removal is now part of the daemon's DELETE_APP
-                     * cascade — no client-side plist write. */
                 } else if ([secCopy isEqualToString:kSGNSectionAPNs]) {
                     [self _removeAPNsBundleFromCachedList:bidCopy];
                 }

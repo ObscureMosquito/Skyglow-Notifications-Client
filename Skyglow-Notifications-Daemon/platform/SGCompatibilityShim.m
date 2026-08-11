@@ -2,10 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 
-/* iOS 4's libSystem.B.dylib doesn't export _environ, SDK 7 code
- * that references it (directly or via posix_spawn / inlined getenv)
- * fails to dlopen on iOS 4 with "Symbol not found: _environ".
- */
+/** iOS 4 lacks _environ; SDK 7 code that references it fails to dlopen. */
 char **environ __attribute__((weak)) = NULL;
 
 static id sgn_dict_subscript_get(id self, SEL _cmd, id key) {

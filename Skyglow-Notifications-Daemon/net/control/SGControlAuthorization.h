@@ -5,10 +5,7 @@
 #include <stddef.h>
 #include <sys/types.h>
 
-/**
- * Resolves a Mach request sender's executable identity and applies the
- * control-channel allowlist.
- */
+/** Resolves sender identity and applies the control-channel allowlist. */
 bool SGControlSenderIsAuthorized(pid_t pid,
                                  uid_t euid,
                                  char *outName,

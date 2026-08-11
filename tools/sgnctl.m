@@ -84,7 +84,6 @@ static NSData *BundlePayload(NSString *bundleID) {
     return [NSData dataWithBytes:&p length:sizeof(p)];
 }
 
-// A simple app-state command (enable/disable/delete/clear) taking one bundle id.
 static int AppCommand(SGControlMessageType type, NSString *bundleID, const char *verb) {
     if (!SG_IsIdentifierStringSafe(bundleID)) { fprintf(stderr, "sgnctl: invalid bundle id\n"); return 2; }
     return Send(type, BundlePayload(bundleID), ^(const SGControlChannelMessage *r) {
@@ -137,9 +136,6 @@ static int CmdProfileIndex(SGControlMessageType type, int idx, const char *verb)
         ^(const SGControlChannelMessage *r) { (void)r; printf("%s profile %d\n", verb, idx); });
 }
 
-// Register a server into profile slot idx: address + optional server cert PEM.
-// Omitting the PEM (or passing an empty file) edits the address only, keeping
-// any existing certificate.
 static int CmdSaveProfile(int idx, NSString *address, NSString *pemPath) {
     if (idx < 1 || idx > 5) { fprintf(stderr, "sgnctl: profile index must be 1-5\n"); return 2; }
     if (!SG_IsIdentifierStringSafe(address)) { fprintf(stderr, "sgnctl: invalid server address\n"); return 2; }
@@ -250,7 +246,7 @@ static int CmdLogs(int lines) {
 
 static void Usage(void) {
     fprintf(stderr,
-        "sgnctl — Skyglow daemon control (run with sudo)\n\n"
+        "SGN daemon control\n\n"
         "  status                 daemon connection state + active profile\n"
         "  logs [N]               last N daemon log lines (default 40)\n"
         "  daemon on|off          enable/disable the whole daemon\n"

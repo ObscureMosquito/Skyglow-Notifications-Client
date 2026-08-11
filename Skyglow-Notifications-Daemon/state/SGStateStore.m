@@ -15,8 +15,6 @@
 static NSString * const kSGProfileCertificateDirectory =
     @"/var/mobile/Library/SkyglowNotifications";
 
-/* System-root-relative (wrap with SGPath before touching disk), matching how
- * the plist's server_pub_key value has always been stored. */
 static NSString *SGProfileCertificatePathForIndex(NSInteger profileIdx) {
     return [NSString stringWithFormat:@"%@/profile%ld-server.pem",
             kSGProfileCertificateDirectory, (long)profileIdx];
@@ -120,11 +118,7 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
                    SGND_REGISTRATION_KEY_WRITE_FAILED, (long)profileIdx);
             return NO;
         }
-        /* The registration client certificate authorizes exactly one attempt to
-         * create a device identity, and that attempt has now succeeded — so the
-         * PEM, which carries a private key, has no further use. Clear its
-         * profile entry in the same write that stores the address, so no state
-         * exists in which a registered profile still points at an identity. */
+
         BOOL persisted = [self _updateProfileAtIndex:profileIdx
                                             mutation:^(NSMutableDictionary *profile) {
             [profile setObject:deviceAddress forKey:@"device_address"];
@@ -243,12 +237,10 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
         if ([identityPEM length] > 0) {
             SGEnsureRuntimeDirectories();
             NSData *pemData = [identityPEM dataUsingEncoding:NSUTF8StringEncoding];
-            /* 0600: the blob contains a private key. */
             if (!SGAtomicWriteData(pemData, diskPath, 0600, NULL)) return NO;
             return [self _updateProfileAtIndex:profileIdx
                                       mutation:^(NSMutableDictionary *profile) {
                 [profile setObject:storedPath forKey:@"registration_identity"];
-                /* A new identity invalidates the previous refusal. */
                 [profile removeObjectForKey:@"last_reg_fail"];
             }];
         }

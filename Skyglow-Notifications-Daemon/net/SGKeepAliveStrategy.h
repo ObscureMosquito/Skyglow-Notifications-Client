@@ -18,7 +18,7 @@ typedef enum {
 } SGKeepAliveStage;
 
 /*
- * Actions fed to the algorithm:
+ * Actions given to the algorithm:
  *   Success — a keepalive was acknowledged (pong received)
  *   Failure — a keepalive timed out
  *   Probe   — the SteadyState re-probe timer fired
@@ -41,24 +41,19 @@ typedef struct {
     SGKeepAliveStage stage;
 } SGKeepAliveAlgorithm;
 
-/*
- * Initializes/resets the algorithm for the given network type: min 600s;
- * max 3600s on Wi-Fi, 1680s on WWAN. A positive initialInterval warm-starts
- * in SteadyState around that value, a non positive one cold-starts in
- * InitialGrowth.
- */
+/** Initializes/resets the algorithm for the given network type */
 void SGKeepAlive_Initialize(SGKeepAliveAlgorithm *algo, bool isWiFi, double initialInterval);
 
-/* Feeds Success (true) or Failure (false). */
+/** Feeds Success or Failure. */
 void SGKeepAlive_ProcessHeartbeatResult(SGKeepAliveAlgorithm *algo, bool wasSuccessful);
 
-/* Drives the state machine with one action. */
+/** Drives the state machine with one action. */
 void SGKeepAlive_ProcessAction(SGKeepAliveAlgorithm *algo, SGKeepAliveAction action);
 
-/* Current keep-alive interval in seconds. */
+/** Current keep-alive interval in seconds. */
 double SGKeepAlive_GetCurrentInterval(SGKeepAliveAlgorithm *algo);
 
-/* Delay before the next SteadyState re-probe; 0 when not in SteadyState. */
+/** Delay before the next SteadyState reprobe */
 double SGKeepAlive_SteadyStateReprobeDelay(SGKeepAliveAlgorithm *algo);
 
 #endif

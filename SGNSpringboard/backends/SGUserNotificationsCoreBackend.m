@@ -93,7 +93,7 @@ static NSArray *SGNCoreRegisteredBundleIdentifiers(id repository) {
         [message setPriority:10];
     }
     if ([message respondsToSelector:@selector(setPushType:)]) {
-        [message setPushType:0]; /* alert */
+        [message setPushType:0]; /** alert */
     }
 
     id server = SGNModernUserNotificationServer();
@@ -190,13 +190,10 @@ static NSArray *SGNCoreRegisteredBundleIdentifiers(id repository) {
                 result = SGCERR_INTERNAL;
                 detail = @"visible notifications are disabled for the application";
             } else if (nativeDeliveryAllowed) {
-                /* Native APNs registrations keep Apple's complete receive
-                 * pipeline, including background delivery behavior. */
                 [remoteService _queue_didReceiveIncomingMessage:message];
             } else {
-                /* Skyglow deliberately does not require aps-environment or an
-                 * Apple token. Authorization remains Apple's source of truth;
-                 * only the APNs-registration gate is bypassed. */
+                /* Only the APNs-registration gate is bypassed; authorization
+                 * remains Apple's source of truth. */
                 id repository = GetIvar(remoteService,
                                         "_notificationRepository");
                 SEL saveSelector = @selector(saveNotificationRequest:
@@ -284,8 +281,7 @@ static NSArray *SGNCoreRegisteredBundleIdentifiers(id repository) {
     @try {
         [remoteService requestRemoteNotificationTokenWithEnvironment:environment
                                                   forBundleIdentifier:bundleCopy];
-        /* The public method enqueues the registration mutation on _queue.
-         * Our following block is therefore a FIFO persistence fence. */
+        /* FIFO fence: the registration mutation was enqueued above. */
         dispatch_async(remoteQueue, ^{
             BOOL registered = [SGNCoreRegisteredBundleIdentifiers(repository)
                 containsObject:bundleCopy];
@@ -339,8 +335,7 @@ static NSArray *SGNCoreRegisteredBundleIdentifiers(id repository) {
 
     NSString *bundleCopy = [bundleIdentifier copy];
     @try {
-        /* UNAuthorizationOptionBadge | Sound | Alert.  The service owns the
-         * normal Apple prompt and persists the user's decision. */
+        /* UNAuthorizationOptionBadge | Sound | Alert */
         [authorizationService
             requestAuthorizationWithOptions:7
             forNotificationSourceDescription:source
@@ -426,10 +421,7 @@ static NSArray *SGNCoreRegisteredBundleIdentifiers(id repository) {
         dispatch_group_leave(group);
     }
 
-    /* Authorization removal tears down the data provider but does not erase
-     * BulletinBoard's persisted permission decision. nil section info is the
-     * settings-gateway removal operation; the following queue block is its
-     * FIFO persistence fence and verifies the raw section is gone. */
+    /* nil section info removes the settings entry; queue block is the FIFO fence. */
     dispatch_group_enter(group);
     @try {
         [settingsGateway setSectionInfo:nil forSectionID:bundleCopy];
@@ -449,7 +441,7 @@ static NSArray *SGNCoreRegisteredBundleIdentifiers(id repository) {
         [authorizationService
             requestRemoveAuthorizationForNotificationSourceDescription:source
             completionHandler:^(BOOL removed, NSError *error) {
-                (void)removed; /* Already absent is also the desired state. */
+                (void)removed;
                 authorizationError = [error retain];
                 dispatch_group_leave(group);
             }];
@@ -511,8 +503,7 @@ static NSArray *SGNCoreRegisteredBundleIdentifiers(id repository) {
         return;
     }
 
-    /* Skyglow provides the token; this intentionally does not create an Apple
-     * push registration and therefore needs no aps-environment entitlement. */
+    /* Intentionally skips Apple push registration (no aps-environment needed). */
     SGN_AsyncFetchAndDeliverToken(bundleIdentifier, nil, nil, 0, completion);
 }
 

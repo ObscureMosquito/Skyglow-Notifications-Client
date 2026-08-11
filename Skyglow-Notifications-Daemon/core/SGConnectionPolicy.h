@@ -10,29 +10,21 @@
 #define SG_MAX_JITTER_SECONDS       5
 
 /**
- * Pure connection-state policy. Keeping these decisions free of Foundation,
- * sockets, and timers makes the daemon's reliability rules directly testable.
+ * Pure connection,state policy. Keeping these decisions free of Foundation,
+ * cuz im lazy and its easier to test :).
  */
 bool SGConnectionTransitionIsLegal(SGState from, SGState to);
 
 /** Whether this state needs reachability, power, retry, and keepalive services. */
 bool SGConnectionStateNeedsActiveServices(SGState state);
 
-/**
- * Returns the state a configuration reload should select. A valid reload keeps
- * an explicitly offline daemon offline; every other valid state starts a fresh
- * resolution cycle.
- */
+/** Returns the state a configuration reload should select. */
 SGState SGConnectionStateForConfiguration(bool enabled,
                                           bool hasProfile,
                                           bool valid,
                                           SGState currentState);
 
-/**
- * Computes exponential retry delay with jitter. Both locally-computed delay
- * and a server retry hint are capped so no peer can suppress reconnects
- * indefinitely. Once the cap is reached, retries continue at the cap forever.
- */
+/** Computes exponential retry delay with jitter */
 uint32_t SGConnectionRetryDelay(unsigned int consecutiveFailures,
                                 uint32_t jitterSeconds,
                                 uint32_t serverRetryHint);

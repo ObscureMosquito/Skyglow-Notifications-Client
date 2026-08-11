@@ -3,10 +3,6 @@
 
 #import <CoreFoundation/CoreFoundation.h>
 
-/**
- * Constants shared across all three SGN modules
- */
-
 #pragma mark - File Paths (system-root relative; wrap with SGPath)
 
 #define SG_PREFS_PLIST_PATH         @"/var/mobile/Library/Preferences/com.skyglow.sndp.plist"
@@ -19,14 +15,6 @@
 
 #pragma mark - iOS Version Branches
 
-/**
- * CFCoreFoundationVersionNumber thresholds for the major iOS releases we
- * branch on.  Apple ships some of these as kCFCoreFoundationVersionNumber_iOS_*
- * in <CoreFoundation/CFBase.h>, but coverage is patchy and naming has
- * shifted over the years so we define our own so the meaning of each
- * version check is unambiguous at the call site.
- *
- */
 #define SGN_CF_VERSION_IOS_6_0 700.0    /* push delivery path: SBRemoteNotificationServer connection:didReceiveMessageForTopic: vs didReceiveIncomingMessage: */
 #define SGN_CF_VERSION_IOS_7_0 847.20   
 #define SGN_CF_VERSION_IOS_8_0 1140.0   /* uninstall hook: SBApplicationUninstallationOperation (≤7) vs SBApplicationController.uninstallApplication: (≥8) */

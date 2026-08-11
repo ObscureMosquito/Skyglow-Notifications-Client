@@ -2,9 +2,6 @@
 
 #import "SGNNativePushBroker.h"
 
-/* Private implementation contract.  SpringBoard-facing callers only depend
- * on SGNNativePushBroker; capability selection and private API objects remain
- * inside the backends directory. */
 @protocol SGNotificationBackend <NSObject>
 
 + (BOOL)isSupported;
@@ -24,6 +21,5 @@
 
 @end
 
-/* Shared private-API adaptation used by multiple backend generations. */
 id SGNNotificationSourceForBundleIdentifier(NSString *bundleIdentifier);
 NSArray *SGNFilteredSortedBundleIdentifiers(NSArray *identifiers);
