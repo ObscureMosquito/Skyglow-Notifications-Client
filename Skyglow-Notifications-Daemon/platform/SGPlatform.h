@@ -9,8 +9,8 @@
 
 - (BOOL)start;
 - (void)stop;
-- (kern_return_t)sendNotificationForBundleID:(NSString *)bundleID
-                                     payload:(NSDictionary *)payload;
+- (SGControlError)sendNotificationForBundleID:(NSString *)bundleID
+                                      payload:(NSDictionary *)payload;
 - (void)resetAppRegistrationForBundleID:(NSString *)bundleID
                              completion:(void (^)(SGControlError err,
                                                    NSString *detail))completion;

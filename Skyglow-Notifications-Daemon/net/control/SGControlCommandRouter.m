@@ -438,8 +438,8 @@
             } else {
                 NSString *detail = [resetDetail length] ? resetDetail
                     : ((err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
-                        ? @"SpringBoard did not respond"
-                        : @"SpringBoard rejected the reset request");
+                        ? @"delivery platform did not respond"
+                        : @"registration reset was rejected");
                 replyErrorCopy(err, detail);
             }
 

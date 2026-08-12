@@ -4,6 +4,22 @@
 
 static NSString * const kSGKeychainService = @"com.skyglow.daemon.privatekey";
 
+#if TARGET_OS_OSX
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+static void SGKeychain_EnsureSystemKeychainDefault(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        SecKeychainRef sys = NULL;
+        if (SecKeychainOpen("/Library/Keychains/System.keychain", &sys) == errSecSuccess && sys) {
+            SecKeychainSetDefault(sys);
+            CFRelease(sys);
+        }
+    });
+}
+#pragma clang diagnostic pop
+#endif
+
 #if TARGET_OS_IPHONE
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
@@ -18,6 +34,9 @@ static NSString *SGKeychain_AccountForIndex(NSInteger profileIndex) {
 }
 
 static NSMutableDictionary *SGKeychain_BaseQuery(NSInteger profileIndex) {
+#if TARGET_OS_OSX
+    SGKeychain_EnsureSystemKeychainDefault();
+#endif
     NSMutableDictionary *q = [NSMutableDictionary dictionary];
     [q setObject:(__bridge id)kSecClassGenericPassword forKey:(__bridge id)kSecClass];
     [q setObject:kSGKeychainService forKey:(__bridge id)kSecAttrService];

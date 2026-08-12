@@ -1,0 +1,6 @@
+#ifndef SKYGLOW_SG_IOS_PLATFORM_SERVICE_H
+#define SKYGLOW_SG_IOS_PLATFORM_SERVICE_H
+
+#define SKYGLOW_CONTROL_SERVICE_SPRINGBOARD "com.skyglow.sgn.control.springboard"
+
+#endif

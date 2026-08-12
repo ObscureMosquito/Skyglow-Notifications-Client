@@ -91,9 +91,9 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
     if (arrivedSeq > currentMax) [db updateLastDeliveredSeq:arrivedSeq];
 }
 
-- (kern_return_t)_deliverBundleID:(NSString *)bundleID
+- (SGControlError)_deliverBundleID:(NSString *)bundleID
                            payload:(NSDictionary *)payload {
-    if (!_deliveryHandler) return KERN_FAILURE;
+    if (!_deliveryHandler) return SGCERR_INTERNAL;
     return _deliveryHandler(bundleID, payload);
 }
 
@@ -231,8 +231,8 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
         SGLOGI(SGNotificationProcessor, "code=%s msg=%s bundle=%s keys=%lu action=deliver",
                SGND_DELIVERY_DISPATCHING, msgHex, [bundleID UTF8String],
                (unsigned long)[parsed count]);
-        kern_return_t deliveryKr = [self _deliverBundleID:bundleID payload:parsed];
-        if (deliveryKr == KERN_SUCCESS) {
+        SGControlError deliveryKr = [self _deliverBundleID:bundleID payload:parsed];
+        if (deliveryKr == SGCERR_OK) {
             [self _finishMessageID:msgID ackStatus:SGP_ACK_SUCCESS expiresAt:expiresAt];
             [self _advanceLastDeliveredSeqIfNeeded:arrivedSeq];
             [self kickPendingDeliveryDrain];
@@ -342,8 +342,8 @@ static void SGCopyMessageIDHex(NSData *msgID, char *out, size_t outSize) {
                     continue;
                 }
 
-                kern_return_t kr = [self _deliverBundleID:bundleID payload:parsed];
-                if (kr == KERN_SUCCESS) {
+                SGControlError kr = [self _deliverBundleID:bundleID payload:parsed];
+                if (kr == SGCERR_OK) {
                     SGLOGI(SGNotificationProcessor, "code=%s msg=%s bundle=%s result=delivered",
                            SGND_DELIVERY_LOCAL_RETRY_SUCCEEDED, msgHex,
                            [bundleID UTF8String]);

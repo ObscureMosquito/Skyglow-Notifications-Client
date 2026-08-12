@@ -5,6 +5,7 @@
 #import "SGNNativePushBroker.h"
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
+#import "SGIOSPlatformService.h"
 #import "SGControlPayloadCodec.h"
 #import "SGSharedConstants.h"
 #import "SGDurableInbox.h"

@@ -4,6 +4,7 @@
 
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
+#import "SGIOSPlatformService.h"
 #import "SGLog.h"
 #import "SGLogDiagnostics.h"
 #import <libkern/OSAtomic.h>
@@ -40,12 +41,12 @@
     [super dealloc];
 }
 
-- (kern_return_t)sendNotificationForBundleID:(NSString *)topic payload:(NSDictionary *)payload {
-    if (!topic || [topic length] == 0) return KERN_INVALID_ARGUMENT;
+- (SGControlError)sendNotificationForBundleID:(NSString *)topic payload:(NSDictionary *)payload {
+    if (!topic || [topic length] == 0) return SGCERR_INVALID_REQUEST;
     if (!_channel) {
         SGLOGW(SGDaemon, "code=%s bundle=%s result=unavailable", SGND_DELIVERY_SPRINGBOARD_UNAVAILABLE,
                     [topic length] ? [topic UTF8String] : "none");
-        return KERN_FAILURE;
+        return SGCERR_UNREACHABLE;
     }
 
     NSData *plistData = payload
@@ -57,7 +58,7 @@
     if ([plistData length] > SG_CONTROL_MAX_USERINFO_SIZE) {
         SGLOGE(SGDaemon, "code=%s bundle=%s bytes=%lu max=%d result=failed", SGND_DELIVERY_PAYLOAD_TOO_LARGE,
                     [topic UTF8String], (unsigned long)[plistData length], SG_CONTROL_MAX_USERINFO_SIZE);
-        return KERN_RESOURCE_SHORTAGE;
+        return SGCERR_INVALID_REQUEST;
     }
 
     SGCPushDeliveryPayload pd;
@@ -67,7 +68,7 @@
     if (pd.userInfoLength > 0) memcpy(pd.userInfoData, [plistData bytes], pd.userInfoLength);
     NSUInteger sendLen = offsetof(SGCPushDeliveryPayload, userInfoData) + pd.userInfoLength;
 
-    __block int32_t result = (int32_t)KERN_FAILURE;
+    __block int32_t result = (int32_t)SGCERR_INTERNAL;
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
 
     dispatch_retain(sema);
@@ -76,13 +77,13 @@
                   timeout:0
                completion:^(SGControlError err, const SGControlChannelMessage *response) {
         if (err == SGCERR_OK)
-            OSAtomicCompareAndSwap32Barrier((int32_t)KERN_FAILURE, (int32_t)KERN_SUCCESS, &result);
+            OSAtomicCompareAndSwap32Barrier((int32_t)SGCERR_INTERNAL, (int32_t)SGCERR_OK, &result);
         dispatch_semaphore_signal(sema);
         dispatch_release(sema);
     }];
     int64_t waitNs = (int64_t)((SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC + 1.0) * NSEC_PER_SEC);
     long waited = dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, waitNs));
-    kern_return_t kr = (waited == 0) ? (kern_return_t)OSAtomicAdd32Barrier(0, &result) : KERN_FAILURE;
+    SGControlError kr = (waited == 0) ? (SGControlError)OSAtomicAdd32Barrier(0, &result) : SGCERR_TIMEOUT;
     dispatch_release(sema);
     return kr;
 }
@@ -130,7 +131,15 @@
                              completion:(void (^)(SGControlError,
                                                   NSString *))completion {
     [self sendNativeBundleRequest:SGCMSG_RESET_APP_REGISTRATION
-                         bundleID:bundleID completion:completion];
+                         bundleID:bundleID
+                       completion:^(SGControlError err, NSString *detail) {
+        if (err != SGCERR_OK && ![detail length]) {
+            detail = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                ? @"SpringBoard did not respond"
+                : @"SpringBoard rejected the reset request";
+        }
+        if (completion) completion(err, detail);
+    }];
 }
 
 - (void)listNativePushAppsWithCompletion:(void (^)(SGControlError, NSData *))completion {

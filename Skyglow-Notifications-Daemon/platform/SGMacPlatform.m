@@ -248,7 +248,7 @@ static void SGCloseConnection(xpc_connection_t conn) {
 
 #pragma mark - Delivery
 
-- (kern_return_t)sendNotificationForBundleID:(NSString *)bundleID payload:(NSDictionary *)payload {
+- (SGControlError)sendNotificationForBundleID:(NSString *)bundleID payload:(NSDictionary *)payload {
     if (![bundleID isKindOfClass:[NSString class]] || bundleID.length == 0) return KERN_INVALID_ARGUMENT;
 
     NSDictionary *aps = payload;
@@ -269,12 +269,12 @@ static void SGCloseConnection(xpc_connection_t conn) {
         id nm = [apsSound objectForKey:@"name"];
         if ([nm isKindOfClass:[NSString class]]) sound = nm;
     }
-    if (!title && !subtitle && !body) return KERN_FAILURE;
+    if (!title && !subtitle && !body) return SGCERR_INVALID_REQUEST;
 
     NSData *archive = [self _archiveTitle:title subtitle:subtitle body:body sound:sound];
-    if (!archive.length) return KERN_FAILURE;
+    if (!archive.length) return SGCERR_INTERNAL;
 
-    __block kern_return_t kr = KERN_FAILURE;
+    __block SGControlError kr = SGCERR_INTERNAL;
     dispatch_sync(_cacheQueue, ^{
         xpc_connection_t conn = [self _connForBundle:bundleID];
         if (!conn) return;
@@ -296,7 +296,7 @@ static void SGCloseConnection(xpc_connection_t conn) {
         dispatch_release(sent);
 
         if (waitResult == 0 && !invalid) {
-            kr = KERN_SUCCESS;
+            kr = SGCERR_OK;
         } else {
             [self _dropBundle:bundleID];
         }

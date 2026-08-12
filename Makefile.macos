@@ -1,11 +1,3 @@
-# Standalone macOS build for the Skyglow Notifications daemon core.
-#   make -f Makefile.macos            # native build (arm64 defaults to macOS 11)
-#   make -f Makefile.macos MACOS_ARCH=x86_64 MACOSX_DEPLOYMENT_TARGET=10.8 \
-#       OPENSSL_PREFIX=/path/to/x86_64/openssl
-#   make -f Makefile.macos clean all SG_DAEMON_CONSOLE_LOGGING=1  # also use Console.app
-#   make -f Makefile.macos run        # build + run (needs sudo for /var paths)
-#   make -f Makefile.macos clean
-
 -include Makefile.macos.local
 
 DAEMON_DIR := Skyglow-Notifications-Daemon
@@ -15,10 +7,6 @@ SG_DAEMON_FILE_LOGGING ?= 1
 SG_DAEMON_CONSOLE_LOGGING ?= 0
 SG_DAEMON_TTY_LOGGING ?= 1
 
-# The legacy System keychain identifies clients by their code-signing
-# designated requirement. Ad-hoc signing reduces that requirement to a cdhash,
-# which changes on every build. Set this to one persistent Code Signing
-# identity for installed builds (Makefile.macos.local is intentionally ignored).
 MACOS_CODESIGN_IDENTITY ?= -
 MACOS_CODESIGN_IDENTIFIER ?= com.skyglow.snd.daemon
 MACOS_CODESIGN_FLAGS ?=
@@ -38,6 +26,8 @@ BUILD_DIR  := $(BUILD_ROOT)/$(MACOS_ARCH)
 BIN        := $(BUILD_DIR)/SkyglowNotificationsDaemon
 
 CC  := xcrun clang
+
+# daemon
 OBJC_SRCS := \
 	$(DAEMON_DIR)/core/main.m \
 	$(DAEMON_DIR)/core/SGNotificationProcessor.m \
@@ -76,9 +66,6 @@ C_SRCS := \
 OBJS := $(patsubst %,$(BUILD_DIR)/%.o,$(OBJC_SRCS) $(C_SRCS))
 
 OPENSSL_PREFIX ?= $(shell brew --prefix openssl@3 2>/dev/null)
-# The selected OpenSSL must match MACOS_ARCH and be built for no newer macOS
-# than MACOSX_DEPLOYMENT_TARGET. Homebrew bottles generally target the host OS;
-# use an explicitly built prefix for release artifacts supporting older Macs.
 ifeq ($(OPENSSL_PREFIX),)
 ifeq ($(filter uninstall clean status,$(MAKECMDGOALS)),)
 $(error Could not locate OpenSSL. Install with 'brew install openssl@3' or pass OPENSSL_PREFIX=/path)
@@ -87,7 +74,6 @@ endif
 OPENSSL_INC := $(OPENSSL_PREFIX)/include
 OPENSSL_LIB := $(OPENSSL_PREFIX)/lib
 
-# --- Flags ----------------------------------------------------------------
 SQLITE_DEFS := \
 	-DSQLITE_THREADSAFE=1 \
 	-DSQLITE_OMIT_LOAD_EXTENSION \
@@ -137,8 +123,7 @@ LDFLAGS := \
 	$(OPENSSL_LIB)/libcrypto.a \
 	-lz
 
-# --- Rules ----------------------------------------------------------------
-.PHONY: all sign check-install-signing clean run dirs install uninstall reinstall status
+.PHONY: all sign check-install-signing clean run dirs install uninstall reinstall status pkg
 all: sign
 
 $(BIN): $(OBJS)
@@ -180,9 +165,35 @@ run: sign
 clean:
 	rm -rf $(BUILD_ROOT)
 
+# sgnctl
+SGNCTL_BIN  := $(BUILD_DIR)/sgnctl
+SGNCTL_SRCS := \
+	tools/sgnctl.m \
+	$(DAEMON_DIR)/net/control/SGControlChannel.m \
+	$(DAEMON_DIR)/net/control/SGControlAuthorization.m \
+	$(DAEMON_DIR)/shared/SGLog.m
+
+SGNCTL_CFLAGS := \
+	-arch $(MACOS_ARCH) \
+	-mmacosx-version-min=$(MACOSX_DEPLOYMENT_TARGET) \
+	-fno-objc-arc -O2 -g -Wno-deprecated-declarations \
+	-I$(DAEMON_DIR)/net \
+	-I$(DAEMON_DIR)/net/control \
+	-I$(DAEMON_DIR)/shared \
+	-I$(DAEMON_DIR)/platform \
+	-I$(DAEMON_DIR)/core \
+	-I$(DAEMON_DIR)/state
+
+$(SGNCTL_BIN): $(SGNCTL_SRCS)
+	@mkdir -p $(@D)
+	$(CC) $(SGNCTL_CFLAGS) $(SGNCTL_SRCS) -framework Foundation -framework CoreFoundation -o $@
+	@echo "built $@"
+
+# install
 LAUNCHD_LABEL    := com.skyglow.snd
 LAUNCHD_PLIST    := /Library/LaunchDaemons/$(LAUNCHD_LABEL).plist
 INSTALL_BIN      := /usr/local/libexec/skyglow/SkyglowNotificationsDaemon
+INSTALL_CTL      := /usr/local/bin/sgnctl
 LEGACY_INSTALL_BIN := /usr/local/bin/SkyglowNotificationsDaemon
 MACOS_ROOT       := /usr/local/var/skyglow
 KEYCHAIN_SERVICE := com.skyglow.daemon.privatekey
@@ -220,16 +231,12 @@ install: check-install-signing
 	sudo cp "$(BIN)" "$(INSTALL_BIN)"
 	sudo chown root:wheel "$(INSTALL_BIN)"
 	sudo chmod 755 "$(INSTALL_BIN)"
-	@# Remove the path used before the libexec migration.
 	sudo rm -f "$(LEGACY_INSTALL_BIN)"
 	@echo "[Skyglow] Writing $(LAUNCHD_PLIST)"
 	@printf '%s\n' "$$SGN_LAUNCHD_PLIST" | sudo tee "$(LAUNCHD_PLIST)" > /dev/null
 	sudo chown root:wheel "$(LAUNCHD_PLIST)"
 	sudo chmod 644 "$(LAUNCHD_PLIST)"
 	@echo "[Skyglow] (Re)loading via launchd"
-	@# bootout first so a re-run replaces the running job instead of hitting
-	@# 'Bootstrap failed: 5: Input/output error' (launchd's message for a label
-	@# that is already registered). The '-' ignores the not-loaded case.
 	-sudo launchctl bootout system/$(LAUNCHD_LABEL) 2>/dev/null
 	-sudo launchctl enable system/$(LAUNCHD_LABEL)
 	sudo launchctl bootstrap system "$(LAUNCHD_PLIST)"
@@ -258,3 +265,54 @@ status:
 	@sudo launchctl print system/$(LAUNCHD_LABEL) 2>/dev/null | grep -E '^\s*(state|pid|runs|last exit code) =' || echo "  (not loaded)"
 	@echo "[Skyglow] $(MACOS_ROOT)/var/log/sgn.log (last 20 lines):"
 	@sudo tail -n 20 "$(MACOS_ROOT)/var/log/sgn.log" 2>/dev/null || echo "  (no log yet)"
+
+# pkg
+PKG_VERSION ?= 1.0
+PKG_DIR     := $(BUILD_DIR)/pkg
+PKG_ROOT    := $(PKG_DIR)/root
+PKG_SCRIPTS := $(PKG_DIR)/scripts
+PKG_OUTPUT  := $(BUILD_DIR)/SkyglowNotificationsDaemon-$(MACOS_ARCH)-$(PKG_VERSION).pkg
+
+pkg: $(BIN) $(SGNCTL_BIN)
+	@if [ "$(MACOS_CODESIGN_IDENTITY)" != "-" ] && [ -n "$(MACOS_CODESIGN_IDENTITY)" ]; then \
+		echo "[Skyglow] Signing with $(MACOS_CODESIGN_IDENTITY)"; \
+		codesign --force --sign "$(MACOS_CODESIGN_IDENTITY)" \
+			--identifier "$(MACOS_CODESIGN_IDENTIFIER)" \
+			$(MACOS_CODESIGN_FLAGS) "$(BIN)"; \
+	else \
+		echo "[Skyglow] No signing identity, building unsigned pkg"; \
+	fi
+	@echo "[Skyglow] Staging pkg layout"
+	rm -rf "$(PKG_DIR)"
+	mkdir -p "$(PKG_ROOT)$(dir $(INSTALL_BIN))"
+	mkdir -p "$(PKG_ROOT)$(dir $(INSTALL_CTL))"
+	mkdir -p "$(PKG_ROOT)$(dir $(LAUNCHD_PLIST))"
+	mkdir -p "$(PKG_ROOT)$(MACOS_ROOT)/var/log"
+	cp "$(BIN)" "$(PKG_ROOT)$(INSTALL_BIN)"
+	chmod 755 "$(PKG_ROOT)$(INSTALL_BIN)"
+	cp "$(SGNCTL_BIN)" "$(PKG_ROOT)$(INSTALL_CTL)"
+	chmod 755 "$(PKG_ROOT)$(INSTALL_CTL)"
+	printf '%s\n' "$$SGN_LAUNCHD_PLIST" > "$(PKG_ROOT)$(LAUNCHD_PLIST)"
+	chmod 644 "$(PKG_ROOT)$(LAUNCHD_PLIST)"
+	mkdir -p "$(PKG_SCRIPTS)"
+	printf '%s\n' '#!/bin/sh' \
+		'/bin/launchctl bootout system/$(LAUNCHD_LABEL) 2>/dev/null ||' \
+		'  /bin/launchctl unload "$(LAUNCHD_PLIST)" 2>/dev/null || true' \
+		'rm -f "$(LEGACY_INSTALL_BIN)"' \
+		'exit 0' > "$(PKG_SCRIPTS)/preinstall"
+	chmod 755 "$(PKG_SCRIPTS)/preinstall"
+	printf '%s\n' '#!/bin/sh' \
+		'mkdir -p "$(MACOS_ROOT)/var/log"' \
+		'/bin/launchctl bootstrap system "$(LAUNCHD_PLIST)" 2>/dev/null ||' \
+		'  /bin/launchctl load -w "$(LAUNCHD_PLIST)"' \
+		'exit 0' > "$(PKG_SCRIPTS)/postinstall"
+	chmod 755 "$(PKG_SCRIPTS)/postinstall"
+	@echo "[Skyglow] Building $(PKG_OUTPUT)"
+	pkgbuild \
+		--root "$(PKG_ROOT)" \
+		--scripts "$(PKG_SCRIPTS)" \
+		--identifier "$(LAUNCHD_LABEL)" \
+		--version "$(PKG_VERSION)" \
+		--ownership recommended \
+		"$(PKG_OUTPUT)"
+	@echo "[Skyglow] Package ready: $(PKG_OUTPUT)"

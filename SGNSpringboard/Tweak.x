@@ -141,24 +141,18 @@
     StartDaemonControlChannelClient();
     SGNScheduleInstalledApplicationReconciliation();
 
-    if (SGN_IS_PRE_IOS_8) {
-        %init(HookUninstall_Classic);
-    } else {
+    Class appController = NSClassFromString(@"SBApplicationController");
+    if ([appController instancesRespondToSelector:@selector(uninstallApplication:)]) {
         %init(HookUninstall_Modern);
+    } else {
+        %init(HookUninstall_Classic);
     }
 
-    if (SGN_IS_PRE_IOS_9) {
-        %init(HookRegistration_Classic);
+    if (NSClassFromString(@"UNSUserNotificationServerConnectionListener")) {
+        %init(HookRegistration_iOS10);
+    } else if (NSClassFromString(@"UNNotificationRegistrarConnectionListener")) {
+        %init(HookRegistration_iOS9);
     } else {
-        Class legacyRegistrar = NSClassFromString(
-            @"UNNotificationRegistrarConnectionListener");
-        SEL legacySelector = @selector(
-            requestTokenForRemoteNotificationsForBundleIdentifier:
-            withResult:);
-        if ([legacyRegistrar instancesRespondToSelector:legacySelector]) {
-            %init(HookRegistration_iOS9);
-        } else {
-            %init(HookRegistration_iOS10);
-        }
+        %init(HookRegistration_Classic);
     }
 }

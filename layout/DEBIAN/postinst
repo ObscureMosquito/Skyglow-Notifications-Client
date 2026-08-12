@@ -9,7 +9,7 @@ if [ -d /var/jb ]; then
 fi
 
 PLIST_PATH="$JB_PREFIX/Library/LaunchDaemons/com.skyglow.snd.plist"
-DAEMON_PATH="$JB_PREFIX/usr/libexec/skyglow/SkyglowNotificationsDaemon"
+DAEMON_PATH="$JB_PREFIX/usr/libexec/SkyglowNotificationsDaemon"
 STDERR_PATH="/var/mobile/Library/Logs/snd-err.log"
 
 echo "[SGN] Using prefix: ${JB_PREFIX:-/}"

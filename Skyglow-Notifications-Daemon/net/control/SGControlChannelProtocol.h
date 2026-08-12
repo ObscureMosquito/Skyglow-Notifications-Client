@@ -27,8 +27,6 @@ static inline BOOL SG_LooksLikePEMCertificate(NSString *pem) {
 }
 
 #define SKYGLOW_CONTROL_SERVICE_DAEMON              "com.skyglow.sgn.control.daemon"
-#define SKYGLOW_CONTROL_SERVICE_SPRINGBOARD         "com.skyglow.sgn.control.springboard"
-#define SKYGLOW_CONTROL_SERVICE_USERNOTIFICATIONS   "com.skyglow.sgn.control.usernotifications"
 #define SG_CONTROL_MAGIC                            ((uint8_t)0x43)
 #define SG_CONTROL_VERSION                          ((uint8_t)0x01)
 #define SG_CONTROL_MAX_PAYLOAD                      4096

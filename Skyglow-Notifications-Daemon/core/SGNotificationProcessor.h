@@ -2,10 +2,10 @@
 #define SKYGLOW_SG_NOTIFICATION_PROCESSOR_H
 
 #import <Foundation/Foundation.h>
-#import <mach/mach.h>
+#import "SGControlChannelProtocol.h"
 
-typedef kern_return_t (^SGNotificationDeliveryHandler)(NSString *bundleID,
-                                                        NSDictionary *payload);
+typedef SGControlError (^SGNotificationDeliveryHandler)(NSString *bundleID,
+                                                         NSDictionary *payload);
 
 @interface SGNotificationProcessor : NSObject
 

@@ -1,5 +1,4 @@
 #import "SGLog.h"
-#import "SGAvailability.h"
 #import <Foundation/Foundation.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -47,8 +46,8 @@ static const int _aslLevels[] = {
 };
 
 static SGLogConsoleBackend SG_ResolveConsoleBackend(void) {
-    return SGAvailability_HasUnifiedLogging() ? SGLogConsoleBackendNSLog
-                                              : SGLogConsoleBackendASL;
+    return (kCFCoreFoundationVersionNumber >= 1348.00) ? SGLogConsoleBackendNSLog
+                                                       : SGLogConsoleBackendASL;
 }
 
 static void SG_EnsureConsoleBackendLocked(void) {

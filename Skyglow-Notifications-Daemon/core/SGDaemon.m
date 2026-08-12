@@ -70,7 +70,7 @@ static BOOL isValidPort(NSString *port) {
 }
 
 @interface SGDaemon ()
-- (kern_return_t)_deliverPushTopic:(NSString *)topic
+- (SGControlError)_deliverPushTopic:(NSString *)topic
                            payload:(NSDictionary *)payload;
 @end
 
@@ -106,7 +106,7 @@ static BOOL isValidPort(NSString *port) {
         _stateStore = [[SGStateStore alloc] init];
         __unsafe_unretained SGDaemon *daemonSelf = self;
         _notificationProcessor = [[SGNotificationProcessor alloc]
-            initWithDeliveryHandler:^kern_return_t(NSString *bundleID,
+            initWithDeliveryHandler:^SGControlError(NSString *bundleID,
                                                     NSDictionary *payload) {
                 return [daemonSelf _deliverPushTopic:bundleID payload:payload];
             }];
@@ -993,19 +993,19 @@ static BOOL isValidPort(NSString *port) {
 
 #pragma mark - Notification Delivery
 
-- (kern_return_t)_deliverPushTopic:(NSString *)topic payload:(NSDictionary *)payload {
-    if (!topic || [topic length] == 0) return KERN_INVALID_ARGUMENT;
+- (SGControlError)_deliverPushTopic:(NSString *)topic payload:(NSDictionary *)payload {
+    if (!topic || [topic length] == 0) return SGCERR_INVALID_REQUEST;
 
     if (!_deliveryPlatform) {
         SGLOGW(SGDaemon, "code=%s bundle=%s result=unavailable", SGND_DELIVERY_PLATFORM_UNAVAILABLE,
                     [topic length] ? [topic UTF8String] : "none");
-        return KERN_FAILURE;
+        return SGCERR_UNREACHABLE;
     }
 
-    kern_return_t kr = [_deliveryPlatform
+    SGControlError kr = [_deliveryPlatform
         sendNotificationForBundleID:topic payload:payload];
     SGLOGI(SGDaemon, "code=%s bundle=%s result=%s", SGND_DELIVERY_DISPATCHING,
-                [topic UTF8String], (kr == KERN_SUCCESS) ? "delivered" : "failed");
+                [topic UTF8String], (kr == SGCERR_OK) ? "delivered" : "failed");
     return kr;
 }
 

@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import "SGAvailability.h"
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
 #import "SGControlPayloadCodec.h"
@@ -91,6 +92,40 @@ static int AppCommand(SGControlMessageType type, NSString *bundleID, const char 
     });
 }
 
+#pragma mark - Commands
+
+static int CmdStatus(void) {
+    return Send(SGCMSG_QUERY_STATUS, nil, ^(const SGControlChannelMessage *r) {
+        if (!r || r->payloadLength < sizeof(SGStatusPayload)) { printf("(no status)\n"); return; }
+        const SGStatusPayload *s = (const SGStatusPayload *)r->payload;
+        printf("state           : %s\n", StateName(s->state));
+        printf("active profile  : %u\n", s->activeProfileIndex);
+        if (s->serverIP[0]) printf("server ip       : %.16s\n", s->serverIP);
+        printf("failures        : %u\n", s->consecutiveFailures);
+        if (s->state == SGStateBackingOff) printf("backoff         : %us\n", s->currentBackoffSec);
+        if (s->errorDetail[0]) printf("last error      : %.128s\n", s->errorDetail);
+    });
+}
+
+static int CmdLogs(int lines) {
+    NSString *path = SGPath(SG_LOG_PATH);
+    NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
+    if (!content) { fprintf(stderr, "sgnctl: cannot read log at %s\n", path.UTF8String); return 1; }
+    NSArray *all = [content componentsSeparatedByString:@"\n"];
+    NSUInteger start = all.count > (NSUInteger)lines ? all.count - (NSUInteger)lines : 0;
+    for (NSUInteger i = start; i < all.count; i++) {
+        NSString *ln = [all objectAtIndex:i];
+        if (ln.length) printf("%s\n", ln.UTF8String);
+    }
+    return 0;
+}
+
+static int CmdDaemon(BOOL enabled) {
+    SGCEnabledPayload p; p.enabled = enabled ? 1 : 0;
+    return Send(SGCMSG_SET_ENABLED, [NSData dataWithBytes:&p length:sizeof(p)],
+        ^(const SGControlChannelMessage *r) { (void)r; printf("daemon %s\n", enabled ? "enabled" : "disabled"); });
+}
+
 static int CmdRegister(NSString *bundleID) {
     if (!SG_IsIdentifierStringSafe(bundleID)) { fprintf(stderr, "sgnctl: invalid bundle id\n"); return 2; }
     SGCTokenRequestPayload req; memset(&req, 0, sizeof(req));
@@ -110,23 +145,32 @@ static int CmdRegister(NSString *bundleID) {
         });
 }
 
-static int CmdStatus(void) {
-    return Send(SGCMSG_QUERY_STATUS, nil, ^(const SGControlChannelMessage *r) {
-        if (!r || r->payloadLength < sizeof(SGStatusPayload)) { printf("(no status)\n"); return; }
-        const SGStatusPayload *s = (const SGStatusPayload *)r->payload;
-        printf("state           : %s\n", StateName(s->state));
-        printf("active profile  : %u\n", s->activeProfileIndex);
-        if (s->serverIP[0]) printf("server ip       : %.16s\n", s->serverIP);
-        printf("failures        : %u\n", s->consecutiveFailures);
-        if (s->state == SGStateBackingOff) printf("backoff         : %us\n", s->currentBackoffSec);
-        if (s->errorDetail[0]) printf("last error      : %.128s\n", s->errorDetail);
+static int CmdListApps(SGControlMessageType messageType) {
+    return Send(messageType, nil, ^(const SGControlChannelMessage *response) {
+        NSArray *apps = response
+            ? SGCBundleIdListDecode(response->payload, response->payloadLength)
+            : nil;
+        if (![apps count]) { printf("(none)\n"); return; }
+        for (NSString *bundleIdentifier in apps)
+            printf("%s\n", [bundleIdentifier UTF8String]);
     });
 }
 
-static int CmdDaemon(BOOL enabled) {
-    SGCEnabledPayload p; p.enabled = enabled ? 1 : 0;
-    return Send(SGCMSG_SET_ENABLED, [NSData dataWithBytes:&p length:sizeof(p)],
-        ^(const SGControlChannelMessage *r) { (void)r; printf("daemon %s\n", enabled ? "enabled" : "disabled"); });
+static int CmdProfileList(void) {
+    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:SGPath(SG_PREFS_PLIST_PATH)];
+    NSInteger active = [[prefs objectForKey:@"activeProfile"] integerValue];
+    BOOL any = NO;
+    for (long i = 1; i <= 5; i++) {
+        NSString *path = SGPath([NSString stringWithFormat:SG_PROFILE_PLIST_FORMAT, i]);
+        NSDictionary *pr = [NSDictionary dictionaryWithContentsOfFile:path];
+        if (!pr) continue;
+        any = YES;
+        NSString *addr = [pr objectForKey:@"server_address"];
+        printf("%s profile %ld  server=%s\n", (i == active ? "*" : " "), i,
+               addr ? addr.UTF8String : "(none)");
+    }
+    if (!any) printf("(no profiles configured)\n");
+    return 0;
 }
 
 static int CmdProfileIndex(SGControlMessageType type, int idx, const char *verb) {
@@ -136,7 +180,7 @@ static int CmdProfileIndex(SGControlMessageType type, int idx, const char *verb)
         ^(const SGControlChannelMessage *r) { (void)r; printf("%s profile %d\n", verb, idx); });
 }
 
-static int CmdSaveProfile(int idx, NSString *address, NSString *pemPath) {
+static int CmdProfileSave(int idx, NSString *address, NSString *pemPath) {
     if (idx < 1 || idx > 5) { fprintf(stderr, "sgnctl: profile index must be 1-5\n"); return 2; }
     if (!SG_IsIdentifierStringSafe(address)) { fprintf(stderr, "sgnctl: invalid server address\n"); return 2; }
 
@@ -151,8 +195,7 @@ static int CmdSaveProfile(int idx, NSString *address, NSString *pemPath) {
         NSString *pemString = [[[NSString alloc]
             initWithData:pem encoding:NSUTF8StringEncoding] autorelease];
         if (!SG_LooksLikePEMCertificate(pemString)) {
-            fprintf(stderr,
-                    "sgnctl: file does not look like a PEM-encoded server certificate\n");
+            fprintf(stderr, "sgnctl: file does not look like a PEM-encoded server certificate\n");
             return 2;
         }
     }
@@ -172,7 +215,7 @@ static int CmdSaveProfile(int idx, NSString *address, NSString *pemPath) {
         });
 }
 
-static int CmdRegIdentity(int idx, NSString *pemPath) {
+static int CmdProfileIdentity(int idx, NSString *pemPath) {
     if (idx < 1 || idx > 5) { fprintf(stderr, "sgnctl: profile index must be 1-5\n"); return 2; }
 
     NSData *pem = nil;
@@ -199,117 +242,148 @@ static int CmdRegIdentity(int idx, NSString *pemPath) {
         });
 }
 
-static int CmdProfiles(void) {
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:SGPath(SG_PREFS_PLIST_PATH)];
-    NSInteger active = [[prefs objectForKey:@"activeProfile"] integerValue];
-    BOOL any = NO;
-    for (long i = 1; i <= 5; i++) {
-        NSString *path = SGPath([NSString stringWithFormat:SG_PROFILE_PLIST_FORMAT, i]);
-        NSDictionary *pr = [NSDictionary dictionaryWithContentsOfFile:path];
-        if (!pr) continue;
-        any = YES;
-        NSString *addr = [pr objectForKey:@"server_address"];
-        printf("%s profile %ld  server=%s\n", (i == active ? "*" : " "), i,
-               addr ? addr.UTF8String : "(none)");
+static int CmdSetup(int idx, NSString *address, NSString *serverCert, NSString *clientCert) {
+    int rc;
+    printf("=> saving profile %d...\n", idx);
+    rc = CmdProfileSave(idx, address, serverCert);
+    if (rc) return rc;
+
+    if (clientCert) {
+        printf("=> storing registration identity...\n");
+        rc = CmdProfileIdentity(idx, clientCert);
+        if (rc) return rc;
     }
-    if (!any) printf("(no profiles configured)\n");
+
+    printf("=> activating profile %d...\n", idx);
+    rc = CmdProfileIndex(SGCMSG_SET_ACTIVE_PROFILE, idx, "activated");
+    if (rc) return rc;
+
+    printf("=> enabling daemon...\n");
+    rc = CmdDaemon(YES);
+    if (rc) return rc;
+
+    printf("setup complete\n");
     return 0;
 }
 
-static int CmdListApps(SGControlMessageType messageType) {
-    return Send(messageType, nil, ^(const SGControlChannelMessage *response) {
-        NSArray *apps = response
-            ? SGCBundleIdListDecode(response->payload, response->payloadLength)
-            : nil;
-        if (![apps count]) {
-            printf("(none)\n");
-            return;
-        }
-        for (NSString *bundleIdentifier in apps) {
-            printf("%s\n", [bundleIdentifier UTF8String]);
-        }
-    });
-}
-
-static int CmdLogs(int lines) {
-    NSString *path = SGPath(SG_LOG_PATH);
-    NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
-    if (!content) { fprintf(stderr, "sgnctl: cannot read log at %s\n", path.UTF8String); return 1; }
-    NSArray *all = [content componentsSeparatedByString:@"\n"];
-    NSUInteger start = all.count > (NSUInteger)lines ? all.count - (NSUInteger)lines : 0;
-    for (NSUInteger i = start; i < all.count; i++) {
-        NSString *ln = [all objectAtIndex:i];
-        if (ln.length) printf("%s\n", ln.UTF8String);
-    }
-    return 0;
-}
+#pragma mark - Dispatch
 
 static void Usage(void) {
     fprintf(stderr,
-        "SGN daemon control\n\n"
-        "  status                 daemon connection state + active profile\n"
-        "  logs [N]               last N daemon log lines (default 40)\n"
-        "  daemon on|off          enable/disable the whole daemon\n"
-        "  reload                 reload config from disk\n"
-        "  restart                cleanly restart the daemon through launchd\n"
-        "  test-inject <bundle>   deliver a notification through the native pipeline\n\n"
-        "  register <bundle>      mint a push token for a bundle (prints token)\n"
-        "  enable <bundle>        enable an app\n"
-        "  disable <bundle>       disable (mute) an app\n"
-        "  delete-app <bundle>    drop an app's registration\n"
-        "  clear-intent <bundle>  clear app intent (use native provider)\n"
-        "  list-apps              list Skyglow-registered apps\n"
-        "  list-native            list Apple Push registrations\n"
-        "  register-native <id>   request an Apple Push registration\n"
-        "  authorize-native <id>  present Apple's notification permission prompt\n"
-        "  reset-native <id>      remove Apple token and notification permission\n\n"
-        "  profiles                       list configured profiles + active\n"
-        "  save-profile <1-5> <addr> [pem] register a server (pinned TLS server certificate PEM)\n"
-        "  reg-identity <1-5> [pem]       store/remove the registration cert+key PEM (cert-gated registration)\n"
-        "  set-profile <1-5>              switch the active profile\n"
-        "  delete-profile <1-5>           delete a profile slot\n");
+        "usage: sgnctl <command> [args...]\n\n"
+        "  status                              daemon state + active profile\n"
+        "  logs [N]                            last N log lines (default 40)\n\n"
+        "  daemon <enable|disable>             toggle the daemon\n"
+        "  daemon reload                       reload config from disk\n"
+        "  daemon restart                      clean restart via launchd\n\n"
+        "  app list                            list Skyglow-registered apps\n"
+        "  app register <bundle>               mint a push token\n"
+        "  app enable <bundle>                 enable an app\n"
+        "  app disable <bundle>                mute an app\n"
+        "  app delete <bundle>                 drop an app's registration\n"
+        "  app clear-intent <bundle>           clear intent (use native provider)\n"
+        "  app test-inject <bundle>            deliver a test notification\n\n"
+        "  native list                         list Apple Push registrations\n"
+        "  native register <bundle>            request Apple Push registration\n"
+        "  native authorize <bundle>           present notification permission prompt\n"
+        "  native reset <bundle>               remove Apple token + permission\n\n"
+        "  profile list                        list configured profiles\n"
+        "  profile save <1-5> <addr> [cert]    create/edit a profile\n"
+        "  profile identity <1-5> [pem]        store/remove registration identity\n"
+        "  profile activate <1-5>              switch active profile\n"
+        "  profile delete <1-5>                delete a profile slot\n\n"
+        "  setup <1-5> <addr> <server-cert> [client-cert]\n"
+        "      save profile + attach identity + activate + enable\n");
+}
+
+static int DispatchDaemon(int argc, char **argv) {
+    if (argc < 3) { fprintf(stderr, "usage: sgnctl daemon <enable|disable|reload|restart>\n"); return 2; }
+    NSString *verb = @(argv[2]);
+    if ([verb isEqualToString:@"enable"])  return CmdDaemon(YES);
+    if ([verb isEqualToString:@"disable"]) return CmdDaemon(NO);
+    if ([verb isEqualToString:@"reload"])  return Send(SGCMSG_RELOAD_CONFIG, nil,
+        ^(const SGControlChannelMessage *r){ (void)r; printf("reloaded\n"); });
+    if ([verb isEqualToString:@"restart"]) return Send(SGCMSG_RESTART_DAEMON, nil,
+        ^(const SGControlChannelMessage *r){ (void)r; printf("restart requested\n"); });
+    fprintf(stderr, "sgnctl daemon: unknown verb '%s'\n", argv[2]);
+    return 2;
+}
+
+static int DispatchApp(int argc, char **argv) {
+    if (argc < 3) { fprintf(stderr, "usage: sgnctl app <list|register|enable|disable|delete|clear-intent|test-inject> [bundle]\n"); return 2; }
+    NSString *verb = @(argv[2]);
+    NSString *bundle = argc > 3 ? @(argv[3]) : nil;
+
+    if ([verb isEqualToString:@"list"])         return CmdListApps(SGCMSG_LIST_SKYGLOW_APPS);
+
+    if (!bundle) { fprintf(stderr, "sgnctl app %s: needs a bundle id\n", argv[2]); return 2; }
+    if ([verb isEqualToString:@"register"])     return CmdRegister(bundle);
+    if ([verb isEqualToString:@"enable"])       return AppCommand(SGCMSG_ENABLE_APP, bundle, "enabled");
+    if ([verb isEqualToString:@"disable"])      return AppCommand(SGCMSG_DISABLE_APP, bundle, "disabled");
+    if ([verb isEqualToString:@"delete"])       return AppCommand(SGCMSG_DELETE_APP, bundle, "deleted");
+    if ([verb isEqualToString:@"clear-intent"]) return AppCommand(SGCMSG_CLEAR_APP_INTENT, bundle, "cleared");
+    if ([verb isEqualToString:@"test-inject"])  return AppCommand(SGCMSG_TEST_INJECT, bundle, "injected");
+    fprintf(stderr, "sgnctl app: unknown verb '%s'\n", argv[2]);
+    return 2;
+}
+
+static int DispatchNative(int argc, char **argv) {
+    if (argc < 3) { fprintf(stderr, "usage: sgnctl native <list|register|authorize|reset> [bundle]\n"); return 2; }
+    NSString *verb = @(argv[2]);
+    NSString *bundle = argc > 3 ? @(argv[3]) : nil;
+
+    if ([verb isEqualToString:@"list"]) return CmdListApps(SGCMSG_LIST_NATIVE_PUSH_APPS);
+
+    if (!bundle) { fprintf(stderr, "sgnctl native %s: needs a bundle id\n", argv[2]); return 2; }
+    if ([verb isEqualToString:@"register"])  return AppCommand(SGCMSG_REGISTER_NATIVE_PUSH_APP, bundle, "native-registered");
+    if ([verb isEqualToString:@"authorize"]) return AppCommand(SGCMSG_AUTHORIZE_NATIVE_PUSH_APP, bundle, "authorization-requested");
+    if ([verb isEqualToString:@"reset"])     return AppCommand(SGCMSG_RESET_APP_REGISTRATION, bundle, "native-reset");
+    fprintf(stderr, "sgnctl native: unknown verb '%s'\n", argv[2]);
+    return 2;
+}
+
+static int DispatchProfile(int argc, char **argv) {
+    if (argc < 3) { fprintf(stderr, "usage: sgnctl profile <list|save|identity|activate|delete> [args...]\n"); return 2; }
+    NSString *verb = @(argv[2]);
+
+    if ([verb isEqualToString:@"list"]) return CmdProfileList();
+
+    if (argc < 4) { fprintf(stderr, "sgnctl profile %s: needs a profile index (1-5)\n", argv[2]); return 2; }
+    int idx = atoi(argv[3]);
+
+    if ([verb isEqualToString:@"save"]) {
+        if (argc < 5) { fprintf(stderr, "usage: sgnctl profile save <1-5> <address> [server-cert.pem]\n"); return 2; }
+        return CmdProfileSave(idx, @(argv[4]), argc > 5 ? @(argv[5]) : nil);
+    }
+    if ([verb isEqualToString:@"identity"]) return CmdProfileIdentity(idx, argc > 4 ? @(argv[4]) : nil);
+    if ([verb isEqualToString:@"activate"]) return CmdProfileIndex(SGCMSG_SET_ACTIVE_PROFILE, idx, "activated");
+    if ([verb isEqualToString:@"delete"])   return CmdProfileIndex(SGCMSG_DELETE_PROFILE, idx, "deleted");
+    fprintf(stderr, "sgnctl profile: unknown verb '%s'\n", argv[2]);
+    return 2;
 }
 
 int main(int argc, char **argv) {
     @autoreleasepool {
         if (argc < 2) { Usage(); return 2; }
         NSString *cmd = @(argv[1]);
-        NSString *arg = argc > 2 ? @(argv[2]) : nil;
-        #define NEED_ARG() do { if (!arg) { fprintf(stderr, "sgnctl: '%s' needs an argument\n", argv[1]); return 2; } } while (0)
 
-        if ([cmd isEqualToString:@"status"])          return CmdStatus();
-        if ([cmd isEqualToString:@"logs"])            return CmdLogs(arg ? MAX(1, arg.intValue) : 40);
-        if ([cmd isEqualToString:@"reload"])          return Send(SGCMSG_RELOAD_CONFIG, nil, ^(const SGControlChannelMessage *r){ (void)r; printf("reloaded\n"); });
-        if ([cmd isEqualToString:@"restart"])         return Send(SGCMSG_RESTART_DAEMON, nil, ^(const SGControlChannelMessage *r){ (void)r; printf("restart requested\n"); });
-        if ([cmd isEqualToString:@"test-inject"])     { NEED_ARG(); return AppCommand(SGCMSG_TEST_INJECT, arg, "injected"); }
-        if ([cmd isEqualToString:@"register"])        { NEED_ARG(); return CmdRegister(arg); }
-        if ([cmd isEqualToString:@"enable"])          { NEED_ARG(); return AppCommand(SGCMSG_ENABLE_APP, arg, "enabled"); }
-        if ([cmd isEqualToString:@"disable"])         { NEED_ARG(); return AppCommand(SGCMSG_DISABLE_APP, arg, "disabled"); }
-        if ([cmd isEqualToString:@"delete-app"])      { NEED_ARG(); return AppCommand(SGCMSG_DELETE_APP, arg, "deleted"); }
-        if ([cmd isEqualToString:@"clear-intent"])    { NEED_ARG(); return AppCommand(SGCMSG_CLEAR_APP_INTENT, arg, "cleared"); }
-        if ([cmd isEqualToString:@"register-native"]) { NEED_ARG(); return AppCommand(SGCMSG_REGISTER_NATIVE_PUSH_APP, arg, "native-registered"); }
-        if ([cmd isEqualToString:@"authorize-native"]){ NEED_ARG(); return AppCommand(SGCMSG_AUTHORIZE_NATIVE_PUSH_APP, arg, "authorization-requested"); }
-        if ([cmd isEqualToString:@"reset-native"])    { NEED_ARG(); return AppCommand(SGCMSG_RESET_APP_REGISTRATION, arg, "native-reset"); }
-        if ([cmd isEqualToString:@"profiles"])        return CmdProfiles();
-        if ([cmd isEqualToString:@"save-profile"]) {
-            if (argc < 4) { fprintf(stderr, "usage: sgnctl save-profile <1-5> <server-address> [server-cert.pem]\n"); return 2; }
-            return CmdSaveProfile(arg.intValue, @(argv[3]), argc > 4 ? @(argv[4]) : nil);
-        }
-        if ([cmd isEqualToString:@"reg-identity"]) {
-            NEED_ARG();
-            return CmdRegIdentity(arg.intValue, argc > 3 ? @(argv[3]) : nil);
-        }
-        if ([cmd isEqualToString:@"set-profile"])     { NEED_ARG(); return CmdProfileIndex(SGCMSG_SET_ACTIVE_PROFILE, arg.intValue, "activated"); }
-        if ([cmd isEqualToString:@"delete-profile"])  { NEED_ARG(); return CmdProfileIndex(SGCMSG_DELETE_PROFILE, arg.intValue, "deleted"); }
-        if ([cmd isEqualToString:@"daemon"]) {
-            NEED_ARG();
-            if ([arg isEqualToString:@"on"])  return CmdDaemon(YES);
-            if ([arg isEqualToString:@"off"]) return CmdDaemon(NO);
-            fprintf(stderr, "sgnctl: use 'daemon on' or 'daemon off'\n"); return 2;
-        }
-        if ([cmd isEqualToString:@"list-apps"])       return CmdListApps(SGCMSG_LIST_SKYGLOW_APPS);
-        if ([cmd isEqualToString:@"list-native"])     return CmdListApps(SGCMSG_LIST_NATIVE_PUSH_APPS);
+        if ([cmd isEqualToString:@"status"]) return CmdStatus();
+        if ([cmd isEqualToString:@"logs"])   return CmdLogs(argc > 2 ? MAX(1, atoi(argv[2])) : 40);
 
+        if ([cmd isEqualToString:@"daemon"])  return DispatchDaemon(argc, argv);
+        if ([cmd isEqualToString:@"app"])     return DispatchApp(argc, argv);
+        if ([cmd isEqualToString:@"native"])  return DispatchNative(argc, argv);
+        if ([cmd isEqualToString:@"profile"]) return DispatchProfile(argc, argv);
+
+        if ([cmd isEqualToString:@"setup"]) {
+            if (argc < 5) {
+                fprintf(stderr, "usage: sgnctl setup <1-5> <address> <server-cert.pem> [client-cert.pem]\n");
+                return 2;
+            }
+            return CmdSetup(atoi(argv[2]), @(argv[3]), @(argv[4]), argc > 5 ? @(argv[5]) : nil);
+        }
+
+        fprintf(stderr, "sgnctl: unknown command '%s'\n", argv[1]);
         Usage();
         return 2;
     }

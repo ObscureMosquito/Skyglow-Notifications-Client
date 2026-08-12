@@ -61,11 +61,14 @@ SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result \
   -DHAVE_GETHOSTUUID=0 \
   -Wno-unused-but-set-variable
 SkyglowNotificationsDaemon_LDFLAGS = \
-  -Wl,-sectcreate,__RESTRICT,__restrict,/dev/null \
   $(THEOS_PROJECT_DIR)/libraries/openssl/lib/libssl.a \
   $(THEOS_PROJECT_DIR)/libraries/openssl/lib/libcrypto.a
+# iOS 8 needs this casue whoever implemeted the jailbreak does not like me and dosent hanle mach ports properly
+ifneq ($(SKYGLOW_LEGACY_BUILD),1)
+SkyglowNotificationsDaemon_LDFLAGS += -Wl,-sectcreate,__RESTRICT,__restrict,/dev/null
+endif
 SkyglowNotificationsDaemon_CODESIGN_FLAGS = -Sentitlements.plist
-SkyglowNotificationsDaemon_INSTALL_PATH = /usr/libexec/skyglow
+SkyglowNotificationsDaemon_INSTALL_PATH = /usr/libexec/
 SkyglowNotificationsDaemon_FRAMEWORKS = SystemConfiguration CFNetwork Security IOKit
 SkyglowNotificationsDaemon_LIBRARIES += z
 
@@ -93,5 +96,5 @@ include $(THEOS_MAKE_PATH)/aggregate.mk
 
 after-stage::
 	$(ECHO_NOTHING)mkdir -p $(THEOS_STAGING_DIR)/Library/LaunchDaemons$(ECHO_END)
-	$(ECHO_NOTHING)sed 's|@DAEMON_PATH@|$(THEOS_PACKAGE_INSTALL_PREFIX)/usr/libexec/skyglow/SkyglowNotificationsDaemon|g' packaging/com.skyglow.snd.plist.in > $(THEOS_STAGING_DIR)/Library/LaunchDaemons/com.skyglow.snd.plist$(ECHO_END)
+	$(ECHO_NOTHING)sed 's|@DAEMON_PATH@|$(THEOS_PACKAGE_INSTALL_PREFIX)/usr/libexec/SkyglowNotificationsDaemon|g' packaging/com.skyglow.snd.plist.in > $(THEOS_STAGING_DIR)/Library/LaunchDaemons/com.skyglow.snd.plist$(ECHO_END)
 	$(ECHO_NOTHING)chmod 644 $(THEOS_STAGING_DIR)/Library/LaunchDaemons/com.skyglow.snd.plist$(ECHO_END)
