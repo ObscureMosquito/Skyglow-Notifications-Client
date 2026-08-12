@@ -11,3 +11,4 @@ Makefile.macos.local
 docs
 *.o
 SkyglowNotificationsDaemon
+build-macos.sh

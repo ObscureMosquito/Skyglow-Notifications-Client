@@ -16,12 +16,9 @@
 #define SG_SCHEMA_VERSION 1
 
 static NSString * const kSGMigrationVersionKey = @"storageMigrationVersion";
-static NSString * const kSGKeychainAccessibilityMigrationKey =
-    @"keychainAccessibilityMigrationVersion";
-static NSString * const kSGLegacyPrivateKeyPath =
-    @"/var/Library/PreferenceBundles/SGNPreferenceBundle.bundle/com.skyglow.client.pem";
-static NSString * const kSGProfileCertificateDirectory =
-    @"/var/mobile/Library/SkyglowNotifications";
+static NSString * const kSGKeychainAccessibilityMigrationKey = @"keychainAccessibilityMigrationVersion";
+static NSString * const kSGLegacyPrivateKeyPath = @"/var/Library/PreferenceBundles/SGNPreferenceBundle.bundle/com.skyglow.client.pem";
+static NSString * const kSGProfileCertificateDirectory = @"/var/mobile/Library/SkyglowNotifications";
 
 static NSString *SGMProfilePlistPathForIndex(NSInteger profileIdx) {
     return SGPath([NSString stringWithFormat:
@@ -258,8 +255,8 @@ static BOOL SGMigrateKeychainAccessibilityIfNeeded(void) {
     return YES;
 #else
     NSString *mainPath = SGPath(SG_PREFS_PLIST_PATH);
-    NSDictionary *mainPrefs =
-        [NSDictionary dictionaryWithContentsOfFile:mainPath] ?: @{};
+    NSDictionary *mainPrefs = [NSDictionary dictionaryWithContentsOfFile:mainPath] ?: @{};
+    
     if ([[mainPrefs objectForKey:kSGKeychainAccessibilityMigrationKey]
             integerValue] >= 1) {
         return YES;

@@ -75,7 +75,10 @@
 %group HookRegistration_iOS9
 %hook UNNotificationRegistrarConnectionListener
 - (void)requestTokenForRemoteNotificationsForBundleIdentifier:(NSString *)bundleIdentifier withResult:(id)resultBlock {
-    if (SGNRegistrationConsumePassThrough()) { %orig; return; }
+    if (SGNRegistrationConsumePassThrough()) {
+        %orig;
+        return;
+    }
 
     if (SGN_IsCascadeReEntry(bundleIdentifier)) {
         NSLog(@"[SGN] Suppressing deregister cascade for %@", bundleIdentifier);
@@ -106,7 +109,10 @@
 - (void)requestTokenForRemoteNotificationsForBundleIdentifier:
             (NSString *)bundleIdentifier
                                       withCompletionHandler:(id)resultBlock {
-    if (SGNRegistrationConsumePassThrough()) { %orig; return; }
+    if (SGNRegistrationConsumePassThrough()) {
+        %orig;
+        return;
+    }
 
     if (SGN_IsCascadeReEntry(bundleIdentifier)) {
         NSLog(@"[SGN] Suppressing deregister cascade for %@", bundleIdentifier);
