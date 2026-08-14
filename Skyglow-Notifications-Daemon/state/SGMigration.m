@@ -16,7 +16,9 @@
 #define SG_SCHEMA_VERSION 1
 
 static NSString * const kSGMigrationVersionKey = @"storageMigrationVersion";
+#if TARGET_OS_IPHONE
 static NSString * const kSGKeychainAccessibilityMigrationKey = @"keychainAccessibilityMigrationVersion";
+#endif
 static NSString * const kSGLegacyPrivateKeyPath = @"/var/Library/PreferenceBundles/SGNPreferenceBundle.bundle/com.skyglow.client.pem";
 static NSString * const kSGProfileCertificateDirectory = @"/var/mobile/Library/SkyglowNotifications";
 

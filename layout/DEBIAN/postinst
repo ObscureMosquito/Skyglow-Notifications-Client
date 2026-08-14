@@ -3,19 +3,25 @@ set -e
 
 echo "[SGN] Running post-install script"
 
-JB_PREFIX=""
-if [ -d /var/jb ]; then
-    JB_PREFIX="/var/jb"
+if [ -d /var/mobile ]; then
+    IS_IOS=1
+    PREFIX=""
+    [ -d /var/jb ] && PREFIX="/var/jb"
+    PLIST_PATH="$PREFIX/Library/LaunchDaemons/com.skyglow.snd.plist"
+    DAEMON_PATH="$PREFIX/usr/libexec/SkyglowNotificationsDaemon"
+    STDERR_PATH="/var/mobile/Library/Logs/snd-err.log"
+else
+    IS_IOS=0
+    PREFIX=""
+    PLIST_PATH="/Library/LaunchDaemons/com.skyglow.snd.plist"
+    DAEMON_PATH="/usr/local/libexec/SkyglowNotificationsDaemon"
+    STDERR_PATH="/usr/local/var/skyglow/var/log/snd-err.log"
 fi
 
-PLIST_PATH="$JB_PREFIX/Library/LaunchDaemons/com.skyglow.snd.plist"
-DAEMON_PATH="$JB_PREFIX/usr/libexec/SkyglowNotificationsDaemon"
-STDERR_PATH="/var/mobile/Library/Logs/snd-err.log"
-
-echo "[SGN] Using prefix: ${JB_PREFIX:-/}"
+echo "[SGN] Target: $([ "$IS_IOS" = 1 ] && echo iOS || echo macOS), prefix ${PREFIX:-/}"
 
 if [ ! -f "$PLIST_PATH" ]; then
-    echo "[SGN] ERROR: package LaunchDaemon plist is missing: $PLIST_PATH" >&2
+    echo "[SGN] ERROR: LaunchDaemon plist missing: $PLIST_PATH" >&2
     exit 1
 fi
 chown root:wheel "$PLIST_PATH"
@@ -23,7 +29,9 @@ chmod 644 "$PLIST_PATH"
 
 mkdir -p "$(dirname "$STDERR_PATH")"
 touch "$STDERR_PATH"
-chown 501:501 "$STDERR_PATH" 2>/dev/null || chown mobile:mobile "$STDERR_PATH" 2>/dev/null || true
+if [ "$IS_IOS" = 1 ]; then
+    chown 501:501 "$STDERR_PATH" 2>/dev/null || chown mobile:mobile "$STDERR_PATH" 2>/dev/null || true
+fi
 chmod 644 "$STDERR_PATH"
 
 if [ -f "$DAEMON_PATH" ]; then
@@ -40,7 +48,9 @@ if command -v launchctl >/dev/null 2>&1; then
     launchctl load "$PLIST_PATH"
 fi
 
-killall -9 Preferences 2>/dev/null || true
+if [ "$IS_IOS" = 1 ]; then
+    killall -9 Preferences 2>/dev/null || true
+fi
 
 echo "[SGN] Installation complete"
 exit 0

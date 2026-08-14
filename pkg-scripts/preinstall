@@ -1,6 +1,0 @@
-#!/bin/sh
-# Stop any running instance before the new payload lands.
-launchctl bootout system/com.skyglow.snd 2>/dev/null \
-	|| launchctl unload /Library/LaunchDaemons/com.skyglow.snd.plist 2>/dev/null \
-	|| true
-exit 0

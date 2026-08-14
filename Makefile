@@ -9,7 +9,7 @@ include $(THEOS)/makefiles/common.mk
 ifeq ($(SGN_MACOS),1)
 SGN_OPENSSL      := $(THEOS_PROJECT_DIR)/libraries/openssl/macos
 SGN_PLATFORM_SRC := Skyglow-Notifications-Daemon/platform/SGMacPlatform.m
-SGN_DAEMON_PATH   = /usr/local/libexec/skyglow/SkyglowNotificationsDaemon
+SGN_DAEMON_PATH   = /usr/local/libexec/SkyglowNotificationsDaemon
 else
 SGN_OPENSSL      := $(THEOS_PROJECT_DIR)/libraries/openssl/ios
 SGN_PLATFORM_SRC := Skyglow-Notifications-Daemon/platform/SGIOSPlatform.m
@@ -85,7 +85,7 @@ endif
 endif
 ifeq ($(SGN_MACOS),1)
 SkyglowNotificationsDaemon_CODESIGN_FLAGS = -S
-SkyglowNotificationsDaemon_INSTALL_PATH = /usr/local/libexec/skyglow
+SkyglowNotificationsDaemon_INSTALL_PATH = /usr/local/libexec
 else
 SkyglowNotificationsDaemon_CODESIGN_FLAGS = -Sentitlements.plist
 SkyglowNotificationsDaemon_INSTALL_PATH = /usr/libexec/
@@ -133,10 +133,13 @@ SGN_PKG_ID  := $(shell grep -i '^Package:' control | cut -d' ' -f2-)
 SGN_PKG_VER := $(shell grep -i '^Version:' control | cut -d' ' -f2-)
 
 macpkg: stage
-	codesign --force --sign - "$(THEOS_STAGING_DIR)/usr/local/libexec/skyglow/SkyglowNotificationsDaemon"
+	codesign --force --sign - "$(THEOS_STAGING_DIR)/usr/local/libexec/SkyglowNotificationsDaemon"
 	codesign --force --sign - "$(THEOS_STAGING_DIR)/usr/local/bin/sgnctl"
 	rm -rf "$(THEOS_STAGING_DIR)/Library/Application Support"
-	mkdir -p $(THEOS_PROJECT_DIR)/packages
-	pkgbuild --root "$(THEOS_STAGING_DIR)" --scripts "$(THEOS_PROJECT_DIR)/pkg-scripts" --identifier "$(SGN_PKG_ID)" --version "$(SGN_PKG_VER)" --ownership recommended "$(THEOS_PROJECT_DIR)/packages/$(SGN_PKG_ID)-$(MACOS_ARCH)-$(SGN_PKG_VER).pkg"
+	rm -rf $(THEOS_PROJECT_DIR)/packages/.scripts
+	mkdir -p $(THEOS_PROJECT_DIR)/packages/.scripts
+	cp layout/DEBIAN/postinst $(THEOS_PROJECT_DIR)/packages/.scripts/postinstall
+	chmod 755 $(THEOS_PROJECT_DIR)/packages/.scripts/postinstall
+	pkgbuild --root "$(THEOS_STAGING_DIR)" --scripts "$(THEOS_PROJECT_DIR)/packages/.scripts" --identifier "$(SGN_PKG_ID)" --version "$(SGN_PKG_VER)" --ownership recommended "$(THEOS_PROJECT_DIR)/packages/$(SGN_PKG_ID)-$(MACOS_ARCH)-$(SGN_PKG_VER).pkg"
 	@echo "[Skyglow] pkg -> packages/$(SGN_PKG_ID)-$(MACOS_ARCH)-$(SGN_PKG_VER).pkg"
 endif
