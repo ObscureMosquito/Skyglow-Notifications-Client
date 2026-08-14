@@ -251,18 +251,16 @@ enum {
     [self _setBackButtonHiddenForBusyState];
 
     [_activateActivity release];
-    _activateActivity = [[SNDeferredActivity alloc] initWithShowBlock:^{
+    _activateActivity = [[SNDeferredActivity begunActivityWithShowBlock:^{
         if (!_activatingIndex || [_activatingIndex integerValue] != idx) return;
         [self.tableView reloadData];
     } hideBlock:^{
 
-    }];
-    [_activateActivity begin];
+    }] retain];
 
     [SNChannelGateway setActiveProfileAtIndex:idx
                                    completion:^(BOOL ok, NSString *message) {
-        SNDeferredActivity *activity = [_activateActivity retain];
-        [activity finishWithCompletion:^{
+        [_activateActivity finishWithCompletion:^{
             [_activatingIndex release];
             _activatingIndex = nil;
             [_activateActivity release];
@@ -278,7 +276,6 @@ enum {
             }
             [self.tableView reloadData];
         }];
-        [activity release];
     }];
 }
 
@@ -309,7 +306,7 @@ enum {
     [self _setBackButtonHiddenForBusyState];
 
     [_deleteActivity release];
-    _deleteActivity = [[SNDeferredActivity alloc] initWithShowBlock:^{
+    _deleteActivity = [[SNDeferredActivity begunActivityWithShowBlock:^{
         if (![_pendingDeletionIndices containsObject:idxKey]) return;
         [_pendingDeletionIndices removeObject:idxKey];
         [_deletingIndices addObject:idxKey];
@@ -325,13 +322,11 @@ enum {
             [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
                                   withRowAnimation:UITableViewRowAnimationNone];
         }
-    }];
-    [_deleteActivity begin];
+    }] retain];
 
     [SNChannelGateway deleteProfileAtIndex:idx
                                 completion:^(BOOL ok, NSString *message) {
-        SNDeferredActivity *activity = [_deleteActivity retain];
-        [activity finishWithCompletion:^{
+        [_deleteActivity finishWithCompletion:^{
             [_pendingDeletionIndices removeObject:idxKey];
             [_deletingIndices removeObject:idxKey];
             [_deleteActivity release];
@@ -352,7 +347,6 @@ enum {
             [self _reloadProfileIndices];
             [self.tableView reloadData];
         }];
-        [activity release];
     }];
 }
 

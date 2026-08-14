@@ -3,12 +3,7 @@
 #import <objc/runtime.h>
 
 NSString *SGNPath(NSString *path) {
-    static int rootless = -1;
-    if (rootless < 0) {
-        rootless = [[NSFileManager defaultManager]
-            fileExistsAtPath:@"/var/jb"] ? 1 : 0;
-    }
-    return rootless ? [@"/var/jb" stringByAppendingString:path] : path;
+    return SGPath(path);
 }
 
 id GetIvar(id obj, const char *name) {

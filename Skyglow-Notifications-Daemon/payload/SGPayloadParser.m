@@ -48,15 +48,10 @@ SGPayloadFormat SG_PayloadSniffFormat(const uint8_t *buffer, uint32_t length) {
 
     if (length >= 8 && memcmp(buffer, "bplist0", 7) == 0) return SGPayloadFormatPlist;
 
-    uint32_t i = 0;
-    while (i < length) {
-        uint8_t c = buffer[i];
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') i++;
-        else break;
-    }
-    if (i >= length) return SGPayloadFormatUnknown;
+    const uint8_t *cursor = SG_JSONSkipWhitespace(buffer, buffer + length);
+    if (cursor >= buffer + length) return SGPayloadFormatUnknown;
 
-    uint8_t c = buffer[i];
+    uint8_t c = *cursor;
     if (c == '{' || c == '[') return SGPayloadFormatJSON;
     if (c == '<')              return SGPayloadFormatPlist;
 

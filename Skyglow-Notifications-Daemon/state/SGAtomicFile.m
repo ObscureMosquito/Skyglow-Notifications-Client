@@ -1,14 +1,16 @@
 #import "SGAtomicFile.h"
 #include <CoreFoundation/CoreFoundation.h>
+#include <TargetConditionals.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pwd.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-static NSString * const SGAtomicFileErrorDomain = @"com.skyglow.storage";
+NSString * const SGStorageErrorDomain = @"com.skyglow.storage";
 
-static void SGAtomicFileSetError(NSError **outError, NSInteger code, int posixError) {
+void SGStorageSetError(NSError **outError, NSInteger code, int posixError) {
     if (!outError) return;
     NSMutableDictionary *info = [NSMutableDictionary dictionary];
     if (posixError != 0) {
@@ -17,17 +19,62 @@ static void SGAtomicFileSetError(NSError **outError, NSInteger code, int posixEr
         [info setObject:[NSNumber numberWithInt:posixError]
                  forKey:@"errno"];
     }
-    *outError = [NSError errorWithDomain:SGAtomicFileErrorDomain
+    *outError = [NSError errorWithDomain:SGStorageErrorDomain
                                    code:code
                                userInfo:info];
 }
 
-static NSString *SGAtomicFileUUIDString(void) {
+NSString *SGStorageUUIDString(void) {
     CFUUIDRef uuid = CFUUIDCreate(kCFAllocatorDefault);
     if (!uuid) return nil;
     CFStringRef string = CFUUIDCreateString(kCFAllocatorDefault, uuid);
     CFRelease(uuid);
     return [(NSString *)string autorelease];
+}
+
+void SGStorageApplyMobileOwnership(NSString *path) {
+#if !TARGET_OS_OSX
+    struct passwd *mobile = getpwnam("mobile");
+    if (mobile) {
+        (void)chown([path fileSystemRepresentation],
+                    mobile->pw_uid, mobile->pw_gid);
+    }
+#else
+    (void)path;
+#endif
+}
+
+void SGStorageApplyPrivateDirectoryProtection(NSString *path) {
+    struct stat st;
+    if (stat([path fileSystemRepresentation], &st) != 0 ||
+        !S_ISDIR(st.st_mode)) {
+        return;
+    }
+    chmod([path fileSystemRepresentation], 0700);
+    SGStorageApplyMobileOwnership(path);
+}
+
+static void SGStorageFsyncParentDirectory(NSString *path) {
+    NSString *directory = [path stringByDeletingLastPathComponent];
+    int directoryFD = open([directory fileSystemRepresentation], O_RDONLY);
+    if (directoryFD >= 0) {
+        (void)fsync(directoryFD);
+        close(directoryFD);
+    }
+}
+
+NSData *SGAtomicReadData(NSString *path, NSUInteger maxLength) {
+    if ([path length] == 0) return nil;
+
+    struct stat st;
+    if (stat([path fileSystemRepresentation], &st) != 0 ||
+        !S_ISREG(st.st_mode)) {
+        return nil;
+    }
+    if (st.st_size <= 0 || (unsigned long long)st.st_size > maxLength) {
+        return nil;
+    }
+    return [NSData dataWithContentsOfFile:path];
 }
 
 static BOOL SGAtomicFileWriteAll(int fd, const uint8_t *bytes, NSUInteger length) {
@@ -47,7 +94,7 @@ BOOL SGAtomicWriteData(NSData *data,
                        NSError **outError) {
     if (outError) *outError = nil;
     if (!data || [path length] == 0) {
-        SGAtomicFileSetError(outError, 1, EINVAL);
+        SGStorageSetError(outError, 1, EINVAL);
         return NO;
     }
 
@@ -63,9 +110,9 @@ BOOL SGAtomicWriteData(NSData *data,
         return NO;
     }
 
-    NSString *uuid = SGAtomicFileUUIDString();
+    NSString *uuid = SGStorageUUIDString();
     if (!uuid) {
-        SGAtomicFileSetError(outError, 2, ENOMEM);
+        SGStorageSetError(outError, 2, ENOMEM);
         return NO;
     }
     NSString *temporaryPath = [directory stringByAppendingPathComponent:
@@ -74,7 +121,7 @@ BOOL SGAtomicWriteData(NSData *data,
     int fd = open([temporaryPath fileSystemRepresentation],
                   O_WRONLY | O_CREAT | O_EXCL, mode);
     if (fd < 0) {
-        SGAtomicFileSetError(outError, 3, errno);
+        SGStorageSetError(outError, 3, errno);
         return NO;
     }
 
@@ -95,15 +142,11 @@ BOOL SGAtomicWriteData(NSData *data,
 
     if (!ok) {
         unlink([temporaryPath fileSystemRepresentation]);
-        SGAtomicFileSetError(outError, 4, savedError);
+        SGStorageSetError(outError, 4, savedError);
         return NO;
     }
 
-    int directoryFD = open([directory fileSystemRepresentation], O_RDONLY);
-    if (directoryFD >= 0) {
-        (void)fsync(directoryFD);
-        close(directoryFD);
-    }
+    SGStorageFsyncParentDirectory(path);
     return YES;
 }
 
@@ -113,7 +156,7 @@ BOOL SGAtomicWritePropertyList(id propertyList,
                                NSError **outError) {
     if (outError) *outError = nil;
     if (!propertyList || [path length] == 0) {
-        SGAtomicFileSetError(outError, 1, EINVAL);
+        SGStorageSetError(outError, 1, EINVAL);
         return NO;
     }
 
@@ -134,20 +177,37 @@ BOOL SGAtomicWritePropertyList(id propertyList,
 BOOL SGDurableRemoveItem(NSString *path, NSError **outError) {
     if (outError) *outError = nil;
     if ([path length] == 0) {
-        SGAtomicFileSetError(outError, 1, EINVAL);
+        SGStorageSetError(outError, 1, EINVAL);
         return NO;
     }
 
     if (unlink([path fileSystemRepresentation]) != 0 && errno != ENOENT) {
-        SGAtomicFileSetError(outError, 5, errno);
+        SGStorageSetError(outError, 5, errno);
         return NO;
     }
 
-    NSString *directory = [path stringByDeletingLastPathComponent];
-    int directoryFD = open([directory fileSystemRepresentation], O_RDONLY);
-    if (directoryFD >= 0) {
-        (void)fsync(directoryFD);
-        close(directoryFD);
+    SGStorageFsyncParentDirectory(path);
+    return YES;
+}
+
+BOOL SGDurableRenameItem(NSString *fromPath, NSString *toPath, NSError **outError) {
+    if (outError) *outError = nil;
+    if ([fromPath length] == 0 || [toPath length] == 0) {
+        SGStorageSetError(outError, 1, EINVAL);
+        return NO;
+    }
+
+    if (rename([fromPath fileSystemRepresentation],
+               [toPath fileSystemRepresentation]) != 0) {
+        if (errno == ENOENT) return YES;
+        SGStorageSetError(outError, 6, errno);
+        return NO;
+    }
+
+    SGStorageFsyncParentDirectory(toPath);
+    if (![[fromPath stringByDeletingLastPathComponent]
+            isEqualToString:[toPath stringByDeletingLastPathComponent]]) {
+        SGStorageFsyncParentDirectory(fromPath);
     }
     return YES;
 }

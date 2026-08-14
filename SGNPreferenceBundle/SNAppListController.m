@@ -85,8 +85,8 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
     return _specifiers;
 }
 
-- (void)_buildSkyglowSectionInto:(NSMutableArray *)specs {
-    PSSpecifier *groupSpec = [PSSpecifier preferenceSpecifierNamed:@"Skyglow Notifications"
+- (PSSpecifier *)_groupSpecifierNamed:(NSString *)title section:(NSString *)sectionTag {
+    PSSpecifier *groupSpec = [PSSpecifier preferenceSpecifierNamed:title
                                                             target:self
                                                                set:NULL
                                                                get:NULL
@@ -94,8 +94,47 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
                                                               cell:PSGroupCell
                                                               edit:Nil];
     [groupSpec setProperty:@YES forKey:@"isDeletionGroup"];
-    [groupSpec setProperty:kSGNSectionSkyglow forKey:kSGNSectionPropKey];
+    [groupSpec setProperty:sectionTag forKey:kSGNSectionPropKey];
     [groupSpec setProperty:@YES forKey:kSGNSectionGroupPropKey];
+    return groupSpec;
+}
+
+- (PSSpecifier *)_placeholderSpecifierForSection:(NSString *)sectionTag {
+    PSSpecifier *placeholder = [PSSpecifier preferenceSpecifierNamed:@"No registered applications."
+                                                              target:self
+                                                                 set:NULL
+                                                                 get:NULL
+                                                              detail:Nil
+                                                                cell:PSStaticTextCell
+                                                                edit:Nil];
+    [placeholder setProperty:sectionTag forKey:kSGNSectionPropKey];
+    [placeholder setProperty:@YES forKey:kSGNPlaceholderPropKey];
+    return placeholder;
+}
+
+- (PSSpecifier *)_appRowSpecifierForBundleId:(NSString *)bundleId
+                                     section:(NSString *)sectionTag
+                                  hideToggle:(BOOL)hideToggle {
+    PSSpecifier *spec = [PSSpecifier preferenceSpecifierNamed:bundleId
+                                                       target:self
+                                                          set:@selector(setPreferenceValue:specifier:)
+                                                          get:@selector(readPreferenceValue:)
+                                                       detail:Nil
+                                                         cell:PSSwitchCell
+                                                         edit:Nil];
+    [spec setProperty:bundleId forKey:@"bundleId"];
+    [spec setProperty:[SNAppToggleCell class] forKey:@"cellClass"];
+    if (hideToggle) [spec setProperty:@YES forKey:@"sgnHideToggle"];
+    [spec setProperty:sectionTag forKey:kSGNSectionPropKey];
+    if ([self.deletingBundleIDs containsObject:bundleId]) {
+        [spec setProperty:@YES forKey:kSGNDeletingPropKey];
+    }
+    return spec;
+}
+
+- (void)_buildSkyglowSectionInto:(NSMutableArray *)specs {
+    PSSpecifier *groupSpec = [self _groupSpecifierNamed:@"Skyglow Notifications"
+                                                section:kSGNSectionSkyglow];
     [specs addObject:groupSpec];
 
     SNDataManager *dm = [SNDataManager shared];
@@ -106,103 +145,41 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
     [allBundleIDs unionSet:dbBundleIDs];
 
     if ([allBundleIDs count] == 0) {
-        PSSpecifier *placeholder = [PSSpecifier preferenceSpecifierNamed:@"No registered applications."
-                                                                  target:self
-                                                                     set:NULL
-                                                                     get:NULL
-                                                                  detail:Nil
-                                                                    cell:PSStaticTextCell
-                                                                    edit:Nil];
-        [placeholder setProperty:kSGNSectionSkyglow forKey:kSGNSectionPropKey];
-        [placeholder setProperty:@YES forKey:kSGNPlaceholderPropKey];
-        [specs addObject:placeholder];
+        [specs addObject:[self _placeholderSpecifierForSection:kSGNSectionSkyglow]];
         [groupSpec setProperty:kSGNSkyglowEmptyFooter forKey:@"footerText"];
         return;
     }
 
     NSArray *sorted = [[allBundleIDs allObjects] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)];
     for (NSString *bundleId in sorted) {
-        PSSpecifier *spec = [PSSpecifier preferenceSpecifierNamed:bundleId
-                                                           target:self
-                                                              set:@selector(setPreferenceValue:specifier:)
-                                                              get:@selector(readPreferenceValue:)
-                                                           detail:Nil
-                                                             cell:PSSwitchCell
-                                                             edit:Nil];
-        [spec setProperty:bundleId forKey:@"bundleId"];
-        [spec setProperty:[SNAppToggleCell class] forKey:@"cellClass"];
-        [spec setProperty:kSGNSectionSkyglow forKey:kSGNSectionPropKey];
-        if ([self.deletingBundleIDs containsObject:bundleId]) {
-            [spec setProperty:@YES forKey:kSGNDeletingPropKey];
-        }
-        [specs addObject:spec];
+        [specs addObject:[self _appRowSpecifierForBundleId:bundleId
+                                                   section:kSGNSectionSkyglow
+                                                hideToggle:NO]];
     }
 
     [groupSpec setProperty:kSGNSkyglowPopulatedFooter forKey:@"footerText"];
 }
 
 - (void)_buildAPNsSectionInto:(NSMutableArray *)specs {
-    PSSpecifier *groupSpec = [PSSpecifier preferenceSpecifierNamed:@"Apple Push Notifications"
-                                                            target:self
-                                                               set:NULL
-                                                               get:NULL
-                                                            detail:Nil
-                                                              cell:PSGroupCell
-                                                              edit:Nil];
-    [groupSpec setProperty:@YES forKey:@"isDeletionGroup"];
-    [groupSpec setProperty:kSGNSectionAPNs forKey:kSGNSectionPropKey];
-    [groupSpec setProperty:@YES forKey:kSGNSectionGroupPropKey];
+    PSSpecifier *groupSpec = [self _groupSpecifierNamed:@"Apple Push Notifications"
+                                                section:kSGNSectionAPNs];
     [specs addObject:groupSpec];
 
-    if (self.apsdLoadFailed) {
-        [groupSpec setProperty:self.apsdLoadErrorMessage ?: @"No registered applications."
-                        forKey:@"footerText"];
-        PSSpecifier *placeholder = [PSSpecifier preferenceSpecifierNamed:@"No registered applications."
-                                                                  target:self
-                                                                     set:NULL
-                                                                     get:NULL
-                                                                  detail:Nil
-                                                                    cell:PSStaticTextCell
-                                                                    edit:Nil];
-        [placeholder setProperty:kSGNSectionAPNs forKey:kSGNSectionPropKey];
-        [placeholder setProperty:@YES forKey:kSGNPlaceholderPropKey];
-        [specs addObject:placeholder];
-        return;
-    }
-
-    if (self.apsdBundles.count == 0) {
-        [groupSpec setProperty:kSGNAPNsEmptyFooter forKey:@"footerText"];
-        PSSpecifier *placeholder = [PSSpecifier preferenceSpecifierNamed:@"No registered applications."
-                                                                  target:self
-                                                                     set:NULL
-                                                                     get:NULL
-                                                                  detail:Nil
-                                                                    cell:PSStaticTextCell
-                                                                    edit:Nil];
-        [placeholder setProperty:kSGNSectionAPNs forKey:kSGNSectionPropKey];
-        [placeholder setProperty:@YES forKey:kSGNPlaceholderPropKey];
-        [specs addObject:placeholder];
+    if (self.apsdLoadFailed || self.apsdBundles.count == 0) {
+        NSString *footer = self.apsdLoadFailed
+            ? (self.apsdLoadErrorMessage ?: @"No registered applications.")
+            : kSGNAPNsEmptyFooter;
+        [groupSpec setProperty:footer forKey:@"footerText"];
+        [specs addObject:[self _placeholderSpecifierForSection:kSGNSectionAPNs]];
         return;
     }
 
     [groupSpec setProperty:kSGNAPNsPopulatedFooter forKey:@"footerText"];
 
     for (NSString *bundleId in self.apsdBundles) {
-        PSSpecifier *spec = [PSSpecifier preferenceSpecifierNamed:bundleId
-                                                           target:self
-                                                              set:@selector(setPreferenceValue:specifier:)
-                                                              get:@selector(readPreferenceValue:)
-                                                           detail:Nil
-                                                             cell:PSSwitchCell
-                                                             edit:Nil];
-        [spec setProperty:bundleId forKey:@"bundleId"];
-        [spec setProperty:[SNAppToggleCell class] forKey:@"cellClass"];
-        [spec setProperty:@YES forKey:@"sgnHideToggle"];
-        [spec setProperty:kSGNSectionAPNs forKey:kSGNSectionPropKey];
-        if ([self.deletingBundleIDs containsObject:bundleId]) {
-            [spec setProperty:@YES forKey:kSGNDeletingPropKey];
-        }
-        [specs addObject:spec];
+        [specs addObject:[self _appRowSpecifierForBundleId:bundleId
+                                                   section:kSGNSectionAPNs
+                                                hideToggle:YES]];
     }
 }
 
@@ -258,7 +235,7 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
     NSIndexPath *pathCopy = [indexPath copy];
     NSString    *bidCopy  = [bundleId copy];
 
-    self.deleteActivity = [[[SNDeferredActivity alloc] initWithShowBlock:^{
+    self.deleteActivity = [SNDeferredActivity begunActivityWithShowBlock:^{
         if (![self.pendingDeletionBundleIDs containsObject:bidCopy]) return;
         [self.pendingDeletionBundleIDs removeObject:bidCopy];
         [self _setSpecifier:specRet deleting:YES bundleId:bidCopy];
@@ -270,8 +247,7 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
         [specRet release];
         [pathCopy release];
         [bidCopy release];
-    }] autorelease];
-    [self.deleteActivity begin];
+    }];
 }
 
 - (void)_removeAPNsBundleFromCachedList:(NSString *)bundleId {
@@ -368,8 +344,7 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
     NSString    *secCopy  = [section copy];
 
     [SNChannelGateway deleteAppForBundleId:bidCopy completion:^(BOOL ok, NSString *message) {
-        SNDeferredActivity *activity = [self.deleteActivity retain];
-        [activity finishWithCompletion:^{
+        [self.deleteActivity finishWithCompletion:^{
             [self.pendingDeletionBundleIDs removeObject:bidCopy];
             self.deleteActivity = nil;
             [self _backButtonRestoreAfterDelete];
@@ -390,7 +365,6 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
             [bidCopy release];
             [secCopy release];
         }];
-        [activity release];
     }];
 }
 

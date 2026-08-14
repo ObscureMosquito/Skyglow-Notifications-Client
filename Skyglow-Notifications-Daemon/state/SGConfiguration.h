@@ -7,7 +7,7 @@
 
 #define SG_MACOS_ROOT @"/usr/local/var/skyglow"
 
-/** Resolves a system-root-relative constant to its real on-disk path. */
+/** resolves a system root relative constant to its real path. */
 static inline NSString * SGPath(NSString *path) {
 #if TARGET_OS_OSX
     return [SG_MACOS_ROOT stringByAppendingString:path];
@@ -22,6 +22,25 @@ static inline NSString * SGPath(NSString *path) {
 
 void SGEnsureRuntimeDirectories(void);
 
+static inline BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
+    return profileIdx >= 1 && profileIdx <= SG_PROFILE_INDEX_MAX;
+}
+
+static inline NSString *SGProfilePlistPathForIndex(NSInteger profileIdx) {
+    return SGPath([NSString stringWithFormat:
+        SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
+}
+
+static inline NSString *SGProfileCertificatePathForIndex(NSInteger profileIdx) {
+    return [NSString stringWithFormat:@"%@/profile%ld-server.pem",
+            SG_PROFILE_STATE_DIRECTORY, (long)profileIdx];
+}
+
+static inline NSString *SGProfileRegIdentityPathForIndex(NSInteger profileIdx) {
+    return [NSString stringWithFormat:@"%@/profile%ld-reg-identity.pem",
+            SG_PROFILE_STATE_DIRECTORY, (long)profileIdx];
+}
+
 
 @interface SGConfiguration : NSObject
 
@@ -30,22 +49,14 @@ void SGEnsureRuntimeDirectories(void);
 @property (nonatomic, readonly, copy) NSString *serverAddress;
 @property (nonatomic, copy) NSString *serverIPAddress;
 @property (nonatomic, copy) NSString *serverPort;
-
-/** YES when the active profile has a server address and readable server public key. */
 @property (nonatomic, readonly) BOOL isValid;
-
 @property (nonatomic, readonly) BOOL isEnabled;
 @property (nonatomic, readonly) BOOL hasProfile;
-
-/** Encoding matches SGLogLevel (0-4). Defaults to Info. */
 @property (nonatomic, readonly) NSInteger logLevel;
 @property (nonatomic, readonly, copy) NSString *deviceAddress;
-/** Immutable snapshot; backing store is zeroed on reload/dealloc. */
 @property (nonatomic, readonly) NSData *privateKeyPEM;
 @property (nonatomic, readonly, copy) NSString *serverPubKeyPEM;
 @property (nonatomic, readonly, copy) NSString *registrationIdentityPEM;
-
-/** 1-based (1-5). Defaults to 1. */
 @property (nonatomic, readonly) NSInteger activeProfileIndex;
 
 - (void)reloadFromDisk;

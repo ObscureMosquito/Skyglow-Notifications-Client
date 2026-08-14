@@ -11,6 +11,41 @@
 _Static_assert(sizeof(SGCTokenRequestPayload) == sizeof(SGCBundleIdPayload),
                "token and bundle requests must share identifier wire layout");
 
+static inline void SGCCopyCString(char *dst, size_t dstSize, const char *src) {
+    if (!dst || dstSize == 0) return;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    size_t i = 0;
+    while (i + 1 < dstSize && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
+/** Human-readable detail from an SGCMSG_ERROR_RESPONSE, nil if absent. */
+static inline NSString *SGCErrorDetailFromResponse(const SGControlChannelMessage *response) {
+    if (!response ||
+        response->messageType != SGCMSG_ERROR_RESPONSE ||
+        response->payloadLength < sizeof(SGCErrorResponsePayload)) {
+        return nil;
+    }
+    const SGCErrorResponsePayload *payload =
+        (const SGCErrorResponsePayload *)response->payload;
+    size_t length = strnlen(payload->message, sizeof(payload->message));
+    if (length == 0 || length >= sizeof(payload->message)) return nil;
+    NSString *detail = [[NSString alloc] initWithBytes:payload->message
+                                                length:length
+                                              encoding:NSUTF8StringEncoding];
+#if !__has_feature(objc_arc)
+    return [detail autorelease];
+#else
+    return detail;
+#endif
+}
+
 static inline NSString *SGCBundleIdentifierDecode(const void *payload,
                                                    uint32_t length) {
     if (!payload || length < sizeof(SGCBundleIdPayload)) return nil;

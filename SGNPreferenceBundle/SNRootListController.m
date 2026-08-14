@@ -2,6 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <Preferences/PSSpecifier.h>
 #import "SNRootListController.h"
+#import "SNPaneHeader.h"
 #import "SNServerInfoViewController.h"
 #import "SNDebugViewController.h"
 #import "SNDataManager.h"
@@ -34,69 +35,15 @@
 - (void)_installTableHeaderIfNeeded {
     if (self.table.tableHeaderView) return;
 
-    CGFloat w = self.table.bounds.size.width;
-    if (w < 10.0f) w = 320.0f;
-
-    CGFloat iconSize  = 85.0f;
-    CGFloat topPad    = 22.0f;
-    CGFloat iconGap   = 10.0f;
-    CGFloat titleGap  = 4.0f;
-    CGFloat bodyGap   = 12.0f;
-    CGFloat botPad    = 18.0f;
-    CGFloat sideInset = 24.0f;
-
     NSBundle *bundle = [NSBundle bundleForClass:[self class]];
     UIImage *iconImg = [UIImage imageWithContentsOfFile:[bundle pathForResource:@"icon-settings" ofType:@"png"]];
+    UIImageView *iconView = [[[UIImageView alloc] initWithImage:iconImg] autorelease];
+    iconView.contentMode = UIViewContentModeScaleAspectFit;
+    iconView.frame       = CGRectMake(0, 0, 85.0f, 85.0f);
 
-    UIImageView *iconView = [[UIImageView alloc] initWithImage:iconImg];
-    iconView.contentMode  = UIViewContentModeScaleAspectFit;
-    iconView.frame        = CGRectMake((w - iconSize) / 2.0f, topPad, iconSize, iconSize);
-    iconView.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
-
-    UILabel *titleLabel = [[UILabel alloc] init];
-    titleLabel.text         = @"Skyglow Notifications";
-    titleLabel.font         = [UIFont boldSystemFontOfSize:17.0f];
-    titleLabel.textColor    = SNLabelColor([UIColor colorWithRed:0.18f green:0.18f blue:0.18f alpha:1.0f]);
-    titleLabel.shadowColor  = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.7f]);
-    titleLabel.shadowOffset = CGSizeMake(0, 1);
-    titleLabel.textAlignment    = NSTextAlignmentCenter;
-    titleLabel.backgroundColor  = [UIColor clearColor];
-    titleLabel.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
-    [titleLabel sizeToFit];
-    CGFloat titleY = topPad + iconSize + iconGap;
-    titleLabel.frame = CGRectMake((w - titleLabel.frame.size.width) / 2.0f,
-                                  titleY,
-                                  titleLabel.frame.size.width,
-                                  titleLabel.frame.size.height);
-
-    UILabel *bodyLabel = [[UILabel alloc] init];
-    bodyLabel.text          = @"A push notification daemon, built from scratch.";
-    bodyLabel.font          = [UIFont systemFontOfSize:13.0f];
-    bodyLabel.textColor     = SNSecondaryLabelColor([UIColor colorWithRed:0.38f green:0.38f blue:0.42f alpha:1.0f]);
-    bodyLabel.shadowColor   = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.6f]);
-    bodyLabel.shadowOffset  = CGSizeMake(0, 1);
-    bodyLabel.textAlignment    = NSTextAlignmentCenter;
-    bodyLabel.backgroundColor  = [UIColor clearColor];
-    bodyLabel.numberOfLines    = 0;
-    bodyLabel.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
-    CGFloat bodyY = titleY + titleLabel.frame.size.height + titleGap;
-    CGSize bodyFit = [bodyLabel sizeThatFits:CGSizeMake(w - sideInset * 2.0f, 999.0f)];
-    bodyLabel.frame = CGRectMake((w - bodyFit.width) / 2.0f, bodyY, bodyFit.width, bodyFit.height);
-
-    CGFloat totalH = bodyY + bodyFit.height + bodyGap + botPad;
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, totalH)];
-    header.backgroundColor  = [UIColor clearColor];
-    header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [header addSubview:iconView];
-    [header addSubview:titleLabel];
-    [header addSubview:bodyLabel];
-
-    self.table.tableHeaderView = header;
-
-    [iconView release];
-    [titleLabel release];
-    [bodyLabel release];
-    [header release];
+    self.table.tableHeaderView = SNPaneHeaderViewCreate(
+        self.table.bounds.size.width, iconView,
+        @"A push notification daemon, built from scratch.");
 }
 
 - (NSArray *)specifiers {

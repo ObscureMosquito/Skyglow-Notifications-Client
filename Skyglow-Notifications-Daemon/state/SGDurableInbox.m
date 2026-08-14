@@ -12,39 +12,11 @@ NSString * const SGDurableEventCreatedAtKey = @"createdAt";
 NSString * const SGDurableEventFilePathKey = @"_eventFilePath";
 NSString * const SGDurableEventDeleteApp = @"delete_app";
 
-static NSString * const SGDurableInboxErrorDomain = @"com.skyglow.storage";
 static const NSUInteger SGDurableEventMaximumBytes = 16384;
 static const NSUInteger SGDurableEventMaximumBatch = 256;
 
-static void SGDurableInboxSetError(NSError **outError, NSInteger code, int posixError) {
-    if (!outError) return;
-    NSMutableDictionary *info = [NSMutableDictionary dictionary];
-    if (posixError != 0) {
-        [info setObject:[NSString stringWithUTF8String:strerror(posixError)]
-                 forKey:NSLocalizedDescriptionKey];
-        [info setObject:[NSNumber numberWithInt:posixError]
-                 forKey:@"errno"];
-    }
-    *outError = [NSError errorWithDomain:SGDurableInboxErrorDomain
-                                   code:code
-                               userInfo:info];
-}
-
-static NSString *SGDurableInboxUUIDString(void) {
-    CFUUIDRef uuid = CFUUIDCreate(kCFAllocatorDefault);
-    if (!uuid) return nil;
-    CFStringRef string = CFUUIDCreateString(kCFAllocatorDefault, uuid);
-    CFRelease(uuid);
-    return [(NSString *)string autorelease];
-}
-
 static NSDictionary *SGDurableEventParseFile(NSString *path) {
-    NSDictionary *attributes = [[NSFileManager defaultManager]
-        attributesOfItemAtPath:path error:NULL];
-    unsigned long long size = [attributes fileSize];
-    if (size == 0 || size > SGDurableEventMaximumBytes) return nil;
-
-    NSData *data = [NSData dataWithContentsOfFile:path];
+    NSData *data = SGAtomicReadData(path, SGDurableEventMaximumBytes);
     if (!data) return nil;
     id parsed = [NSPropertyListSerialization
         propertyListWithData:data
@@ -75,13 +47,13 @@ static NSString *SGDurableEventEnqueueWithType(NSString *inboxPath,
                                                NSError **outError) {
     if ([inboxPath length] == 0 || [type length] == 0 ||
         [bundleIdentifier length] == 0) {
-        SGDurableInboxSetError(outError, 5, EINVAL);
+        SGStorageSetError(outError, 100, EINVAL);
         return nil;
     }
 
-    NSString *eventID = SGDurableInboxUUIDString();
+    NSString *eventID = SGStorageUUIDString();
     if (!eventID) {
-        SGDurableInboxSetError(outError, 6, ENOMEM);
+        SGStorageSetError(outError, 101, ENOMEM);
         return nil;
     }
 
@@ -134,22 +106,13 @@ NSArray *SGDurableEventPendingEvents(NSString *inboxPath) {
 BOOL SGDurableEventRemove(NSDictionary *event) {
     NSString *path = [event objectForKey:SGDurableEventFilePathKey];
     if ([path length] == 0) return NO;
-    if (unlink([path fileSystemRepresentation]) == 0 || errno == ENOENT) {
-        return YES;
-    }
-    return NO;
+    return SGDurableRemoveItem(path, NULL);
 }
 
 BOOL SGDurableEventQuarantine(NSDictionary *event) {
     NSString *path = [event objectForKey:SGDurableEventFilePathKey];
     if ([path length] == 0) return NO;
-    NSString *quarantinePath = [path stringByAppendingString:@".invalid"];
-    if (rename([path fileSystemRepresentation],
-               [quarantinePath fileSystemRepresentation]) == 0 ||
-        errno == ENOENT) {
-        return YES;
-    }
-    return NO;
+    return SGDurableRenameItem(path, [path stringByAppendingString:@".invalid"], NULL);
 }
 
 NSUInteger SGDurableEventPurgeForBundleIdentifier(NSString *inboxPath,
@@ -168,7 +131,7 @@ NSUInteger SGDurableEventPurgeForBundleIdentifier(NSString *inboxPath,
             continue;
         }
 
-        if (unlink([path fileSystemRepresentation]) == 0) {
+        if (SGDurableRemoveItem(path, NULL)) {
             removed++;
         }
     }

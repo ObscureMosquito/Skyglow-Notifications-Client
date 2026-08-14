@@ -18,6 +18,7 @@ SGNPreferenceBundle_FILES = \
     SNDataManager.m \
     SNChannelGateway.m \
     SNDeferredActivity.m \
+    SNPaneHeader.m \
     $(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/net/control/SGControlAuthorization.m \
     $(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/net/control/SGControlChannel.m \
     $(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/shared/SGLog.m \

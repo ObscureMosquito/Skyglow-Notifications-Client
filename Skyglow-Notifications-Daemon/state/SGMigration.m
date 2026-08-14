@@ -1,6 +1,8 @@
 #import "SGMigration.h"
+#import "SGControlChannelProtocol.h"
 #import "SGAtomicFile.h"
 #import "SGConfiguration.h"
+#import "SGDatabaseSchema.h"
 #import "SGKeychainStore.h"
 #import "SGLog.h"
 
@@ -12,26 +14,12 @@
 #include <TargetConditionals.h>
 
 #define SG_MIGRATION_VERSION 2
-#define SG_DATABASE_APPLICATION_ID 0x53474E44
-#define SG_SCHEMA_VERSION 1
 
 static NSString * const kSGMigrationVersionKey = @"storageMigrationVersion";
 #if TARGET_OS_IPHONE
 static NSString * const kSGKeychainAccessibilityMigrationKey = @"keychainAccessibilityMigrationVersion";
 #endif
 static NSString * const kSGLegacyPrivateKeyPath = @"/var/Library/PreferenceBundles/SGNPreferenceBundle.bundle/com.skyglow.client.pem";
-static NSString * const kSGProfileCertificateDirectory = @"/var/mobile/Library/SkyglowNotifications";
-
-static NSString *SGMProfilePlistPathForIndex(NSInteger profileIdx) {
-    return SGPath([NSString stringWithFormat:
-        SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
-}
-
-static NSString *SGMProfileCertificatePathForIndex(NSInteger profileIdx) {
-    return [NSString stringWithFormat:@"%@/profile%ld-server.pem",
-            kSGProfileCertificateDirectory, (long)profileIdx];
-}
-
 static BOOL SGMStringHasText(id value) {
     return [value isKindOfClass:[NSString class]] &&
            [(NSString *)value length] > 0;
@@ -42,10 +30,6 @@ static BOOL SGMPemLooksLikePrivateKey(NSString *pem) {
            [pem rangeOfString:@"-----BEGIN PRIVATE KEY-----"].location != NSNotFound;
 }
 
-static BOOL SGMPemLooksLikeCertificate(NSString *pem) {
-    return [pem rangeOfString:@"-----BEGIN CERTIFICATE-----"].location != NSNotFound;
-}
-
 static NSString *SGMResolvedLegacyPath(NSString *rawPath) {
     if (!SGMStringHasText(rawPath)) return nil;
     if ([rawPath length] > 1024) return nil;
@@ -54,20 +38,10 @@ static NSString *SGMResolvedLegacyPath(NSString *rawPath) {
 }
 
 static NSString *SGMReadSmallUTF8File(NSString *path) {
-    if (![path length]) return nil;
-
-    BOOL isDirectory = NO;
-    NSFileManager *fm = [NSFileManager defaultManager];
-    if (![fm fileExistsAtPath:path isDirectory:&isDirectory] || isDirectory) {
-        return nil;
-    }
-
-    NSDictionary *attrs = [fm attributesOfItemAtPath:path error:nil];
-    if (!attrs || [attrs fileSize] > 65536) return nil;
-
-    return [NSString stringWithContentsOfFile:path
-                                     encoding:NSUTF8StringEncoding
-                                        error:nil];
+    NSData *data = SGAtomicReadData(path, SG_STORAGE_SMALL_FILE_MAX_BYTES);
+    if (!data) return nil;
+    return [[[NSString alloc] initWithData:data
+                                  encoding:NSUTF8StringEncoding] autorelease];
 }
 
 static NSString *SGMReadLegacyPEMValue(id rawValue) {
@@ -90,7 +64,7 @@ static void SGMRemoveKnownLegacyPrivateKeyFile(id rawValue) {
     if (![legacyPath isEqualToString:kSGLegacyPrivateKeyPath]) return;
 
     NSString *diskPath = SGPath(legacyPath);
-    (void)unlink([diskPath fileSystemRepresentation]);
+    (void)SGDurableRemoveItem(diskPath, NULL);
 }
 
 static id SGMFirstTextValue(NSDictionary *primary,
@@ -112,7 +86,7 @@ static BOOL SGMProfileAlreadyLooksMigrated(NSDictionary *profile) {
     if ([profile objectForKey:@"privateKey"]) return NO;
 
     NSString *serverPubKey = [profile objectForKey:@"server_pub_key"];
-    return [serverPubKey isEqualToString:SGMProfileCertificatePathForIndex(1)];
+    return [serverPubKey isEqualToString:SGProfileCertificatePathForIndex(1)];
 }
 
 static BOOL SGMWriteMainPreferences(NSDictionary *mainPrefs,
@@ -141,7 +115,7 @@ static BOOL SGMWriteMainPreferences(NSDictionary *mainPrefs,
 
 static BOOL SGMigrateLegacyProfileIfNeeded(void) {
     NSString *mainPath = SGPath(SG_PREFS_PLIST_PATH);
-    NSString *profilePath = SGMProfilePlistPathForIndex(1);
+    NSString *profilePath = SGProfilePlistPathForIndex(1);
 
     NSDictionary *mainPrefs =
         [NSDictionary dictionaryWithContentsOfFile:mainPath] ?: @{};
@@ -189,7 +163,7 @@ static BOOL SGMigrateLegacyProfileIfNeeded(void) {
         [mainPrefs objectForKey:@"privateKey"];
     if (!hasLegacyProfileMaterial) return YES;
 
-    if (![serverAddress length] || !SGMPemLooksLikeCertificate(serverCertPEM)) {
+    if (![serverAddress length] || !SG_LooksLikePEMCertificate(serverCertPEM)) {
         SGLOGW(SGMigration,
                "code=SGN_MIGRATION_PROFILE_DEFERRED result=deferred reason=incomplete_profile");
         return YES;
@@ -212,7 +186,7 @@ static BOOL SGMigrateLegacyProfileIfNeeded(void) {
 
     SGEnsureRuntimeDirectories();
 
-    NSString *storedCertPath = SGMProfileCertificatePathForIndex(1);
+    NSString *storedCertPath = SGProfileCertificatePathForIndex(1);
     NSString *certDiskPath = SGPath(storedCertPath);
     NSData *certData = [serverCertPEM dataUsingEncoding:NSUTF8StringEncoding];
     if (!certData || !SGAtomicWriteData(certData, certDiskPath, 0644, NULL)) {
@@ -264,7 +238,7 @@ static BOOL SGMigrateKeychainAccessibilityIfNeeded(void) {
         return YES;
     }
 
-    for (NSInteger profileIdx = 1; profileIdx <= 5; profileIdx++) {
+    for (NSInteger profileIdx = 1; profileIdx <= SG_PROFILE_INDEX_MAX; profileIdx++) {
         BOOL found = NO;
         if (!SGKeychain_RewrapPrivateKeyForPreUnlockAccess(profileIdx,
                                                             &found)) {
@@ -292,16 +266,6 @@ static BOOL SGMigrateKeychainAccessibilityIfNeeded(void) {
 
     return YES;
 #endif
-}
-
-static BOOL SGMSQLiteReadInt(sqlite3 *db, const char *sql, int *outValue) {
-    if (!db || !sql || !outValue) return NO;
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return NO;
-    BOOL ok = (sqlite3_step(stmt) == SQLITE_ROW);
-    if (ok) *outValue = sqlite3_column_int(stmt, 0);
-    sqlite3_finalize(stmt);
-    return ok;
 }
 
 static BOOL SGMSQLiteTableExists(sqlite3 *db, const char *tableName) {
@@ -382,8 +346,8 @@ static BOOL SGMigrateLegacyDatabaseIfNeeded(void) {
     BOOL ok = YES;
     int applicationID = 0;
     int schemaVersion = 0;
-    if (!SGMSQLiteReadInt(db, "PRAGMA application_id", &applicationID) ||
-        !SGMSQLiteReadInt(db, "PRAGMA user_version", &schemaVersion)) {
+    if (!SGDatabaseReadIntPragma(db, "PRAGMA application_id", &applicationID) ||
+        !SGDatabaseReadIntPragma(db, "PRAGMA user_version", &schemaVersion)) {
         SGLOGE(SGMigration,
                "code=SGN_MIGRATION_DATABASE_FAILED result=failed reason=version_probe");
         sqlite3_close(db);
@@ -418,47 +382,6 @@ static BOOL SGMigrateLegacyDatabaseIfNeeded(void) {
            "code=SGN_MIGRATION_DATABASE_START profile=1 from_version=%d",
            schemaVersion);
 
-    const char *newSchema =
-        "CREATE TABLE notifications ("
-        " profile_id INTEGER NOT NULL,"
-        " routing_key BLOB NOT NULL,"
-        " e2ee_key BLOB NOT NULL,"
-        " bundle_id TEXT NOT NULL,"
-        " token BLOB NOT NULL,"
-        " is_muted INTEGER NOT NULL DEFAULT 0,"
-        " PRIMARY KEY(profile_id, routing_key),"
-        " UNIQUE(profile_id, bundle_id));"
-        "CREATE TABLE dns_cache ("
-        " profile_id INTEGER NOT NULL,"
-        " domain TEXT NOT NULL,"
-        " ip TEXT NOT NULL,"
-        " port TEXT NOT NULL,"
-        " updated_at REAL NOT NULL,"
-        " PRIMARY KEY(profile_id, domain));"
-        "CREATE TABLE pending_acks ("
-        " profile_id INTEGER NOT NULL,"
-        " msg_id BLOB NOT NULL,"
-        " status INTEGER NOT NULL,"
-        " PRIMARY KEY(profile_id, msg_id));"
-        "CREATE TABLE settings ("
-        " profile_id INTEGER NOT NULL,"
-        " key TEXT NOT NULL,"
-        " value NUMERIC NOT NULL,"
-        " PRIMARY KEY(profile_id, key));"
-        "CREATE TABLE seen_messages ("
-        " profile_id INTEGER NOT NULL,"
-        " msg_id BLOB NOT NULL,"
-        " expires_at INTEGER NOT NULL,"
-        " PRIMARY KEY(profile_id, msg_id));"
-        "CREATE TABLE local_pending_deliveries ("
-        " profile_id INTEGER NOT NULL,"
-        " msg_id BLOB NOT NULL,"
-        " bundle_id TEXT NOT NULL,"
-        " payload BLOB NOT NULL,"
-        " device_seq INTEGER NOT NULL DEFAULT 0,"
-        " expires_at INTEGER NOT NULL,"
-        " PRIMARY KEY(profile_id, msg_id));";
-
     ok = SGMSQLiteExec(db, "BEGIN IMMEDIATE", "begin");
     ok = ok && SGMSQLiteRenameIfExists(db, "notifications",
                                        "notifications_legacy_migration");
@@ -472,7 +395,7 @@ static BOOL SGMigrateLegacyDatabaseIfNeeded(void) {
                                        "seen_messages_legacy_migration");
     ok = ok && SGMSQLiteRenameIfExists(db, "local_pending_deliveries",
                                        "local_pending_deliveries_legacy_migration");
-    ok = ok && SGMSQLiteExec(db, newSchema, "create_schema");
+    ok = ok && SGMSQLiteExec(db, kSGDatabaseSchemaSQL, "create_schema");
     ok = ok && SGMSQLiteExec(db,
         "INSERT OR REPLACE INTO notifications "
         "(profile_id, routing_key, e2ee_key, bundle_id, token, is_muted) "
@@ -527,9 +450,9 @@ static BOOL SGMigrateLegacyDatabaseIfNeeded(void) {
     ok = ok && SGMSQLiteDropIfExists(db, "settings_legacy_migration");
     ok = ok && SGMSQLiteDropIfExists(db, "seen_messages_legacy_migration");
     ok = ok && SGMSQLiteDropIfExists(db, "local_pending_deliveries_legacy_migration");
-    ok = ok && SGMSQLiteExec(db,
-        "PRAGMA application_id = 1397182020; PRAGMA user_version = 1;",
-        "stamp_schema");
+    char identitySQL[96];
+    SGDatabaseSchemaIdentitySQL(identitySQL, sizeof(identitySQL));
+    ok = ok && SGMSQLiteExec(db, identitySQL, "stamp_schema");
 
     if (ok && sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
         SGLOGE(SGMigration,

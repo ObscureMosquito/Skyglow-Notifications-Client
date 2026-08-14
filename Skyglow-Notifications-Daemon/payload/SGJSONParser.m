@@ -12,12 +12,17 @@ typedef struct {
 
 static id SGJSONParseValue(SGJSONCtx *c);
 
-static void SGJSONSkipWS(SGJSONCtx *c) {
-    while (c->p < c->end) {
-        uint8_t ch = *c->p;
-        if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') c->p++;
+const uint8_t *SG_JSONSkipWhitespace(const uint8_t *p, const uint8_t *end) {
+    while (p < end) {
+        uint8_t ch = *p;
+        if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') p++;
         else break;
     }
+    return p;
+}
+
+static void SGJSONSkipWS(SGJSONCtx *c) {
+    c->p = SG_JSONSkipWhitespace(c->p, c->end);
 }
 
 static int SGJSONHexNibble(uint8_t ch) {

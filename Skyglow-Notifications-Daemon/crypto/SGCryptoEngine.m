@@ -1,11 +1,70 @@
 #import "SGCryptoEngine.h"
 #import "SGConfiguration.h"
+#import "SGControlChannelProtocol.h"
 #import "SGLog.h"
+#include <limits.h>
 #include <openssl/bio.h>
 #include <openssl/pem.h>
 #include <openssl/evp.h>
 #include <openssl/kdf.h>
 #include <openssl/err.h>
+
+void SG_CryptoLogOpenSSLErrors(const char *logTag, const char *diagnosticCode) {
+    unsigned long opensslError;
+    while ((opensslError = ERR_get_error()) != 0) {
+        char errBuf[256];
+        ERR_error_string_n(opensslError, errBuf, sizeof(errBuf));
+        SGLog_Write(SGLogLevelError, logTag, "code=%s reason=%s",
+                    diagnosticCode, errBuf);
+    }
+}
+
+X509 *SG_CryptoParseCertificatePEM(const void *pemBytes, size_t length) {
+    if (!pemBytes || length == 0 || length > INT_MAX) return NULL;
+    BIO *bio = BIO_new_mem_buf((void *)pemBytes, (int)length);
+    if (!bio) return NULL;
+    X509 *cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    return cert;
+}
+
+EVP_PKEY *SG_CryptoParsePrivateKeyPEM(const void *pemBytes, size_t length) {
+    if (!pemBytes || length == 0 || length > INT_MAX) return NULL;
+    BIO *bio = BIO_new_mem_buf((void *)pemBytes, (int)length);
+    if (!bio) return NULL;
+    EVP_PKEY *key = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    return key;
+}
+
+BOOL SG_CryptoCertificatePEMIsValid(NSString *pem) {
+    if (!SG_LooksLikePEMCertificate(pem)) return NO;
+    X509 *cert = SG_CryptoParseCertificatePEM(
+        [pem UTF8String], [pem lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
+    if (!cert) return NO;
+    X509_free(cert);
+    return YES;
+}
+
+BOOL SG_CryptoIdentityPEMIsValid(NSString *pem) {
+    if (!SG_CryptoCertificatePEMIsValid(pem)) return NO;
+    EVP_PKEY *key = SG_CryptoParsePrivateKeyPEM(
+        [pem UTF8String], [pem lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
+    if (!key) return NO;
+    EVP_PKEY_free(key);
+    return YES;
+}
+
+void SG_CryptoZeroBytes(void *bytes, size_t length) {
+    if (!bytes) return;
+    volatile unsigned char *p = (volatile unsigned char *)bytes;
+    while (length--) *p++ = 0;
+}
+
+void SG_CryptoWipeData(NSMutableData *data) {
+    if (!data) return;
+    [data resetBytesInRange:NSMakeRange(0, [data length])];
+}
 
 RSA *SG_CryptoGetClientPrivateKey(void) {
     NSData *keyData = [[SGConfiguration sharedConfiguration] privateKeyPEM];
@@ -17,14 +76,9 @@ RSA *SG_CryptoGetClientPrivateKey(void) {
     RSA *key = PEM_read_bio_RSAPrivateKey(bio, NULL, NULL, NULL);
     if (!key) {
         SGLOGE(SGCryptoEngine, "code=%s result=failed reason=pem_read_private_key", SGND_CRYPTO_PRIVATE_KEY_READ_FAILED);
-        unsigned long openSslErr;
-        while ((openSslErr = ERR_get_error()) != 0) {
-            char errBuf[256];
-            ERR_error_string_n(openSslErr, errBuf, sizeof(errBuf));
-            SGLOGE(SGCryptoEngine, "code=%s reason=%s", SGND_CRYPTO_OPENSSL_ERROR, errBuf);
-        }
+        SG_CryptoLogOpenSSLErrors("SGCryptoEngine", SGND_CRYPTO_OPENSSL_ERROR);
     }
-    
+
     BIO_free(bio);
     return key;
 }

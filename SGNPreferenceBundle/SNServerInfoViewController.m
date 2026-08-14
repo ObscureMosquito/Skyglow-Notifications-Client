@@ -1,4 +1,5 @@
 #import "SNServerInfoViewController.h"
+#import "SNPaneHeader.h"
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
 #import "SNDeferredActivity.h"
@@ -92,100 +93,52 @@ typedef enum {
 }
 
 - (void)_updateTableHeaderView {
-    if (![self isRegistered]) {
-        CGFloat w = self.tableView.bounds.size.width;
-        if (w < 10.0f) w = 320.0f;
-
-        CGFloat iconSize      = 62.0f;
-        CGFloat smallIconSize = 55.5f;
-        CGFloat arrowWidth    = 30.0f;
-        CGFloat spacing       = 16.0f;
-        CGFloat topPad        = 22.0f;
-        CGFloat totalGroupWidth = iconSize + spacing + arrowWidth + spacing + smallIconSize;
-        CGFloat startX = (w - totalGroupWidth) / 2.0f;
-
-        NSBundle *bundle = [NSBundle bundleForClass:[self class]];
-
-        UIView *iconGroup = [[[UIView alloc] initWithFrame:CGRectMake(startX, topPad, totalGroupWidth, iconSize)] autorelease];
-        iconGroup.backgroundColor = [UIColor clearColor];
-        iconGroup.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
-
-        UIImage *webIcon = [UIImage imageWithContentsOfFile:[bundle pathForResource:@"web" ofType:@"png"]];
-        UIImageView *webIconView = [[[UIImageView alloc] initWithImage:webIcon] autorelease];
-        webIconView.contentMode   = UIViewContentModeScaleAspectFit;
-        webIconView.clipsToBounds = YES;
-        webIconView.frame = CGRectMake(0, 0, iconSize, iconSize);
-
-        UILabel *arrowLabel = [[[UILabel alloc] initWithFrame:CGRectMake(iconSize + spacing, 0, arrowWidth, iconSize)] autorelease];
-        arrowLabel.text = @"➔";
-        arrowLabel.font = [UIFont boldSystemFontOfSize:25.0f];
-        arrowLabel.textColor = SNTertiaryLabelColor([UIColor colorWithRed:0.55f green:0.55f blue:0.58f alpha:1.0f]);
-        arrowLabel.shadowColor = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.7f]);
-        arrowLabel.shadowOffset = CGSizeMake(0, 1);
-        arrowLabel.backgroundColor = [UIColor clearColor];
-        arrowLabel.textAlignment = NSTextAlignmentCenter;
-
-        UIImage *settingsIcon = [UIImage imageWithContentsOfFile:[bundle pathForResource:@"icon-settings" ofType:@"png"]];
-        UIImageView *settingsIconView = [[[UIImageView alloc] initWithImage:settingsIcon] autorelease];
-        settingsIconView.contentMode   = UIViewContentModeScaleAspectFit;
-        settingsIconView.clipsToBounds = YES;
-
-        CGFloat settingsYOffset = (iconSize - smallIconSize) / 2.0f;
-        CGFloat settingsXOrigin = iconSize + spacing + arrowWidth + spacing;
-
-        settingsIconView.frame = CGRectMake(settingsXOrigin, settingsYOffset, smallIconSize, smallIconSize);
-        
-        [iconGroup addSubview:webIconView];
-        [iconGroup addSubview:arrowLabel];
-        [iconGroup addSubview:settingsIconView];
-
-        CGFloat iconGap   = 10.0f;
-        CGFloat titleGap  = 4.0f;
-        CGFloat bodyGap   = 12.0f;
-        CGFloat botPad    = 18.0f;
-        CGFloat sideInset = 24.0f;
-
-        UILabel *titleLabel     = [[[UILabel alloc] init] autorelease];
-        titleLabel.text         = @"Skyglow Notifications";
-        titleLabel.font         = [UIFont boldSystemFontOfSize:17.0f];
-        titleLabel.textColor    = SNLabelColor([UIColor colorWithRed:0.18f green:0.18f blue:0.18f alpha:1.0f]);
-        titleLabel.shadowColor  = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.7f]);
-        titleLabel.shadowOffset = CGSizeMake(0, 1);
-        titleLabel.textAlignment     = NSTextAlignmentCenter;
-        titleLabel.backgroundColor   = [UIColor clearColor];
-        titleLabel.autoresizingMask  = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
-        CGFloat titleY = topPad + iconSize + iconGap;
-        [titleLabel sizeToFit];
-        titleLabel.frame = CGRectMake((w - titleLabel.frame.size.width) / 2.0f, titleY, titleLabel.frame.size.width, titleLabel.frame.size.height);
-
-        UILabel *bodyLabel      = [[[UILabel alloc] init] autorelease];
-        bodyLabel.text          = @"Enter your server address below, then select\nyour server's public certificate to get started.";
-        bodyLabel.font          = [UIFont systemFontOfSize:13.0f];
-        bodyLabel.textColor     = SNSecondaryLabelColor([UIColor colorWithRed:0.38f green:0.38f blue:0.42f alpha:1.0f]);
-        bodyLabel.shadowColor   = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.6f]);
-        bodyLabel.shadowOffset  = CGSizeMake(0, 1);
-        bodyLabel.textAlignment    = NSTextAlignmentCenter;
-        bodyLabel.backgroundColor  = [UIColor clearColor];
-        bodyLabel.numberOfLines    = 0;
-        bodyLabel.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
-        CGFloat bodyY = titleY + titleLabel.frame.size.height + titleGap;
-        CGSize bodyFit = [bodyLabel sizeThatFits:CGSizeMake(w - sideInset * 2.0f, 999.0f)];
-        bodyLabel.frame = CGRectMake((w - bodyFit.width) / 2.0f, bodyY, bodyFit.width, bodyFit.height);
-
-        CGFloat totalH = bodyY + bodyFit.height + bodyGap + botPad;
-        UIView *header = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, w, totalH)] autorelease];
-        header.backgroundColor = [UIColor clearColor];
-        header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-
-        [header addSubview:iconGroup];
-
-        [header addSubview:titleLabel];
-        [header addSubview:bodyLabel];
-
-        self.tableView.tableHeaderView = header;
-    } else {
+    if ([self isRegistered]) {
         self.tableView.tableHeaderView = nil;
+        return;
     }
+
+    CGFloat iconSize      = 62.0f;
+    CGFloat smallIconSize = 55.5f;
+    CGFloat arrowWidth    = 30.0f;
+    CGFloat spacing       = 16.0f;
+    CGFloat totalGroupWidth = iconSize + spacing + arrowWidth + spacing + smallIconSize;
+
+    NSBundle *bundle = [NSBundle bundleForClass:[self class]];
+
+    UIView *iconGroup = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, totalGroupWidth, iconSize)] autorelease];
+    iconGroup.backgroundColor = [UIColor clearColor];
+
+    UIImage *webIcon = [UIImage imageWithContentsOfFile:[bundle pathForResource:@"web" ofType:@"png"]];
+    UIImageView *webIconView = [[[UIImageView alloc] initWithImage:webIcon] autorelease];
+    webIconView.contentMode   = UIViewContentModeScaleAspectFit;
+    webIconView.clipsToBounds = YES;
+    webIconView.frame = CGRectMake(0, 0, iconSize, iconSize);
+
+    UILabel *arrowLabel = [[[UILabel alloc] initWithFrame:CGRectMake(iconSize + spacing, 0, arrowWidth, iconSize)] autorelease];
+    arrowLabel.text = @"\u2794";
+    arrowLabel.font = [UIFont boldSystemFontOfSize:25.0f];
+    arrowLabel.textColor = SNTertiaryLabelColor([UIColor colorWithRed:0.55f green:0.55f blue:0.58f alpha:1.0f]);
+    arrowLabel.shadowColor = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.7f]);
+    arrowLabel.shadowOffset = CGSizeMake(0, 1);
+    arrowLabel.backgroundColor = [UIColor clearColor];
+    arrowLabel.textAlignment = NSTextAlignmentCenter;
+
+    UIImage *settingsIcon = [UIImage imageWithContentsOfFile:[bundle pathForResource:@"icon-settings" ofType:@"png"]];
+    UIImageView *settingsIconView = [[[UIImageView alloc] initWithImage:settingsIcon] autorelease];
+    settingsIconView.contentMode   = UIViewContentModeScaleAspectFit;
+    settingsIconView.clipsToBounds = YES;
+    settingsIconView.frame = CGRectMake(iconSize + spacing + arrowWidth + spacing,
+                                        (iconSize - smallIconSize) / 2.0f,
+                                        smallIconSize, smallIconSize);
+
+    [iconGroup addSubview:webIconView];
+    [iconGroup addSubview:arrowLabel];
+    [iconGroup addSubview:settingsIconView];
+
+    self.tableView.tableHeaderView = SNPaneHeaderViewCreate(
+        self.tableView.bounds.size.width, iconGroup,
+        @"Enter your server address below, then select\nyour server's public certificate to get started.");
 }
 
 - (BOOL)isRegistered {
@@ -828,20 +781,18 @@ typedef enum {
     [self.navigationItem setHidesBackButton:YES animated:YES];
     self.tableView.allowsSelection = NO;
 
-    self.profileSaveActivity = [[[SNDeferredActivity alloc] initWithShowBlock:^{
+    self.profileSaveActivity = [SNDeferredActivity begunActivityWithShowBlock:^{
         self.profileSaveInFlight = YES;
         [self.tableView reloadData];
     } hideBlock:^{
         self.profileSaveInFlight = NO;
         [self.tableView reloadData];
-    }] autorelease];
-    [self.profileSaveActivity begin];
+    }];
     return YES;
 }
 
 - (void)_finishProfileSaveActivityWithCompletion:(void (^)(void))completion {
-    SNDeferredActivity *activity = [self.profileSaveActivity retain];
-    [activity finishWithCompletion:^{
+    [self.profileSaveActivity finishWithCompletion:^{
         self.profileSaveRequestInFlight = NO;
         self.profileSaveActivity = nil;
         self.profileSaveWizardRow = -1;
@@ -850,7 +801,6 @@ typedef enum {
         self.tableView.allowsSelection = YES;
         if (completion) completion();
     }];
-    [activity release];
 }
 
 - (void)_sendProfileSaveWithServerAddress:(NSString *)serverAddress
@@ -883,20 +833,18 @@ typedef enum {
     [self.navigationItem setHidesBackButton:YES animated:YES];
     self.tableView.allowsSelection = NO;
 
-    self.unregisterActivity = [[[SNDeferredActivity alloc] initWithShowBlock:^{
+    self.unregisterActivity = [SNDeferredActivity begunActivityWithShowBlock:^{
         self.unregisterInFlight = YES;
         [self.tableView reloadData];
     } hideBlock:^{
         self.unregisterInFlight = NO;
         [self.tableView reloadData];
-    }] autorelease];
-    [self.unregisterActivity begin];
+    }];
 
     NSInteger idx = self.profileIndex;
     [SNChannelGateway deleteProfileAtIndex:idx
                                 completion:^(BOOL ok, NSString *message) {
-        SNDeferredActivity *activity = [self.unregisterActivity retain];
-        [activity finishWithCompletion:^{
+        [self.unregisterActivity finishWithCompletion:^{
             self.unregisterRequestInFlight = NO;
             self.unregisterActivity = nil;
             [self.navigationItem setHidesBackButton:NO animated:YES];
@@ -911,7 +859,6 @@ typedef enum {
 
             [self.navigationController popViewControllerAnimated:YES];
         }];
-        [activity release];
     }];
 }
 

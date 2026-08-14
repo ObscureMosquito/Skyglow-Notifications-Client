@@ -17,44 +17,8 @@ static SGControlChannel *gSGCSBServer     = nil;
 
 static NSString *SGNBundleIdentifierFromRequest(
     const SGControlChannelMessage *request) {
-    if (!request || request->payloadLength < sizeof(SGCBundleIdPayload)) {
-        return nil;
-    }
-    const SGCBundleIdPayload *payload =
-        (const SGCBundleIdPayload *)request->payload;
-    NSString *bundleIdentifier = [[[NSString alloc]
-        initWithBytes:payload->bundleID
-               length:strnlen(payload->bundleID, sizeof(payload->bundleID))
-             encoding:NSUTF8StringEncoding] autorelease];
-    return SG_IsIdentifierStringSafe(bundleIdentifier) ? bundleIdentifier : nil;
-}
-
-static void SGNCopyCString(char *dst, size_t dstSize, const char *src) {
-    if (!dst || dstSize == 0) return;
-    if (!src) {
-        dst[0] = '\0';
-        return;
-    }
-    size_t i = 0;
-    while (i + 1 < dstSize && src[i] != '\0') {
-        dst[i] = src[i];
-        i++;
-    }
-    dst[i] = '\0';
-}
-
-static NSString *SGNControlErrorDetail(
-    const SGControlChannelMessage *response) {
-    if (!response || response->messageType != SGCMSG_ERROR_RESPONSE ||
-        response->payloadLength < sizeof(SGCErrorResponsePayload)) {
-        return nil;
-    }
-    const SGCErrorResponsePayload *payload =
-        (const SGCErrorResponsePayload *)response->payload;
-    return [[[NSString alloc]
-        initWithBytes:payload->message
-               length:strnlen(payload->message, sizeof(payload->message))
-             encoding:NSUTF8StringEncoding] autorelease];
+    if (!request) return nil;
+    return SGCBundleIdentifierDecode(request->payload, request->payloadLength);
 }
 
 #pragma mark - Commands to the daemon
@@ -67,7 +31,7 @@ void SGNSendBundleCommand(SGControlMessageType messageType,
 
     SGCBundleIdPayload payload;
     memset(&payload, 0, sizeof(payload));
-    SGNCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
+    SGCCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
 
     NSString *eventPathCopy = [inboxEventPathToRemove copy];
     [gSGCDaemonClient sendRequest:messageType
@@ -217,7 +181,7 @@ void SGN_AsyncFetchAndDeliverToken(NSString *bundleId,
 
     SGCTokenRequestPayload payload;
     memset(&payload, 0, sizeof(payload));
-    SGNCopyCString(payload.bundleID, sizeof(payload.bundleID), [safeBundleId UTF8String]);
+    SGCCopyCString(payload.bundleID, sizeof(payload.bundleID), [safeBundleId UTF8String]);
     NSData *payloadData = [NSData dataWithBytes:&payload length:sizeof(payload)];
 
     [gSGCDaemonClient sendRequest:SGCMSG_TOKEN_REQUEST
@@ -226,7 +190,7 @@ void SGN_AsyncFetchAndDeliverToken(NSString *bundleId,
                        completion:^(SGControlError err, const SGControlChannelMessage *response) {
         NSData *token = nil;
         SGControlError result = err;
-        NSString *detail = SGNControlErrorDetail(response);
+        NSString *detail = SGCErrorDetailFromResponse(response);
         if (err == SGCERR_OK && response &&
             response->payloadLength >= sizeof(SGCTokenResponsePayload)) {
             SGCTokenResponsePayload *resp = (SGCTokenResponsePayload *)response->payload;
@@ -390,16 +354,8 @@ void StartSpringBoardControlChannel(void) {
     [gSGCSBServer registerHandler:^(const SGControlChannelMessage *req,
                                     SGControlReplyBlock reply,
                                     SGControlReplyErrorBlock replyError) {
-        if (req->payloadLength < sizeof(SGCBundleIdPayload)) {
-            replyError(SGCERR_INVALID_REQUEST, @"register input payload too short");
-            return;
-        }
-        SGCBundleIdPayload *bp = (SGCBundleIdPayload *)req->payload;
-        NSString *bundleId = [[NSString alloc] initWithBytes:bp->bundleID
-                                                      length:strnlen(bp->bundleID, sizeof(bp->bundleID))
-                                                    encoding:NSUTF8StringEncoding];
-        if (!SG_IsIdentifierStringSafe(bundleId)) {
-            [bundleId release];
+        NSString *bundleId = SGNBundleIdentifierFromRequest(req);
+        if (!bundleId) {
             replyError(SGCERR_INVALID_REQUEST, @"register input bundle id invalid");
             return;
         }
@@ -422,7 +378,6 @@ void StartSpringBoardControlChannel(void) {
                     [replyErrorCopy release];
                 }];
         });
-        [bundleId release];
     } forMessageType:SGCMSG_REGISTER_INPUT_APP];
 
     [gSGCSBServer registerHandler:^(const SGControlChannelMessage *req,

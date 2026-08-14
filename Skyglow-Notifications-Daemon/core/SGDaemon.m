@@ -38,36 +38,9 @@ static const SGStateDeadline kSGStateDeadlines[] = {
     { SGStateRegistering,    SGEventDisconnected,  SGP_NET_OP_TIMEOUT_SEC * 2 },
 };
 
-static BOOL SGCertificatePEMLooksValid(NSString *pem) {
-    if ([pem length] == 0) return NO;
-    if ([pem rangeOfString:@"BEGIN CERTIFICATE"].location == NSNotFound) return NO;
-
-    BIO *bio = BIO_new_mem_buf((void *)[pem UTF8String], (int)[pem lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
-    if (!bio) return NO;
-    X509 *cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
-    BIO_free(bio);
-    if (!cert) return NO;
-    X509_free(cert);
-    return YES;
-}
-
-static BOOL SGRegistrationIdentityPEMLooksValid(NSString *pem) {
-    if (!SGCertificatePEMLooksValid(pem)) return NO;
-    BIO *bio = BIO_new_mem_buf((void *)[pem UTF8String], (int)[pem lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
-    if (!bio) return NO;
-    EVP_PKEY *key = PEM_read_bio_PrivateKey(bio, NULL, NULL, NULL);
-    BIO_free(bio);
-    if (!key) return NO;
-    EVP_PKEY_free(key);
-    return YES;
-}
-
 static BOOL isValidPort(NSString *port) {
-    if (!port || [port length] == 0) return NO;
-    NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
-    if ([port rangeOfCharacterFromSet:nonDigits].location != NSNotFound) return NO;
-    int p = [port intValue];
-    return (p > 0 && p <= 65535);
+    const char *utf8 = [port UTF8String];
+    return utf8 && SG_PortCStringIsValid(utf8, strlen(utf8));
 }
 
 @interface SGDaemon ()
@@ -131,6 +104,20 @@ static BOOL isValidPort(NSString *port) {
     dispatch_release(_protocolWorkerQueue);
     [_stateStore release];
     [super dealloc];
+}
+
+- (uint32_t)_captureGeneration {
+    [_stateLock lock];
+    uint32_t generation = _fsmGeneration;
+    [_stateLock unlock];
+    return generation;
+}
+
+- (BOOL)_generationIsStale:(uint32_t)generation {
+    [_stateLock lock];
+    BOOL stale = (_fsmGeneration != generation);
+    [_stateLock unlock];
+    return stale;
 }
 
 - (SGStateStore *)stateStore {
@@ -220,9 +207,7 @@ static BOOL isValidPort(NSString *port) {
 }
 
 - (void)reconcileTokensWithPlist {
-    NSString *plistPath = SGPath(SG_PREFS_PLIST_PATH);
-    NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:plistPath];
-    NSDictionary *appStatus = [prefs objectForKey:@"appStatus"] ?: @{};
+    NSDictionary *appStatus = [_stateStore appStatusDictionary];
     SGDatabaseManager *db = [SGDatabaseManager sharedManager];
 
     NSMutableSet *plistYes = [NSMutableSet set];
@@ -532,10 +517,7 @@ static BOOL isValidPort(NSString *port) {
     BOOL needsActiveServices = SGConnectionStateNeedsActiveServices(newState);
 
     dispatch_async(_entryActionQueue, ^{
-        [self->_stateLock lock];
-        BOOL isStale = (self->_fsmGeneration != capturedGen);
-        [self->_stateLock unlock];
-        if (isStale) return;
+        if ([self _generationIsStale:capturedGen]) return;
 
         [self _invalidateKeepAliveTimer];
 
@@ -761,7 +743,7 @@ static BOOL isValidPort(NSString *port) {
     BOOL committed = [_stateStore commitRegistrationForProfileAtIndex:profileIdx
                                                         deviceAddress:deviceAddress
                                                         privateKeyPEM:pemData];
-    [pemData resetBytesInRange:NSMakeRange(0, [pemData length])];
+    SG_CryptoWipeData(pemData);
     [pemData release];
 
     if (!committed) {
@@ -900,7 +882,7 @@ static BOOL isValidPort(NSString *port) {
 - (BOOL)performSaveProfileAtIndex:(NSInteger)profileIdx
                     serverAddress:(NSString *)serverAddress
                     certificatePEM:(NSString *)certificatePEM {
-    if (profileIdx < 1 || profileIdx > 5) return NO;
+    if (!SGProfileIndexIsValid(profileIdx)) return NO;
 
     NSString *address = [serverAddress stringByTrimmingCharactersInSet:
                          [NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -910,7 +892,7 @@ static BOOL isValidPort(NSString *port) {
     }
 
     BOOL hasNewCertificate = ([certificatePEM length] > 0);
-    if (hasNewCertificate && !SGCertificatePEMLooksValid(certificatePEM)) return NO;
+    if (hasNewCertificate && !SG_CryptoCertificatePEMIsValid(certificatePEM)) return NO;
 
     BOOL isActive = ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx);
     NSString *previousAddress = isActive
@@ -944,10 +926,10 @@ static BOOL isValidPort(NSString *port) {
 
 - (BOOL)performSetRegistrationIdentityAtIndex:(NSInteger)profileIdx
                                   identityPEM:(NSString *)identityPEM {
-    if (profileIdx < 1 || profileIdx > 5) return NO;
+    if (!SGProfileIndexIsValid(profileIdx)) return NO;
 
     BOOL hasIdentity = ([identityPEM length] > 0);
-    if (hasIdentity && !SGRegistrationIdentityPEMLooksValid(identityPEM)) return NO;
+    if (hasIdentity && !SG_CryptoIdentityPEMIsValid(identityPEM)) return NO;
 
     if (![_stateStore setRegistrationIdentityAtIndex:profileIdx
                                          identityPEM:(hasIdentity ? identityPEM : nil)]) {
@@ -963,7 +945,7 @@ static BOOL isValidPort(NSString *port) {
 }
 
 - (BOOL)performDeleteProfileAtIndex:(NSInteger)profileIdx {
-    if (profileIdx < 1 || profileIdx > 5) return NO;
+    if (!SGProfileIndexIsValid(profileIdx)) return NO;
 
     SGConfiguration *configuration = [SGConfiguration sharedConfiguration];
     BOOL wasActive = ([configuration activeProfileIndex] == profileIdx);
@@ -987,10 +969,9 @@ static BOOL isValidPort(NSString *port) {
 }
 
 - (BOOL)performSetActiveProfileAtIndex:(NSInteger)profileIdx {
-    if (profileIdx < 1 || profileIdx > 5) return NO;
+    if (!SGProfileIndexIsValid(profileIdx)) return NO;
 
-    NSString *profilePath = SGPath([NSString stringWithFormat:
-        SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
+    NSString *profilePath = SGProfilePlistPathForIndex(profileIdx);
     if (![[NSFileManager defaultManager] fileExistsAtPath:profilePath]) return NO;
 
     if ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx) return YES;
@@ -1057,9 +1038,7 @@ static BOOL isValidPort(NSString *port) {
     [_stateLock unlock];
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self->_stateLock lock];
-        BOOL stale = (self->_fsmGeneration != generation);
-        [self->_stateLock unlock];
+        BOOL stale = [self _generationIsStale:generation];
 
         SGStatusPayload status;
         SGStatusServer_Current(&status);
@@ -1198,17 +1177,12 @@ static BOOL isValidPort(NSString *port) {
         return;
     }
 
-    [_stateLock lock];
-    uint32_t gen = _fsmGeneration;
-    [_stateLock unlock];
+    uint32_t gen = [self _captureGeneration];
 
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSDictionary *txt = [SGServerLocator resolveEndpointForServerAddress:address];
 
-        [self->_stateLock lock];
-        BOOL isStale = (self->_fsmGeneration != gen);
-        [self->_stateLock unlock];
-        if (isStale) return;
+        if ([self _generationIsStale:gen]) return;
 
         if (txt && isValidPort(txt[@"tcp_port"])) {
             [self handleEvent:SGEventDNSResolved payload:txt];
@@ -1233,9 +1207,7 @@ static BOOL isValidPort(NSString *port) {
         return;
     }
 
-    [_stateLock lock];
-    uint32_t gen = _fsmGeneration;
-    [_stateLock unlock];
+    uint32_t gen = [self _captureGeneration];
 
     NSString *ipCopy   = [ip copy];
     NSString *certCopy = [cert copy];
@@ -1248,11 +1220,7 @@ static BOOL isValidPort(NSString *port) {
 
     dispatch_async(_connectionQueue, ^{
         @autoreleasepool {
-            [self->_stateLock lock];
-            BOOL isStale = (self->_fsmGeneration != gen);
-            [self->_stateLock unlock];
-
-            if (isStale) {
+            if ([self _generationIsStale:gen]) {
                 [ipCopy release];
                 [certCopy release];
                 [regIdentityCopy release];
@@ -1264,11 +1232,7 @@ static BOOL isValidPort(NSString *port) {
             int rc = SGP_ConnectToServer([ipCopy UTF8String], port, certCopy);
             [certCopy release];
 
-            [self->_stateLock lock];
-            isStale = (self->_fsmGeneration != gen);
-            [self->_stateLock unlock];
-
-            if (isStale) {
+            if ([self _generationIsStale:gen]) {
                 if (rc == 0) {
                     SGP_DisconnectFromServer();
                 }
@@ -1372,11 +1336,7 @@ static BOOL isValidPort(NSString *port) {
     dispatch_source_set_event_handler(timer, ^{
         dispatch_source_cancel(timer);
         dispatch_release(timer);
-        [self->_stateLock lock];
-        BOOL isStale = (self->_fsmGeneration != generation);
-        [self->_stateLock unlock];
-
-        if (isStale) {
+        if ([self _generationIsStale:generation]) {
             SGLOGD(SGDaemon, "code=%s generation=%u event=%ld action=discard", SGND_FSM_TIMER_STALE, generation, (long)event);
             return;
         }

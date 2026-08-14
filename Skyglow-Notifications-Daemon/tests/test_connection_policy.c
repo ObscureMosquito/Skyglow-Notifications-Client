@@ -1,11 +1,8 @@
 #include <stdio.h>
+#include "sg_test.h"
 #include <errno.h>
 #include "SGConnectionPolicy.h"
 
-static int failures = 0;
-#define CHECK(condition, ...) do { if (!(condition)) { \
-    failures++; printf("FAIL %s:%d  %s\n      ", __func__, __LINE__, #condition); \
-    printf(__VA_ARGS__); printf("\n"); } } while (0)
 
 static void test_administrative_states_are_always_reachable(void) {
     const SGState states[] = {

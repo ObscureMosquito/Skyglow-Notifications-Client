@@ -332,7 +332,7 @@ typedef enum {
     self.navigationItem.hidesBackButton = YES;
 
     [_deleteActivity release];
-    _deleteActivity = [[SNDeferredActivity alloc] initWithShowBlock:^{
+    _deleteActivity = [[SNDeferredActivity begunActivityWithShowBlock:^{
         if (![_pendingDeletionBundleIDs containsObject:bundleId]) return;
         [_pendingDeletionBundleIDs removeObject:bundleId];
         [_deletingBundleIDs addObject:bundleId];
@@ -347,13 +347,11 @@ typedef enum {
             [self.tableView reloadRowsAtIndexPaths:@[capturedPath]
                                   withRowAnimation:UITableViewRowAnimationNone];
         }
-    }];
-    [_deleteActivity begin];
+    }] retain];
 
     [SNChannelGateway deleteAppForBundleId:bundleId
                                 completion:^(BOOL ok, NSString *message) {
-        SNDeferredActivity *activity = [_deleteActivity retain];
-        [activity finishWithCompletion:^{
+        [_deleteActivity finishWithCompletion:^{
             [_pendingDeletionBundleIDs removeObject:bundleId];
             [_deletingBundleIDs removeObject:bundleId];
             [_deleteActivity release];
@@ -374,7 +372,6 @@ typedef enum {
             [self loadStats];
             [self.tableView reloadData];
         }];
-        [activity release];
     }];
 }
 

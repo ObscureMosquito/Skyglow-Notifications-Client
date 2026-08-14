@@ -8,31 +8,10 @@
 #import "SGControlChannelProtocol.h"
 #import "SGStatusServer.h"
 #import "SGProtocolHandler.h"
+#import "SGCryptoEngine.h"
 #import "SGLog.h"
 #import "SGLogDiagnostics.h"
 #include <unistd.h>
-
-static NSString * const kSGProfileCertificateDirectory =
-    @"/var/mobile/Library/SkyglowNotifications";
-
-static NSString *SGProfileCertificatePathForIndex(NSInteger profileIdx) {
-    return [NSString stringWithFormat:@"%@/profile%ld-server.pem",
-            kSGProfileCertificateDirectory, (long)profileIdx];
-}
-
-static NSString *SGProfileRegIdentityPathForIndex(NSInteger profileIdx) {
-    return [NSString stringWithFormat:@"%@/profile%ld-reg-identity.pem",
-            kSGProfileCertificateDirectory, (long)profileIdx];
-}
-
-static NSString *SGProfilePlistPathForIndex(NSInteger profileIdx) {
-    return SGPath([NSString stringWithFormat:
-        SG_PROFILE_PLIST_FORMAT, (long)profileIdx]);
-}
-
-static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
-    return profileIdx >= 1 && profileIdx <= 5;
-}
 
 @implementation SGStateStore {
     dispatch_queue_t _storageQueue;
@@ -51,19 +30,41 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
     [super dealloc];
 }
 
-#pragma mark - Main-prefs write choke point
+static BOOL SGUpdatePlistAtPath(NSString *plistPath,
+                                void (^mutation)(NSMutableDictionary *)) {
+    NSMutableDictionary *contents =
+        [NSMutableDictionary dictionaryWithContentsOfFile:plistPath]
+        ?: [NSMutableDictionary dictionary];
+    mutation(contents);
+    return SGAtomicWritePropertyList(contents, plistPath, 0644, NULL);
+}
+
+/* restores a file to its pre-transaction contents */
+static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode) {
+    if (snapshot) return SGAtomicWriteData(snapshot, path, mode, NULL);
+    return SGDurableRemoveItem(path, NULL);
+}
+
+#pragma mark - Main-prefs choke points
 
 - (BOOL)updateMainPreferences:
     (void (^)(NSMutableDictionary *preferences))mutation {
     if (!mutation) return NO;
     @synchronized(self) {
-        NSString *plistPath = SGPath(SG_PREFS_PLIST_PATH);
-        NSMutableDictionary *preferences =
-            [NSMutableDictionary dictionaryWithContentsOfFile:plistPath]
-            ?: [NSMutableDictionary dictionary];
-        mutation(preferences);
-        return SGAtomicWritePropertyList(preferences, plistPath, 0644, NULL);
+        return SGUpdatePlistAtPath(SGPath(SG_PREFS_PLIST_PATH), mutation);
     }
+}
+
+- (NSDictionary *)appStatusDictionary {
+    @synchronized(self) {
+        NSDictionary *preferences = [NSDictionary dictionaryWithContentsOfFile:
+            SGPath(SG_PREFS_PLIST_PATH)] ?: @{};
+        return [preferences objectForKey:SG_PREFS_KEY_APP_STATUS] ?: @{};
+    }
+}
+
+- (id)_appIntentForBundleIdentifier:(NSString *)bundleID {
+    return [[self appStatusDictionary] objectForKey:bundleID];
 }
 
 - (BOOL)_writeAppStatus:(BOOL)enabled forBundleIdentifier:(NSString *)bundleID {
@@ -71,9 +72,9 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
     return [self updateMainPreferences:^(NSMutableDictionary *preferences) {
         NSMutableDictionary *appStatus =
             [NSMutableDictionary dictionaryWithDictionary:
-                [preferences objectForKey:@"appStatus"] ?: @{}];
+                [preferences objectForKey:SG_PREFS_KEY_APP_STATUS] ?: @{}];
         [appStatus setObject:[NSNumber numberWithBool:enabled] forKey:bundleID];
-        [preferences setObject:appStatus forKey:@"appStatus"];
+        [preferences setObject:appStatus forKey:SG_PREFS_KEY_APP_STATUS];
     }];
 }
 
@@ -82,9 +83,9 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
     return [self updateMainPreferences:^(NSMutableDictionary *preferences) {
         NSMutableDictionary *appStatus =
             [NSMutableDictionary dictionaryWithDictionary:
-                [preferences objectForKey:@"appStatus"] ?: @{}];
+                [preferences objectForKey:SG_PREFS_KEY_APP_STATUS] ?: @{}];
         [appStatus removeObjectForKey:bundleID];
-        [preferences setObject:appStatus forKey:@"appStatus"];
+        [preferences setObject:appStatus forKey:SG_PREFS_KEY_APP_STATUS];
     }];
 }
 
@@ -94,12 +95,7 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
                      mutation:(void (^)(NSMutableDictionary *profile))mutation {
     if (!SGProfileIndexIsValid(profileIdx) || !mutation) return NO;
     @synchronized(self) {
-        NSString *plistPath = SGProfilePlistPathForIndex(profileIdx);
-        NSMutableDictionary *profile =
-            [NSMutableDictionary dictionaryWithContentsOfFile:plistPath]
-            ?: [NSMutableDictionary dictionary];
-        mutation(profile);
-        return SGAtomicWritePropertyList(profile, plistPath, 0644, NULL);
+        return SGUpdatePlistAtPath(SGProfilePlistPathForIndex(profileIdx), mutation);
     }
 }
 
@@ -129,8 +125,7 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
             SGKeychain_DeletePrivateKey(profileIdx);
             return NO;
         }
-        unlink([SGPath(SGProfileRegIdentityPathForIndex(profileIdx))
-                   fileSystemRepresentation]);
+        SGDurableRemoveItem(SGPath(SGProfileRegIdentityPathForIndex(profileIdx)), NULL);
         return YES;
     }
 }
@@ -197,11 +192,7 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
         }];
         if (!persisted) {
             if (certFileReplaced) {
-                if (previousCertData) {
-                    SGAtomicWriteData(previousCertData, certDiskPath, 0644, NULL);
-                } else {
-                    unlink([certDiskPath fileSystemRepresentation]);
-                }
+                SGRestoreFileSnapshot(certDiskPath, previousCertData, 0644);
             }
             return NO;
         }
@@ -249,7 +240,7 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
                                             mutation:^(NSMutableDictionary *profile) {
             [profile removeObjectForKey:@"registration_identity"];
         }];
-        if (persisted) unlink([diskPath fileSystemRepresentation]);
+        if (persisted) SGDurableRemoveItem(diskPath, NULL);
         return persisted;
     }
 }
@@ -274,7 +265,7 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
             (hadCertificate && !certificateSnapshot) ||
             !SGKeychain_CopyPrivateKeyPEM(profileIdx, &keySnapshot)) {
             if (keySnapshot) {
-                [keySnapshot resetBytesInRange:NSMakeRange(0, [keySnapshot length])];
+                SG_CryptoWipeData(keySnapshot);
             }
             return NO;
         }
@@ -289,16 +280,16 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
         if (!ok) {
             BOOL rollbackOK = YES;
             if (hadCertificate) {
-                rollbackOK = SGAtomicWriteData(
-                    certificateSnapshot, certDiskPath, 0644, NULL) && rollbackOK;
+                rollbackOK = SGRestoreFileSnapshot(
+                    certDiskPath, certificateSnapshot, 0644) && rollbackOK;
             }
             if (keySnapshot) {
                 rollbackOK = SGKeychain_StorePrivateKeyData(
                     keySnapshot, profileIdx) && rollbackOK;
             }
             if (hadProfile) {
-                rollbackOK = SGAtomicWriteData(
-                    profileSnapshot, plistPath, 0644, NULL) && rollbackOK;
+                rollbackOK = SGRestoreFileSnapshot(
+                    plistPath, profileSnapshot, 0644) && rollbackOK;
             }
             SGLOGE(SGStateStore,
                    "profile-delete: commit failed idx=%ld rollback=%s error=%s",
@@ -308,11 +299,10 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
         }
 
         if (keySnapshot) {
-            [keySnapshot resetBytesInRange:NSMakeRange(0, [keySnapshot length])];
+            SG_CryptoWipeData(keySnapshot);
         }
         if (ok) {
-            unlink([SGPath(SGProfileRegIdentityPathForIndex(profileIdx))
-                       fileSystemRepresentation]);
+            SGDurableRemoveItem(SGPath(SGProfileRegIdentityPathForIndex(profileIdx)), NULL);
         }
         return ok;
     }
@@ -336,10 +326,7 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
         SGDatabaseManager *database = [SGDatabaseManager sharedManager];
         if (!database) return NO;
 
-        NSDictionary *preferences = [NSDictionary dictionaryWithContentsOfFile:
-            SGPath(SG_PREFS_PLIST_PATH)] ?: @{};
-        id previousIntent =
-            [[preferences objectForKey:@"appStatus"] objectForKey:bundleID];
+        id previousIntent = [self _appIntentForBundleIdentifier:bundleID];
         BOOL rollbackMuted =
             previousIntent ? ![previousIntent boolValue] : YES;
 
@@ -381,10 +368,7 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
         SGDatabaseManager *database = [SGDatabaseManager sharedManager];
         if (!database) return NO;
 
-        NSDictionary *preferences = [NSDictionary dictionaryWithContentsOfFile:
-            SGPath(SG_PREFS_PLIST_PATH)] ?: @{};
-        id previousIntent =
-            [[preferences objectForKey:@"appStatus"] objectForKey:bundleID];
+        id previousIntent = [self _appIntentForBundleIdentifier:bundleID];
         BOOL rollbackMuted =
             previousIntent ? ![previousIntent boolValue] : YES;
 
@@ -408,10 +392,7 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
 - (BOOL)performDeleteAppStateForBundleIdentifier:(NSString *)bundleID {
     if (!SG_IsIdentifierStringSafe(bundleID)) return NO;
     @synchronized(self) {
-        NSDictionary *preferences = [NSDictionary dictionaryWithContentsOfFile:
-            SGPath(SG_PREFS_PLIST_PATH)] ?: @{};
-        id previousIntent =
-            [[preferences objectForKey:@"appStatus"] objectForKey:bundleID];
+        id previousIntent = [self _appIntentForBundleIdentifier:bundleID];
 
         if (![self _removeAppStatusForBundleIdentifier:bundleID]) return NO;
         if (![self _runDeletionCascadeForBundleIdentifier:bundleID]) {

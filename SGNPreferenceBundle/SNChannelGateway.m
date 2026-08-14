@@ -2,6 +2,7 @@
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
 #import "SGControlPayloadCodec.h"
+#import "SGConfiguration.h"
 #include <string.h>
 
 @implementation SNChannelGateway
@@ -9,35 +10,10 @@
 static SGControlChannel *gDaemonClient = nil;
 static dispatch_once_t   gDaemonOnce;
 
-static void SNCopyCString(char *dst, size_t dstSize, const char *src) {
-    if (!dst || dstSize == 0) return;
-    if (!src) {
-        dst[0] = '\0';
-        return;
-    }
-    size_t i = 0;
-    while (i + 1 < dstSize && src[i] != '\0') {
-        dst[i] = src[i];
-        i++;
-    }
-    dst[i] = '\0';
-}
-
-static NSString *SNErrorMessageFromResponse(const SGControlChannelMessage *response) {
-    if (!response ||
-        response->messageType != SGCMSG_ERROR_RESPONSE ||
-        response->payloadLength < sizeof(SGCErrorResponsePayload)) {
-        return nil;
-    }
-
-    const SGCErrorResponsePayload *payload =
-        (const SGCErrorResponsePayload *)response->payload;
-    size_t length = strnlen(payload->message, sizeof(payload->message));
-    if (length == 0 || length >= sizeof(payload->message)) return nil;
-    return [[[NSString alloc] initWithBytes:payload->message
-                                    length:length
-                                  encoding:NSUTF8StringEncoding] autorelease];
-}
+static NSString * const kSNDaemonUnreachableMessage =
+    @"Could not communicate with the Skyglow daemon. Try again after restarting it.";
+static NSString * const kSNSpringBoardUnreachableMessage =
+    @"Could not communicate with SpringBoard. Try again after respringing.";
 
 static SGControlChannel *DaemonClient(void) {
     dispatch_once(&gDaemonOnce, ^{
@@ -45,6 +21,42 @@ static SGControlChannel *DaemonClient(void) {
         [gDaemonClient start];
     });
     return gDaemonClient;
+}
+
+static NSData *SNBundleIdPayloadData(NSString *bundleId) {
+    SGCBundleIdPayload payload;
+    memset(&payload, 0, sizeof(payload));
+    SGCCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
+    return [NSData dataWithBytes:&payload length:sizeof(payload)];
+}
+
+static NSData *SNProfileIndexPayloadData(NSInteger profileIndex) {
+    SGCProfileIndexPayload payload;
+    memset(&payload, 0, sizeof(payload));
+    payload.profileIndex = (uint8_t)profileIndex;
+    return [NSData dataWithBytes:&payload length:sizeof(payload)];
+}
+
+static void SNSendCommand(uint8_t messageType, NSData *payloadData, uint32_t timeout,
+                          NSString *unreachableMessage, NSString *rejectedMessage,
+                          SNChannelCommandCompletion completion) {
+    [DaemonClient() sendRequest:messageType
+                        payload:payloadData
+                        timeout:timeout
+                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
+        BOOL ok = (err == SGCERR_OK);
+        NSString *message = nil;
+        if (!ok) {
+            message = SGCErrorDetailFromResponse(response);
+            if (message.length == 0) {
+                message = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                    ? unreachableMessage : rejectedMessage;
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(ok, message);
+        });
+    }];
 }
 
 + (void)postReloadConfig {
@@ -55,25 +67,9 @@ static SGControlChannel *DaemonClient(void) {
 }
 
 + (void)restartDaemonWithCompletion:(SNChannelCommandCompletion)completion {
-    [DaemonClient() sendRequest:SGCMSG_RESTART_DAEMON
-                        payload:nil
-                        timeout:SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC
-                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
-        BOOL ok = (err == SGCERR_OK && response &&
-                   response->messageType == SGCMSG_GENERIC_ACK);
-        NSString *message = nil;
-        if (!ok) {
-            message = SNErrorMessageFromResponse(response);
-            if (message.length == 0) {
-                message = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
-                    ? @"The daemon could not be reached."
-                    : @"The daemon rejected the restart request.";
-            }
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(ok, message);
-        });
-    }];
+    SNSendCommand(SGCMSG_RESTART_DAEMON, nil, SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC,
+                  @"The daemon could not be reached.",
+                  @"The daemon rejected the restart request.", completion);
 }
 
 + (void)postTestInject {
@@ -85,13 +81,10 @@ static SGControlChannel *DaemonClient(void) {
 
 + (void)postRegisterInputAppForBundleId:(NSString *)bundleId {
     if (bundleId.length == 0) return;
-    SGCBundleIdPayload payload;
-    memset(&payload, 0, sizeof(payload));
-    SNCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
     [DaemonClient() sendRequest:SGCMSG_REGISTER_INPUT_APP
-                             payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
-                             timeout:0
-                          completion:nil];
+                        payload:SNBundleIdPayloadData(bundleId)
+                        timeout:0
+                     completion:nil];
 }
 
 + (void)registerInputAppForBundleId:(NSString *)bundleId
@@ -100,27 +93,10 @@ static SGControlChannel *DaemonClient(void) {
         if (completion) completion(NO, @"Bundle ID required.");
         return;
     }
-    SGCBundleIdPayload payload;
-    memset(&payload, 0, sizeof(payload));
-    SNCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
-    [DaemonClient() sendRequest:SGCMSG_REGISTER_INPUT_APP
-                             payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
-                             timeout:SG_CONTROL_DELETE_APP_TIMEOUT_SEC
-                          completion:^(SGControlError err, const SGControlChannelMessage *response) {
-        BOOL ok = (err == SGCERR_OK);
-        NSString *message = nil;
-        if (!ok) {
-            message = SNErrorMessageFromResponse(response);
-            if (message.length == 0) {
-                message = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
-                    ? @"Could not communicate with SpringBoard. Try again after respringing."
-                    : @"SpringBoard rejected the registration request.";
-            }
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(ok, message);
-        });
-    }];
+    SNSendCommand(SGCMSG_REGISTER_INPUT_APP, SNBundleIdPayloadData(bundleId),
+                  SG_CONTROL_DELETE_APP_TIMEOUT_SEC,
+                  kSNSpringBoardUnreachableMessage,
+                  @"SpringBoard rejected the registration request.", completion);
 }
 
 static void SendBundleCommandWithCompletion(uint8_t messageType, NSString *bundleId,
@@ -129,25 +105,10 @@ static void SendBundleCommandWithCompletion(uint8_t messageType, NSString *bundl
         if (completion) completion(NO, @"The selected application could not be identified.");
         return;
     }
-    SGCBundleIdPayload payload;
-    memset(&payload, 0, sizeof(payload));
-    SNCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
-
-    [DaemonClient() sendRequest:messageType
-                        payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
-                        timeout:SG_CONTROL_DELETE_APP_TIMEOUT_SEC
-                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
-        BOOL ok = (err == SGCERR_OK);
-        NSString *message = nil;
-        if (!ok) {
-            message = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
-                ? @"Could not communicate with the Skyglow daemon. Try again after restarting it."
-                : @"The daemon could not update this application.";
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(ok, message);
-        });
-    }];
+    SNSendCommand(messageType, SNBundleIdPayloadData(bundleId),
+                  SG_CONTROL_DELETE_APP_TIMEOUT_SEC,
+                  kSNDaemonUnreachableMessage,
+                  @"The daemon could not update this application.", completion);
 }
 
 + (void)enableAppForBundleId:(NSString *)bundleId completion:(SNChannelCommandCompletion)completion {
@@ -162,22 +123,11 @@ static void SendBundleCommandWithCompletion(uint8_t messageType, NSString *bundl
     SGCEnabledPayload payload;
     memset(&payload, 0, sizeof(payload));
     payload.enabled = enabled ? 1 : 0;
-
-    [DaemonClient() sendRequest:SGCMSG_SET_ENABLED
-                        payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
-                        timeout:SG_CONTROL_DELETE_APP_TIMEOUT_SEC
-                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
-        BOOL ok = (err == SGCERR_OK);
-        NSString *message = nil;
-        if (!ok) {
-            message = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
-                ? @"Could not communicate with the Skyglow daemon. Try again after restarting it."
-                : @"The daemon could not change the enabled state.";
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(ok, message);
-        });
-    }];
+    SNSendCommand(SGCMSG_SET_ENABLED,
+                  [NSData dataWithBytes:&payload length:sizeof(payload)],
+                  SG_CONTROL_DELETE_APP_TIMEOUT_SEC,
+                  kSNDaemonUnreachableMessage,
+                  @"The daemon could not change the enabled state.", completion);
 }
 
 + (void)deleteAppForBundleId:(NSString *)bundleId completion:(SNChannelCommandCompletion)completion {
@@ -185,87 +135,33 @@ static void SendBundleCommandWithCompletion(uint8_t messageType, NSString *bundl
         if (completion) completion(NO, @"The selected application could not be identified.");
         return;
     }
-
-    SGCBundleIdPayload payload;
-    memset(&payload, 0, sizeof(payload));
-    SNCopyCString(payload.bundleID, sizeof(payload.bundleID), [bundleId UTF8String]);
-
-    [DaemonClient() sendRequest:SGCMSG_DELETE_APP
-                        payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
-                        timeout:SG_CONTROL_DELETE_APP_TIMEOUT_SEC
-                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
-        BOOL ok = (err == SGCERR_OK);
-        NSString *message = nil;
-        if (!ok) {
-            if (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE) {
-                message = @"Could not communicate with SpringBoard. Try again after respringing.";
-            } else {
-                message = @"SpringBoard could not reset this application's notification registration.";
-            }
-        }
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(ok, message);
-        });
-    }];
+    SNSendCommand(SGCMSG_DELETE_APP, SNBundleIdPayloadData(bundleId),
+                  SG_CONTROL_DELETE_APP_TIMEOUT_SEC,
+                  kSNSpringBoardUnreachableMessage,
+                  @"SpringBoard could not reset this application's notification registration.",
+                  completion);
 }
 
 + (void)deleteProfileAtIndex:(NSInteger)profileIndex completion:(SNChannelCommandCompletion)completion {
-    if (profileIndex < 1 || profileIndex > 5) {
+    if (!SGProfileIndexIsValid(profileIndex)) {
         if (completion) completion(NO, @"Invalid profile index.");
         return;
     }
-
-    SGCProfileIndexPayload payload;
-    memset(&payload, 0, sizeof(payload));
-    payload.profileIndex = (uint8_t)profileIndex;
-
-    [DaemonClient() sendRequest:SGCMSG_DELETE_PROFILE
-                        payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
-                        timeout:SG_CONTROL_DELETE_APP_TIMEOUT_SEC
-                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
-        BOOL ok = (err == SGCERR_OK);
-        NSString *message = nil;
-        if (!ok) {
-            if (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE) {
-                message = @"Could not communicate with the Skyglow daemon. Try again after restarting it.";
-            } else {
-                message = @"The daemon could not delete this profile.";
-            }
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(ok, message);
-        });
-    }];
+    SNSendCommand(SGCMSG_DELETE_PROFILE, SNProfileIndexPayloadData(profileIndex),
+                  SG_CONTROL_DELETE_APP_TIMEOUT_SEC,
+                  kSNDaemonUnreachableMessage,
+                  @"The daemon could not delete this profile.", completion);
 }
 
 + (void)setActiveProfileAtIndex:(NSInteger)profileIndex completion:(SNChannelCommandCompletion)completion {
-    if (profileIndex < 1 || profileIndex > 5) {
+    if (!SGProfileIndexIsValid(profileIndex)) {
         if (completion) completion(NO, @"Invalid profile index.");
         return;
     }
-
-    SGCProfileIndexPayload payload;
-    memset(&payload, 0, sizeof(payload));
-    payload.profileIndex = (uint8_t)profileIndex;
-
-    [DaemonClient() sendRequest:SGCMSG_SET_ACTIVE_PROFILE
-                        payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
-                        timeout:SG_CONTROL_DELETE_APP_TIMEOUT_SEC
-                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
-        BOOL ok = (err == SGCERR_OK);
-        NSString *message = nil;
-        if (!ok) {
-            if (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE) {
-                message = @"Could not communicate with the Skyglow daemon. Try again after restarting it.";
-            } else {
-                message = @"The daemon could not switch to this profile.";
-            }
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(ok, message);
-        });
-    }];
+    SNSendCommand(SGCMSG_SET_ACTIVE_PROFILE, SNProfileIndexPayloadData(profileIndex),
+                  SG_CONTROL_DELETE_APP_TIMEOUT_SEC,
+                  kSNDaemonUnreachableMessage,
+                  @"The daemon could not switch to this profile.", completion);
 }
 
 + (void)saveProfileAtIndex:(NSInteger)profileIndex
@@ -274,7 +170,7 @@ static void SendBundleCommandWithCompletion(uint8_t messageType, NSString *bundl
                 completion:(SNChannelCommandCompletion)completion {
     NSString *trimmed = [serverAddress stringByTrimmingCharactersInSet:
                          [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (profileIndex < 1 || profileIndex > 5) {
+    if (!SGProfileIndexIsValid(profileIndex)) {
         if (completion) completion(NO, @"Invalid profile index.");
         return;
     }
@@ -300,34 +196,21 @@ static void SendBundleCommandWithCompletion(uint8_t messageType, NSString *bundl
     memset(&payload, 0, sizeof(payload));
     payload.profileIndex = (uint8_t)profileIndex;
     payload.certificatePEMLength = (uint16_t)[pemData length];
-    SNCopyCString(payload.serverAddress, sizeof(payload.serverAddress), [trimmed UTF8String]);
+    SGCCopyCString(payload.serverAddress, sizeof(payload.serverAddress), [trimmed UTF8String]);
     if ([pemData length] > 0) {
         memcpy(payload.certificatePEM, [pemData bytes], [pemData length]);
     }
 
-    [DaemonClient() sendRequest:SGCMSG_SAVE_PROFILE
-                        payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
-                        timeout:0
-                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
-        BOOL ok = (err == SGCERR_OK);
-        NSString *message = nil;
-        if (!ok) {
-            if (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE) {
-                message = @"Could not communicate with the Skyglow daemon. Try again after restarting it.";
-            } else {
-                message = @"The daemon could not save this profile.";
-            }
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(ok, message);
-        });
-    }];
+    SNSendCommand(SGCMSG_SAVE_PROFILE,
+                  [NSData dataWithBytes:&payload length:sizeof(payload)],
+                  0, kSNDaemonUnreachableMessage,
+                  @"The daemon could not save this profile.", completion);
 }
 
 + (void)setRegistrationIdentityAtIndex:(NSInteger)profileIndex
                            identityPEM:(NSString *)identityPEM
                             completion:(SNChannelCommandCompletion)completion {
-    if (profileIndex < 1 || profileIndex > 5) {
+    if (!SGProfileIndexIsValid(profileIndex)) {
         if (completion) completion(NO, @"Invalid profile index.");
         return;
     }
@@ -346,23 +229,11 @@ static void SendBundleCommandWithCompletion(uint8_t messageType, NSString *bundl
         memcpy(payload.identityPEM, [pemData bytes], [pemData length]);
     }
 
-    [DaemonClient() sendRequest:SGCMSG_SET_REG_IDENTITY
-                        payload:[NSData dataWithBytes:&payload length:sizeof(payload)]
-                        timeout:0
-                     completion:^(SGControlError err, const SGControlChannelMessage *response) {
-        BOOL ok = (err == SGCERR_OK);
-        NSString *message = nil;
-        if (!ok) {
-            if (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE) {
-                message = @"Could not communicate with the Skyglow daemon. Try again after restarting it.";
-            } else {
-                message = @"The daemon rejected the registration identity. It must be a PEM file containing the certificate and its private key.";
-            }
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(ok, message);
-        });
-    }];
+    SNSendCommand(SGCMSG_SET_REG_IDENTITY,
+                  [NSData dataWithBytes:&payload length:sizeof(payload)],
+                  0, kSNDaemonUnreachableMessage,
+                  @"The daemon rejected the registration identity. It must be a PEM file containing the certificate and its private key.",
+                  completion);
 }
 
 + (void)subscribeToStatusUpdatesWithHandler:(void (^)(SGStatusPayload payload))handler {
@@ -435,10 +306,11 @@ static void SendBundleCommandWithCompletion(uint8_t messageType, NSString *bundl
             response->payloadLength >= offsetof(SGCBundleIdListPayload, data)) {
             [out addObjectsFromArray:SGCBundleIdListDecode(response->payload, response->payloadLength)];
         } else if (!ok) {
-            if (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE) {
-                message = @"Could not communicate with SpringBoard. Try again after respringing.";
-            } else {
-                message = @"SpringBoard could not return Apple Push registrations.";
+            message = SGCErrorDetailFromResponse(response);
+            if (message.length == 0) {
+                message = (err == SGCERR_TIMEOUT || err == SGCERR_UNREACHABLE)
+                    ? kSNSpringBoardUnreachableMessage
+                    : @"SpringBoard could not return Apple Push registrations.";
             }
         } else {
             ok = NO;

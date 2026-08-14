@@ -1,5 +1,6 @@
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
+#import "SGConfiguration.h"
 #import "SGSharedConstants.h"
 #import <UIKit/UIKit.h>
 #import <sqlite3.h>
@@ -23,27 +24,17 @@ static const NSTimeInterval kSNAutoFetchDNSTimeoutSec  = 5.0;
 static const NSTimeInterval kSNAutoFetchHTTPTimeoutSec = 10.0;
 static NSString * const     kSNAutoFetchCertPath       = @"/snd/server_cert.pem";
 
-static inline NSString * SGPath(NSString *path) {
-    if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"]) {
-        return [@"/var/jb" stringByAppendingString:path];
-    }
-    return path;
-}
-
-static inline NSString * SGMainPrefsPath() { return SGPath(SG_PREFS_PLIST_PATH); }
-static inline NSString * SGProfilePathForIndex(NSInteger idx) {
-    return SGPath([NSString stringWithFormat:SG_PROFILE_PLIST_FORMAT, (long)idx]);
-}
+static inline NSString * SGMainPrefsPath(void) { return SGPath(SG_PREFS_PLIST_PATH); }
 static inline NSInteger SGActiveProfileIndex(void) {
     NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:SGMainPrefsPath()];
     NSNumber *num = [prefs objectForKey:@"activeProfile"];
     NSInteger idx = [num integerValue];
-    return (idx >= 1 && idx <= 5) ? idx : 1;
+    return SGProfileIndexIsValid(idx) ? idx : 1;
 }
-static inline NSString * SGProfilePath() {
-    return SGProfilePathForIndex(SGActiveProfileIndex());
+static inline NSString * SGProfilePath(void) {
+    return SGProfilePlistPathForIndex(SGActiveProfileIndex());
 }
-static inline NSString * SGDBPath()        { return SGPath(SG_DB_PATH); }
+static inline NSString * SGDBPath(void) { return SGPath(SG_DB_PATH); }
 
 @interface SNDataManager ()
 @end
@@ -475,21 +466,19 @@ static NSDictionary *SNAutoFetch_LookupTXT(NSString *dnsName) {
 #pragma mark - Multi-Profile API
 
 - (NSInteger)activeProfileIndex {
-    NSDictionary *prefs = [self mainPrefs];
-    NSNumber *num = [prefs objectForKey:@"activeProfile"];
-    return (num && [num integerValue] >= 1 && [num integerValue] <= 5) ? [num integerValue] : 1;
+    return SGActiveProfileIndex();
 }
 
 - (NSString *)profilePathForIndex:(NSInteger)index {
-    return SGProfilePathForIndex(index);
+    return SGProfilePlistPathForIndex(index);
 }
 
 - (NSDictionary *)profileForIndex:(NSInteger)index {
-    return [NSDictionary dictionaryWithContentsOfFile:SGProfilePathForIndex(index)] ?: @{};
+    return [NSDictionary dictionaryWithContentsOfFile:SGProfilePlistPathForIndex(index)] ?: @{};
 }
 
 - (BOOL)profileExistsAtIndex:(NSInteger)index {
-    return [[NSFileManager defaultManager] fileExistsAtPath:SGProfilePathForIndex(index)];
+    return [[NSFileManager defaultManager] fileExistsAtPath:SGProfilePlistPathForIndex(index)];
 }
 
 - (NSString *)hexStringFromData:(NSData *)data {

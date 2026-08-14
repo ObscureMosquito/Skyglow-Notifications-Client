@@ -1,9 +1,11 @@
 #import "SGProtocolHandler.h"
+#import "SGCryptoEngine.h"
 #import "SGDatabaseManager.h"
 #import "SGConfiguration.h"
 #import "SGKeepAliveOffload.h"
 #import "SGAvailability.h"
 #import "SGLog.h"
+#include "SGByteOrder.h"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/bio.h>
@@ -45,6 +47,13 @@ static double    _pingPendingSince = 0.0;
 static int64_t   _pingPendingWallSince = 0;
 static double    _lastFrameReceivedAt = 0.0;
 static uint32_t  _lastRetryHint = 0;
+
+static void SGP_ClearPendingPing(void) {
+    pthread_mutex_lock(&_pingLock);
+    _pingPendingSince = 0.0;
+    _pingPendingWallSince = 0;
+    pthread_mutex_unlock(&_pingLock);
+}
 
 static int64_t _clockSkewSeconds = 0;
 
@@ -108,10 +117,7 @@ static BOOL SGP_LoadRegistrationIdentity(SSL_CTX *ctx) {
     ERR_clear_error();
     BIO_free(b);
 
-    b = BIO_new_mem_buf(_regIdentityPEM, (int)_regIdentityPEMLen);
-    if (!b) return NO;
-    EVP_PKEY *key = PEM_read_bio_PrivateKey(b, NULL, 0, NULL);
-    BIO_free(b);
+    EVP_PKEY *key = SG_CryptoParsePrivateKeyPEM(_regIdentityPEM, _regIdentityPEMLen);
     if (!key) return NO;
     int ok = (SSL_CTX_use_PrivateKey(ctx, key) == 1 && SSL_CTX_check_private_key(ctx) == 1);
     EVP_PKEY_free(key);
@@ -142,22 +148,6 @@ static int64_t SG_GetCorrectedTime(void) {
     int64_t skew = _clockSkewSeconds;
     pthread_mutex_unlock(&_sendLock);
     return (int64_t)time(NULL) + skew;
-}
-
-static void SG_EncodeBE64(int64_t v, uint8_t out[8]) {
-    uint64_t u = (uint64_t)v;
-    out[0]=(u>>56)&0xFF; out[1]=(u>>48)&0xFF; out[2]=(u>>40)&0xFF; out[3]=(u>>32)&0xFF;
-    out[4]=(u>>24)&0xFF; out[5]=(u>>16)&0xFF; out[6]=(u>> 8)&0xFF; out[7]=(u    )&0xFF;
-}
-
-static int64_t SG_DecodeBE64(const uint8_t p[8]) {
-    uint64_t u = 0;
-    for (int i = 0; i < 8; i++) u = (u << 8) | p[i];
-    return (int64_t)u;
-}
-
-static uint32_t SG_DecodeBE32(const uint8_t p[4]) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
 static BOOL SG_IsAddressCharsetSafe(const uint8_t *bytes, uint16_t len) {
@@ -215,21 +205,23 @@ static int SG_WaitForSocket(int sock, int forWrite, int timeoutSec) {
         return (select(sock + 1, &fds, NULL, NULL, &tv) > 0) ? 0 : -1;
 }
 
-static int SG_SSLReadExact(void *buf, int len) {
+static int SG_SSLTransferExact(void *buf, int len, int writing) {
     if (!_ssl) return -1;
-    pthread_rwlock_rdlock(&_sslLock);
+    if (writing) pthread_rwlock_wrlock(&_sslLock);
+    else         pthread_rwlock_rdlock(&_sslLock);
     if (!_ssl) { pthread_rwlock_unlock(&_sslLock); return -1; }
     int total = 0;
     while (total < len) {
-        int n = SSL_read(_ssl, (char *)buf + total, len - total);
+        int n = writing ? SSL_write(_ssl, (const char *)buf + total, len - total)
+                        : SSL_read(_ssl, (char *)buf + total, len - total);
         if (n > 0) { total += n; continue; }
         int err = SSL_get_error(_ssl, n);
-        if (err == SSL_ERROR_WANT_READ) {
-            if (SG_WaitForSocket(_sock, 0, 10) != 0) { pthread_rwlock_unlock(&_sslLock); return -1; }
-            continue;
-        }
-        if (err == SSL_ERROR_WANT_WRITE) {
-            if (SG_WaitForSocket(_sock, 1, 10) != 0) { pthread_rwlock_unlock(&_sslLock); return -1; }
+        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            if (SG_WaitForSocket(_sock, err == SSL_ERROR_WANT_WRITE,
+                                 SGP_NET_OP_TIMEOUT_SEC) != 0) {
+                pthread_rwlock_unlock(&_sslLock);
+                return -1;
+            }
             continue;
         }
         pthread_rwlock_unlock(&_sslLock);
@@ -239,28 +231,12 @@ static int SG_SSLReadExact(void *buf, int len) {
     return 0;
 }
 
+static int SG_SSLReadExact(void *buf, int len) {
+    return SG_SSLTransferExact(buf, len, 0);
+}
+
 static int SG_SSLWriteLocked(const void *buf, int len) {
-    if (!_ssl) return -1;
-    pthread_rwlock_wrlock(&_sslLock);
-    if (!_ssl) { pthread_rwlock_unlock(&_sslLock); return -1; }
-    int total = 0;
-    while (total < len) {
-        int n = SSL_write(_ssl, (const char *)buf + total, len - total);
-        if (n > 0) { total += n; continue; }
-        int err = SSL_get_error(_ssl, n);
-        if (err == SSL_ERROR_WANT_WRITE) {
-            if (SG_WaitForSocket(_sock, 1, 10) != 0) { pthread_rwlock_unlock(&_sslLock); return -1; }
-            continue;
-        }
-        if (err == SSL_ERROR_WANT_READ) {
-            if (SG_WaitForSocket(_sock, 0, 10) != 0) { pthread_rwlock_unlock(&_sslLock); return -1; }
-            continue;
-        }
-        pthread_rwlock_unlock(&_sslLock);
-        return -1;
-    }
-    pthread_rwlock_unlock(&_sslLock);
-    return 0;
+    return SG_SSLTransferExact((void *)buf, len, 1);
 }
 
 static int SGP_LowLevelSend(SGPMsgType type, const void *payload, uint32_t len) {
@@ -306,11 +282,11 @@ static uint8_t *SG_SignPSS(RSA *rsa, const uint8_t *d1, size_t l1, const uint8_t
     if (!sig) { free(em); return NULL; }
 
     int sigLen = RSA_private_encrypt(size, em, sig, rsa, RSA_NO_PADDING);
-    memset(em, 0, size);
+    SG_CryptoZeroBytes(em, (size_t)size);
     free(em);
 
     if (sigLen <= 0) {
-        memset(sig, 0, size);
+        SG_CryptoZeroBytes(sig, (size_t)size);
         free(sig);
         return NULL;
     }
@@ -330,16 +306,16 @@ static int SG_SendChallengeResponse(SGPMsgType type, RSA *rsa, NSString *addr, i
     if (!sig) return -1;
 
     if (sl > 512) {
-        memset(sig, 0, sl);
+        SG_CryptoZeroBytes(sig, sl);
         free(sig);
         return -1;
     }
 
     uint8_t p[8 + 2 + 512];
     memcpy(p, tsBE, 8);
-    p[8] = (sl >> 8) & 0xFF; p[9] = sl & 0xFF;
+    SG_EncodeBE16((uint16_t)sl, p + 8);
     memcpy(p + 10, sig, sl);
-    memset(sig, 0, sl);
+    SG_CryptoZeroBytes(sig, sl);
     free(sig);
     return SGP_LowLevelSend(type, p, (uint32_t)(10 + sl));
 }
@@ -398,7 +374,7 @@ BOOL SGP_BeginFirstTimeRegistration(void) {
     uint8_t tsBE[8]; SG_EncodeBE64(_regTimestamp, tsBE);
 
     NSMutableData *payload = [NSMutableData data];
-    uint8_t keyLenBE[2] = {(uint8_t)(pubDerLen >> 8), (uint8_t)(pubDerLen & 0xFF)};
+    uint8_t keyLenBE[2]; SG_EncodeBE16((uint16_t)pubDerLen, keyLenBE);
     [payload appendBytes:keyLenBE length:2];
     [payload appendBytes:pubDer length:pubDerLen];
     [payload appendBytes:tsBE length:8];
@@ -413,8 +389,7 @@ BOOL SGP_BeginFirstTimeRegistration(void) {
 
 void SGP_ZeroAndFreeKeyMaterial(char *pemBuf, size_t len) {
     if (!pemBuf) return;
-    volatile char *vp = pemBuf;
-    for (size_t i = 0; i < len; i++) vp[i] = 0;
+    SG_CryptoZeroBytes(pemBuf, len);
     free(pemBuf);
 }
 
@@ -426,9 +401,7 @@ int SGP_GetSocketFD(void) { return _sock; }
 uint32_t SGP_GetLastDisconnectRetryAfter(void) { return _lastRetryHint; }
 double SGP_GetLastFrameReceivedAt(void) { return _lastFrameReceivedAt; }
 
-BOOL SGP_SendKeepAlivePing(void) {
-    if (!SGP_IsConnected()) return NO;
-
+static BOOL SGP_SendPingIfIdle(void) {
     pthread_mutex_lock(&_pingLock);
     if (_pingPendingSince > 0.0) {
         pthread_mutex_unlock(&_pingLock);
@@ -442,13 +415,15 @@ BOOL SGP_SendKeepAlivePing(void) {
     pthread_mutex_unlock(&_pingLock);
 
     if (SGP_LowLevelSend(SGP_C_PING, seq, 8) != 0) {
-        pthread_mutex_lock(&_pingLock);
-        _pingPendingSince = 0.0;
-        _pingPendingWallSince = 0;
-        pthread_mutex_unlock(&_pingLock);
+        SGP_ClearPendingPing();
         return NO;
     }
     return YES;
+}
+
+BOOL SGP_SendKeepAlivePing(void) {
+    if (!SGP_IsConnected()) return NO;
+    return SGP_SendPingIfIdle();
 }
 
 double SGP_GetPendingPingAgeWallSeconds(void) {
@@ -482,10 +457,7 @@ void SGP_DisconnectFromServer(void) {
     pthread_mutex_lock(&_regKeyLock);
     SGP_ClearPendingRegistrationKeypairLocked();
     pthread_mutex_unlock(&_regKeyLock);
-    pthread_mutex_lock(&_pingLock);
-    _pingPendingSince = 0.0;
-    _pingPendingWallSince = 0;
-    pthread_mutex_unlock(&_pingLock);
+    SGP_ClearPendingPing();
     _lastFrameReceivedAt = 0.0;
     _phase = SGPProtoPreHello;
     _v1HelloConsumed = NO;
@@ -596,17 +568,11 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     int pinnedDerLen = 0;
     {
         const char *utf8Cert = [pinnedCert UTF8String];
-        BIO *b = utf8Cert ? BIO_new_mem_buf((void *)utf8Cert, (int)strlen(utf8Cert)) : NULL;
-        X509 *pinnedX = b ? PEM_read_bio_X509(b, NULL, 0, NULL) : NULL;
-        if (b) BIO_free(b);
+        X509 *pinnedX = utf8Cert
+            ? SG_CryptoParseCertificatePEM(utf8Cert, strlen(utf8Cert)) : NULL;
         if (!pinnedX) {
             SGLOGE(SGP, "code=%s result=failed reason=pem_read_x509", SGND_PROTOCOL_CONNECT_CERT_FAILED);
-            unsigned long openSslErr;
-            while ((openSslErr = ERR_get_error()) != 0) {
-                char errBuf[256];
-                ERR_error_string_n(openSslErr, errBuf, sizeof(errBuf));
-                SGLOGE(SGP, "code=%s reason=%s", SGND_PROTOCOL_OPENSSL_ERROR, errBuf);
-            }
+            SG_CryptoLogOpenSSLErrors("SGP", SGND_PROTOCOL_OPENSSL_ERROR);
             SGP_DisconnectFromServer();
             return -8;
         }
@@ -654,7 +620,7 @@ void SGP_BeginLoginHandshake(NSString *address, RSA *privKey) {
 
     const char *u = [address UTF8String]; uint16_t ul = (uint16_t)strlen(u);
     NSMutableData *p = [NSMutableData data];
-    uint8_t ulBE[2] = {(uint8_t)(ul >> 8), (uint8_t)(ul & 0xFF)};
+    uint8_t ulBE[2]; SG_EncodeBE16((uint16_t)ul, ulBE);
     [p appendBytes:ulBE length:2];
     [p appendBytes:u length:ul];
     uint8_t tsBE[8]; SG_EncodeBE64(_loginTimestamp, tsBE);
@@ -720,7 +686,7 @@ void SGP_FlushActiveTopicFilter(void) {
             uint8_t tag = mut ? 0x02 : 0x01;
             [body appendBytes:&tag length:1];
             [body appendData:rk];
-            uint8_t blBE[2] = {(uint8_t)(blen >> 8), (uint8_t)(blen & 0xFF)};
+            uint8_t blBE[2]; SG_EncodeBE16((uint16_t)blen, blBE);
             [body appendBytes:blBE length:2];
             [body appendBytes:bidC length:blen];
 
@@ -731,7 +697,7 @@ void SGP_FlushActiveTopicFilter(void) {
         BOOL hasMore = (i < total);
         NSMutableData *frame = [NSMutableData dataWithCapacity:3 + [body length]];
         uint8_t flags = hasMore ? 1 : 0; [frame appendBytes:&flags length:1];
-        uint8_t cBE[2] = {(uint8_t)(count >> 8), (uint8_t)(count & 0xFF)}; [frame appendBytes:cBE length:2];
+        uint8_t cBE[2]; SG_EncodeBE16((uint16_t)count, cBE); [frame appendBytes:cBE length:2];
         [frame appendData:body];
 
         if (SGP_LowLevelSend(SGP_C_FILTER, [frame bytes], (uint32_t)[frame length]) != 0) return;
@@ -784,18 +750,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
 
             if (pingIntervalSec <= 0.0) return SGP_OK;
 
-            pthread_mutex_lock(&_pingLock);
-            if (_pingPendingSince > 0.0) {
-                pthread_mutex_unlock(&_pingLock);
-                return SGP_OK;
-            }
-            _pingSeq++;
-            _pingPendingSince = SG_GetMonotonicSeconds();
-            _pingPendingWallSince = (int64_t)time(NULL);
-            uint8_t seq[8];
-            SG_EncodeBE64((int64_t)_pingSeq, seq);
-            pthread_mutex_unlock(&_pingLock);
-            SGP_LowLevelSend(SGP_C_PING, seq, 8);
+            (void)SGP_SendPingIfIdle();
             return SGP_OK;
         }
     }
@@ -890,10 +845,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         case SGP_S_NOTIFY:
         case SGP_S_AUTH_OK:
         case SGP_S_POLL_DONE:
-            pthread_mutex_lock(&_pingLock);
-            _pingPendingSince = 0.0;
-            _pingPendingWallSince = 0;
-            pthread_mutex_unlock(&_pingLock);
+            SGP_ClearPendingPing();
             break;
         default:
             break;
@@ -992,7 +944,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             }
 
             uint32_t serverVer = SG_DecodeBE32(raw);
-            uint16_t addrLen   = ((uint16_t)raw[4] << 8) | (uint16_t)raw[5];
+            uint16_t addrLen   = SG_DecodeBE16(raw + 4);
             
             if (addrLen == 0 || addrLen > 255 || (uint64_t)6 + addrLen > (uint64_t)len) {
                 SGLOGE(SGP, "code=%s field=address addrLen=%u frameLen=%llu result=rejected",
@@ -1036,7 +988,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
             uint8_t code = raw[0];
             NSString *reason = nil;
             if (len >= 4) {
-                uint16_t rl = ((uint16_t)raw[1] << 8) | (uint16_t)raw[2];
+                uint16_t rl = SG_DecodeBE16(raw + 1);
                 if ((uint64_t)3 + rl <= (uint64_t)len) {
                     reason = [[[NSString alloc] initWithBytes:raw + 3
                                                        length:rl

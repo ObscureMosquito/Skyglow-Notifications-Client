@@ -1,32 +1,11 @@
 #import "SGConfiguration.h"
+#import "SGAtomicFile.h"
+#import "SGCryptoEngine.h"
 #import "SGKeychainStore.h"
 #import "SGLog.h"
 #include <TargetConditionals.h>
-#include <pwd.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-static void SGApplyMobileOwnershipIfAvailable(NSString *path) {
-#if !TARGET_OS_OSX
-    struct passwd *mobile = getpwnam("mobile");
-    if (mobile) {
-        (void)chown([path fileSystemRepresentation],
-                    mobile->pw_uid, mobile->pw_gid);
-    }
-#else
-    (void)path;
-#endif
-}
-
-static void SGApplyPrivateDirectoryProtection(NSString *path) {
-    struct stat st;
-    if (stat([path fileSystemRepresentation], &st) != 0 ||
-        !S_ISDIR(st.st_mode)) {
-        return;
-    }
-    chmod([path fileSystemRepresentation], 0700);
-    SGApplyMobileOwnershipIfAvailable(path);
-}
 
 void SGEnsureRuntimeDirectories(void) {
     NSArray *dirs = [NSArray arrayWithObjects:
@@ -51,13 +30,13 @@ void SGEnsureRuntimeDirectories(void) {
   withIntermediateDirectories:YES
                    attributes:privateDirAttributes
                         error:NULL];
-    SGApplyPrivateDirectoryProtection(stateDir);
-    SGApplyPrivateDirectoryProtection(inboxDir);
+    SGStorageApplyPrivateDirectoryProtection(stateDir);
+    SGStorageApplyPrivateDirectoryProtection(inboxDir);
 }
 
 static void SG_ZeroAndReleaseData(NSMutableData *data) {
     if (!data) return;
-    [data resetBytesInRange:NSMakeRange(0, [data length])];
+    SG_CryptoWipeData(data);
     [data release];
 }
 
@@ -103,7 +82,7 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
 
     NSNumber *profileNum = mainPrefs ? mainPrefs[@"activeProfile"] : nil;
     NSInteger nextActiveProfileIndex =
-        (profileNum && [profileNum integerValue] >= 1 && [profileNum integerValue] <= 5)
+        (profileNum && SGProfileIndexIsValid([profileNum integerValue]))
             ? [profileNum integerValue] : 1;
 
     NSNumber *logLevelNum = mainPrefs ? mainPrefs[@"logLevel"] : nil;
@@ -117,8 +96,7 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
     NSString *nextServerPubKeyPEM = nil;
     NSString *nextRegistrationIdentityPEM = nil;
 
-    NSString *profilePath = SGPath([NSString stringWithFormat:
-        SG_PROFILE_PLIST_FORMAT, (long)nextActiveProfileIndex]);
+    NSString *profilePath = SGProfilePlistPathForIndex(nextActiveProfileIndex);
     NSDictionary *profilePrefs = [NSDictionary dictionaryWithContentsOfFile:profilePath];
     if (profilePrefs) {
         nextHasProfile = YES;
@@ -177,9 +155,9 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
     }
 
     unsigned long long fileSize = [attrs fileSize];
-    if (fileSize > 65536) {
-        SGLOGE(SGConfiguration, "code=%s path=%s bytes=%llu max=65536 result=failed", SGND_CONFIG_KEY_TOO_LARGE,
-                    [safePath UTF8String], fileSize);
+    if (fileSize > SG_STORAGE_SMALL_FILE_MAX_BYTES) {
+        SGLOGE(SGConfiguration, "code=%s path=%s bytes=%llu max=%d result=failed", SGND_CONFIG_KEY_TOO_LARGE,
+                    [safePath UTF8String], fileSize, SG_STORAGE_SMALL_FILE_MAX_BYTES);
         return nil;
     }
 

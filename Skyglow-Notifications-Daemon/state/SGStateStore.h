@@ -6,6 +6,7 @@
 @interface SGStateStore : NSObject
 
 - (BOOL)updateMainPreferences:(void (^)(NSMutableDictionary *preferences))mutation;
+- (NSDictionary *)appStatusDictionary;
 
 #pragma mark - Profile-slot persistence choke points
 

@@ -43,6 +43,25 @@
 
 #pragma mark - Push Registration
 
+static BOOL SGNModernRegistrationShouldPresentChoice(NSString *bundleIdentifier) {
+    if (SGNRegistrationConsumePassThrough()) return NO;
+
+    if (SGN_IsCascadeReEntry(bundleIdentifier)) {
+        NSLog(@"[SGN] Suppressing deregister cascade for %@", bundleIdentifier);
+        return NO;
+    }
+
+    if (SGNEffectiveAppIntent(bundleIdentifier)) {
+        SGN_InstallTokenGuard();
+        SGN_AsyncFetchAndDeliverToken(bundleIdentifier, nil, nil, 0, nil);
+        return NO;
+    }
+
+    if (SGN_BundleRegisteredWithNativePush(bundleIdentifier)) return NO;
+
+    return YES;
+}
+
 %group HookRegistration_Classic
 %hook SBRemoteNotificationServer
 - (int)registerApplication:(id)application forEnvironment:(id)environment withTypes:(int)notificationTypes {
@@ -75,29 +94,10 @@
 %group HookRegistration_iOS9
 %hook UNNotificationRegistrarConnectionListener
 - (void)requestTokenForRemoteNotificationsForBundleIdentifier:(NSString *)bundleIdentifier withResult:(id)resultBlock {
-    if (SGNRegistrationConsumePassThrough()) {
+    if (!SGNModernRegistrationShouldPresentChoice(bundleIdentifier)) {
         %orig;
         return;
     }
-
-    if (SGN_IsCascadeReEntry(bundleIdentifier)) {
-        NSLog(@"[SGN] Suppressing deregister cascade for %@", bundleIdentifier);
-        %orig;
-        return;
-    }
-
-    if (SGNEffectiveAppIntent(bundleIdentifier)) {
-        SGN_InstallTokenGuard();
-        SGN_AsyncFetchAndDeliverToken(bundleIdentifier, nil, nil, 0, nil);
-        %orig;
-        return;
-    }
-
-    if (SGN_BundleRegisteredWithNativePush(bundleIdentifier)) {
-        %orig;
-        return;
-    }
-
     SGNRegistrationPresentModernChoice(self, bundleIdentifier, resultBlock,
                                        _cmd);
 }
@@ -109,29 +109,10 @@
 - (void)requestTokenForRemoteNotificationsForBundleIdentifier:
             (NSString *)bundleIdentifier
                                       withCompletionHandler:(id)resultBlock {
-    if (SGNRegistrationConsumePassThrough()) {
+    if (!SGNModernRegistrationShouldPresentChoice(bundleIdentifier)) {
         %orig;
         return;
     }
-
-    if (SGN_IsCascadeReEntry(bundleIdentifier)) {
-        NSLog(@"[SGN] Suppressing deregister cascade for %@", bundleIdentifier);
-        %orig;
-        return;
-    }
-
-    if (SGNEffectiveAppIntent(bundleIdentifier)) {
-        SGN_InstallTokenGuard();
-        SGN_AsyncFetchAndDeliverToken(bundleIdentifier, nil, nil, 0, nil);
-        %orig;
-        return;
-    }
-
-    if (SGN_BundleRegisteredWithNativePush(bundleIdentifier)) {
-        %orig;
-        return;
-    }
-
     SGNRegistrationPresentModernChoice(self, bundleIdentifier, resultBlock,
                                        _cmd);
 }

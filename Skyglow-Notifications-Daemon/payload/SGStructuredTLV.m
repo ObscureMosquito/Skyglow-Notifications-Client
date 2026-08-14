@@ -1,4 +1,5 @@
 #import "SGStructuredTLV.h"
+#include "SGByteOrder.h"
 #import <CoreFoundation/CoreFoundation.h>
 #import <string.h>
 #import <math.h>
@@ -42,11 +43,10 @@ static id SGSTLVDecodeValue(SGSTLVCtx *c) {
         }
         case SG_STLV_T_DOUBLE: {
             if (c->end - c->p < 8) return nil;
-            uint64_t bits = 0;
-            for (int i = 0; i < 8; i++) bits = (bits << 8) | c->p[i];
+            uint64_t bits = (uint64_t)SG_DecodeBE64(c->p);
             c->p += 8;
             double dv;
-            memcpy(&dv, &bits, 8); /* bits holds the host-order IEEE-754 pattern */
+            memcpy(&dv, &bits, 8); /* bits holds the host order IEEE-754 pattern */
             if (!isfinite(dv)) return nil;
             return [NSNumber numberWithDouble:dv];
         }
@@ -231,7 +231,7 @@ static BOOL SGSTLVEncodeValue(NSMutableData *out, id obj, int depth) {
             uint64_t bits;
             memcpy(&bits, &dv, 8);
             uint8_t b[8];
-            for (int i = 0; i < 8; i++) b[i] = (uint8_t)(bits >> (56 - 8 * i));
+            SG_EncodeBE64((int64_t)bits, b);
             SGSTLVAppendType(out, SG_STLV_T_DOUBLE);
             [out appendBytes:b length:8];
             return YES;

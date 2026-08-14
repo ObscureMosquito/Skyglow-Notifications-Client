@@ -2,17 +2,11 @@
 #import "SNInterfaceColors.h"
 #import "SNDataManager.h"
 #import "SNAlert.h"
+#import "SGConfiguration.h"
 #import "SGSharedConstants.h"
 #include <sys/stat.h>
 
-static NSString *SNLogTailPath(void) {
-    static NSString *cached = nil;
-    if (!cached) {
-        BOOL rootless = [[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"];
-        cached = rootless ? [@"/var/jb" stringByAppendingString:SG_LOG_PATH] : SG_LOG_PATH;
-    }
-    return cached;
-}
+static NSString *SNLogTailPath(void) { return SGPath(SG_LOG_PATH); }
 
 static const NSUInteger kSNLogTailWindowBytes = 64 * 1024;
 static const NSTimeInterval kSNLogTailRefreshSeconds = 1.0;

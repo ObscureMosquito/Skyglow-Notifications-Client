@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include "sg_test.h"
 #include "SGKeepAliveStrategy.h"
 
 #define MIN        600.0
@@ -13,10 +14,6 @@
 #define REFINE_LO (REFINE - VAR)
 #define REFINE_HI (REFINE + VAR)
 
-static int failures = 0;
-#define CHECK(cond, ...) do { if (!(cond)) { \
-    failures++; printf("FAIL %s:%d  %s\n      ", __func__, __LINE__, #cond); \
-    printf(__VA_ARGS__); printf("\n"); } } while (0)
 
 // feed n successes, returning the interval after each is optional
 static void feed(SGKeepAliveAlgorithm *a, SGKeepAliveAction act, int n) {

@@ -1,32 +1,18 @@
 #import "SGDatabaseManager.h"
+#import "SGAtomicFile.h"
 #import "SGConfiguration.h"
+#import "SGDatabaseSchema.h"
 #import "SGLog.h"
 #include <sqlite3.h>
-#include <pwd.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <TargetConditionals.h>
-
-#define SG_DATABASE_APPLICATION_ID 0x53474E44
-#define SG_SCHEMA_VERSION 1
 
 #define SG_DEDUP_DEFAULT_RETENTION_SEC ((int64_t)86400)
 
 static sqlite3_int64 SGActiveProfileID(void) {
     NSInteger profile = [[SGConfiguration sharedConfiguration] activeProfileIndex];
-    return (sqlite3_int64)((profile >= 1 && profile <= 5) ? profile : 1);
-}
-
-static void SGApplyDatabaseOwnership(NSString *path) {
-#if !TARGET_OS_OSX
-    struct passwd *mobile = getpwnam("mobile");
-    if (mobile) {
-        (void)chown([path fileSystemRepresentation],
-                    mobile->pw_uid, mobile->pw_gid);
-    }
-#else
-    (void)path;
-#endif
+    return (sqlite3_int64)(SGProfileIndexIsValid(profile) ? profile : 1);
 }
 
 @implementation SGDatabaseManager {
@@ -53,8 +39,7 @@ static void SGApplyDatabaseOwnership(NSString *path) {
         [fm createDirectoryAtPath:dbDir
       withIntermediateDirectories:YES attributes:nil error:NULL];
 
-        chmod([dbDir fileSystemRepresentation], 0700);
-        SGApplyDatabaseOwnership(dbDir);
+        SGStorageApplyPrivateDirectoryProtection(dbDir);
 
         if (sqlite3_open([dbPath UTF8String], &_database) != SQLITE_OK) {
             SGLOGE(SGDatabaseManager, "code=%s path=%s result=failed", SGND_DATABASE_OPEN_FAILED, [dbPath UTF8String]);
@@ -65,7 +50,7 @@ static void SGApplyDatabaseOwnership(NSString *path) {
         sqlite3_busy_timeout(_database, 3000);
 
         chmod([dbPath fileSystemRepresentation], 0600);
-        SGApplyDatabaseOwnership(dbPath);
+        SGStorageApplyMobileOwnership(dbPath);
 
         sqlite3_exec(_database, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
         sqlite3_exec(_database, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
@@ -74,8 +59,8 @@ static void SGApplyDatabaseOwnership(NSString *path) {
         NSString *shmPath = [dbPath stringByAppendingString:@"-shm"];
         chmod([walPath fileSystemRepresentation], 0600);
         chmod([shmPath fileSystemRepresentation], 0600);
-        SGApplyDatabaseOwnership(walPath);
-        SGApplyDatabaseOwnership(shmPath);
+        SGStorageApplyMobileOwnership(walPath);
+        SGStorageApplyMobileOwnership(shmPath);
 
         if (![self _initializeSchema]) {
             [self release];
@@ -103,23 +88,11 @@ static void SGApplyDatabaseOwnership(NSString *path) {
     return self;
 }
 
-- (BOOL)_readPragmaInteger:(const char *)pragmaSQL value:(int *)outValue {
-    if (!pragmaSQL || !outValue) return NO;
-    sqlite3_stmt *stmt = NULL;
-    if (sqlite3_prepare_v2(_database, pragmaSQL, -1, &stmt, NULL) != SQLITE_OK) {
-        return NO;
-    }
-    BOOL ok = (sqlite3_step(stmt) == SQLITE_ROW);
-    if (ok) *outValue = sqlite3_column_int(stmt, 0);
-    sqlite3_finalize(stmt);
-    return ok;
-}
-
 - (BOOL)_initializeSchema {
     int applicationID = 0;
     int schemaVersion = 0;
-    if (![self _readPragmaInteger:"PRAGMA application_id" value:&applicationID] ||
-        ![self _readPragmaInteger:"PRAGMA user_version" value:&schemaVersion]) {
+    if (!SGDatabaseReadIntPragma(_database, "PRAGMA application_id", &applicationID) ||
+        !SGDatabaseReadIntPragma(_database, "PRAGMA user_version", &schemaVersion)) {
         SGLOGE(SGDatabaseManager,
                "code=%s result=failed reason=version_probe",
                SGND_DATABASE_SCHEMA_FAILED);
@@ -139,48 +112,8 @@ static void SGApplyDatabaseOwnership(NSString *path) {
         return NO;
     }
 
-    const char *schema =
-        "CREATE TABLE notifications ("
-        " profile_id INTEGER NOT NULL,"
-        " routing_key BLOB NOT NULL,"
-        " e2ee_key BLOB NOT NULL,"
-        " bundle_id TEXT NOT NULL,"
-        " token BLOB NOT NULL,"
-        " is_muted INTEGER NOT NULL DEFAULT 0,"
-        " PRIMARY KEY(profile_id, routing_key),"
-        " UNIQUE(profile_id, bundle_id));"
-        "CREATE TABLE dns_cache ("
-        " profile_id INTEGER NOT NULL,"
-        " domain TEXT NOT NULL,"
-        " ip TEXT NOT NULL,"
-        " port TEXT NOT NULL,"
-        " updated_at REAL NOT NULL,"
-        " PRIMARY KEY(profile_id, domain));"
-        "CREATE TABLE pending_acks ("
-        " profile_id INTEGER NOT NULL,"
-        " msg_id BLOB NOT NULL,"
-        " status INTEGER NOT NULL,"
-        " PRIMARY KEY(profile_id, msg_id));"
-        "CREATE TABLE settings ("
-        " profile_id INTEGER NOT NULL,"
-        " key TEXT NOT NULL,"
-        " value NUMERIC NOT NULL,"
-        " PRIMARY KEY(profile_id, key));"
-        "CREATE TABLE seen_messages ("
-        " profile_id INTEGER NOT NULL,"
-        " msg_id BLOB NOT NULL,"
-        " expires_at INTEGER NOT NULL,"
-        " PRIMARY KEY(profile_id, msg_id));"
-        "CREATE TABLE local_pending_deliveries ("
-        " profile_id INTEGER NOT NULL,"
-        " msg_id BLOB NOT NULL,"
-        " bundle_id TEXT NOT NULL,"
-        " payload BLOB NOT NULL,"
-        " device_seq INTEGER NOT NULL DEFAULT 0,"
-        " expires_at INTEGER NOT NULL,"
-        " PRIMARY KEY(profile_id, msg_id));"
-        "PRAGMA application_id = 1397182020;"
-        "PRAGMA user_version = 1;";
+    char identitySQL[96];
+    SGDatabaseSchemaIdentitySQL(identitySQL, sizeof(identitySQL));
 
     if (sqlite3_exec(_database, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
         SGLOGE(SGDatabaseManager,
@@ -190,7 +123,8 @@ static void SGApplyDatabaseOwnership(NSString *path) {
     }
 
     char *errorMessage = NULL;
-    if (sqlite3_exec(_database, schema, NULL, NULL, &errorMessage) != SQLITE_OK) {
+    if (sqlite3_exec(_database, kSGDatabaseSchemaSQL, NULL, NULL, &errorMessage) != SQLITE_OK ||
+        sqlite3_exec(_database, identitySQL, NULL, NULL, &errorMessage) != SQLITE_OK) {
         SGLOGE(SGDatabaseManager,
                "code=%s result=failed reason=%s",
                SGND_DATABASE_SCHEMA_FAILED,
@@ -357,7 +291,7 @@ static void SGApplyDatabaseOwnership(NSString *path) {
 }
 
 - (BOOL)clearOperationalStateForProfile:(NSInteger)profileIndex {
-    if (profileIndex < 1 || profileIndex > 5) return NO;
+    if (!SGProfileIndexIsValid(profileIndex)) return NO;
     __block BOOL ok = NO;
     dispatch_sync(_databaseQueue, ^{
         const char *tables[] = {

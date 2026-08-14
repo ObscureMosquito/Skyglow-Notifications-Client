@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import "SGConfiguration.h"
 #import "SGSharedConstants.h"
 
 /** Rootless-aware absolute path. */

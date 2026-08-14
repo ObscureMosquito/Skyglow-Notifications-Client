@@ -1,4 +1,5 @@
 #import "SGControlChannel.h"
+#import "SGControlPayloadCodec.h"
 #import "SGControlAuthorization.h"
 #import "SGLog.h"
 #include <bootstrap.h>
@@ -95,18 +96,14 @@ static kern_return_t SGCSendMessage(mach_port_t remotePort,
                     0, MACH_PORT_NULL, kSGCSendTimeoutMs, MACH_PORT_NULL);
 }
 
-static void SGCCopyCString(char *dst, size_t dstSize, const char *src) {
-    if (!dst || dstSize == 0) return;
-    if (!src) {
-        dst[0] = '\0';
-        return;
-    }
-    size_t i = 0;
-    while (i + 1 < dstSize && src[i] != '\0') {
-        dst[i] = src[i];
-        i++;
-    }
-    dst[i] = '\0';
+static void SGCSendErrorReply(mach_port_t replyPort, uint32_t requestId,
+                              SGControlError code, const char *message) {
+    SGCErrorResponsePayload err;
+    memset(&err, 0, sizeof(err));
+    SGCCopyCString(err.message, sizeof(err.message), message);
+    SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
+                   SGCMSG_ERROR_RESPONSE, 0, (uint16_t)code, requestId, 0,
+                   &err, sizeof(err));
 }
 
 static void *SGCRecvThreadEntry(void *arg) {
@@ -563,12 +560,7 @@ static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, 
         if (!haveToken) {
             SGLOGW(SGControlChannel, "code=%s type=0x%02x result=denied_no_audit_token",
                    SGND_CONTROL_AUTH_UNENFORCED, type);
-            SGCErrorResponsePayload err;
-            memset(&err, 0, sizeof(err));
-            SGCCopyCString(err.message, sizeof(err.message), "missing sender credentials");
-            SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
-                           SGCMSG_ERROR_RESPONSE, 0, SGCERR_UNAUTHORIZED,
-                           requestId, 0, &err, sizeof(err));
+            SGCSendErrorReply(replyPort, requestId, SGCERR_UNAUTHORIZED, "missing sender credentials");
             if (MACH_PORT_VALID(replyPort)) {
                 mach_port_deallocate(mach_task_self(), replyPort);
             }
@@ -588,12 +580,7 @@ static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, 
                        SGND_CONTROL_UNAUTHORIZED, type, (int)senderPid, (int)senderEuid,
                        senderName[0] ? senderName : "(unknown)",
                        senderPath[0] ? senderPath : "(unknown)");
-                SGCErrorResponsePayload err;
-                memset(&err, 0, sizeof(err));
-                SGCCopyCString(err.message, sizeof(err.message), "unauthorized sender");
-                SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
-                               SGCMSG_ERROR_RESPONSE, 0, SGCERR_UNAUTHORIZED,
-                               requestId, 0, &err, sizeof(err));
+                SGCSendErrorReply(replyPort, requestId, SGCERR_UNAUTHORIZED, "unauthorized sender");
                 if (MACH_PORT_VALID(replyPort)) mach_port_deallocate(mach_task_self(), replyPort);
                 return;
             }
@@ -628,24 +615,14 @@ static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, 
     SGControlMessageHandler handler = _handlers[@(type)];
     if (!handler) {
         SGLOGW(SGControlChannel, "code=%s type=0x%02x result=invalid_request", SGND_CONTROL_HANDLER_MISSING, type);
-        SGCErrorResponsePayload err;
-        memset(&err, 0, sizeof(err));
-        SGCCopyCString(err.message, sizeof(err.message), "unknown message type");
-        SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
-                       SGCMSG_ERROR_RESPONSE, 0, SGCERR_INVALID_REQUEST,
-                       requestId, 0, &err, sizeof(err));
+        SGCSendErrorReply(replyPort, requestId, SGCERR_INVALID_REQUEST, "unknown message type");
         return;
     }
 
     SGControlChannelMessage *requestCopy = (SGControlChannelMessage *)malloc(sizeof(*msg));
     if (!requestCopy) {
         SGLOGW(SGControlChannel, "code=%s type=0x%02x result=oom", SGND_CONTROL_ALLOC_FAILED, type);
-        SGCErrorResponsePayload err;
-        memset(&err, 0, sizeof(err));
-        SGCCopyCString(err.message, sizeof(err.message), "daemon out of memory");
-        SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
-                       SGCMSG_ERROR_RESPONSE, 0, SGCERR_INTERNAL,
-                       requestId, 0, &err, sizeof(err));
+        SGCSendErrorReply(replyPort, requestId, SGCERR_INTERNAL, "daemon out of memory");
         return;
     }
     memcpy(requestCopy, msg, sizeof(*msg));
@@ -674,21 +651,13 @@ static BOOL SGCDeadNameIsAuthentic(SGControlChannelMessage *msg, pid_t *outPid, 
 
 - (void)_serverHandleSubscribeLocked:(SGControlChannelMessage *)msg replyPort:(mach_port_t)replyPort {
     if (msg->payloadLength < sizeof(SGCSubscribePayload)) {
-        SGCErrorResponsePayload err; memset(&err, 0, sizeof(err));
-        SGCCopyCString(err.message, sizeof(err.message), "subscribe payload too short");
-        SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
-                       SGCMSG_ERROR_RESPONSE, 0, SGCERR_INVALID_REQUEST, msg->requestId, 0,
-                       &err, sizeof(err));
+        SGCSendErrorReply(replyPort, msg->requestId, SGCERR_INVALID_REQUEST, "subscribe payload too short");
         return;
     }
     if ([_subscriptions count] >= SGC_MAX_SUBSCRIPTIONS) {
         SGLOGW(SGControlChannel, "code=%s reason=subscription_cap count=%lu action=reject",
                SGND_CONTROL_UNAUTHORIZED, (unsigned long)[_subscriptions count]);
-        SGCErrorResponsePayload err; memset(&err, 0, sizeof(err));
-        SGCCopyCString(err.message, sizeof(err.message), "subscription limit reached");
-        SGCSendMessage(replyPort, MACH_MSG_TYPE_COPY_SEND, MACH_PORT_NULL,
-                       SGCMSG_ERROR_RESPONSE, 0, SGCERR_DAEMON_BUSY, msg->requestId, 0,
-                       &err, sizeof(err));
+        SGCSendErrorReply(replyPort, msg->requestId, SGCERR_DAEMON_BUSY, "subscription limit reached");
         return;
     }
     SGCSubscribePayload *sub = (SGCSubscribePayload *)msg->payload;

@@ -52,17 +52,7 @@ static int Send(SGControlMessageType type, NSData *payload,
     [c sendRequest:type payload:payload timeout:10.0
         completion:^(SGControlError err, const SGControlChannelMessage *resp) {
             if (err != SGCERR_OK) {
-                NSString *detail = nil;
-                if (resp && resp->messageType == SGCMSG_ERROR_RESPONSE &&
-                    resp->payloadLength >= sizeof(SGCErrorResponsePayload)) {
-                    const SGCErrorResponsePayload *errorPayload =
-                        (const SGCErrorResponsePayload *)resp->payload;
-                    detail = [[[NSString alloc]
-                        initWithBytes:errorPayload->message
-                               length:strnlen(errorPayload->message,
-                                              sizeof(errorPayload->message))
-                             encoding:NSUTF8StringEncoding] autorelease];
-                }
+                NSString *detail = SGCErrorDetailFromResponse(resp);
                 if ([detail length]) {
                     fprintf(stderr, "sgnctl: %s: %s\n", ErrName(err),
                             [detail UTF8String]);

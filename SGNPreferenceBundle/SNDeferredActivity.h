@@ -7,6 +7,9 @@ typedef void (^SNDeferredActivityBlock)(void);
 + (NSTimeInterval)defaultPresentationDelay;
 + (NSTimeInterval)defaultMinimumVisibleDuration;
 
++ (instancetype)begunActivityWithShowBlock:(SNDeferredActivityBlock)showBlock
+                                 hideBlock:(SNDeferredActivityBlock)hideBlock;
+
 - (id)initWithShowBlock:(SNDeferredActivityBlock)showBlock
               hideBlock:(SNDeferredActivityBlock)hideBlock;
 

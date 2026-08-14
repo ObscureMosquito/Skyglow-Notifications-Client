@@ -21,14 +21,8 @@ static BOOL SG_DNSEndpointValid(NSString *ip, NSString *port) {
     if (!ipc) return NO;
     if (inet_pton(AF_INET, ipc, &a4) != 1 && inet_pton(AF_INET6, ipc, &a6) != 1) return NO;
 
-    NSUInteger n = [port length];
-    if (n == 0 || n > 5) return NO;
-    for (NSUInteger i = 0; i < n; i++) {
-        unichar c = [port characterAtIndex:i];
-        if (c < '0' || c > '9') return NO;
-    }
-    int p = [port intValue];
-    return (p > 0 && p <= 65535);
+    const char *portc = [port UTF8String];
+    return portc && SG_PortCStringIsValid(portc, strlen(portc));
 }
 
 @implementation SGServerLocator

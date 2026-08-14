@@ -10,4 +10,7 @@
 /** Returns nil on malformed input. Result is autoreleased. */
 id SG_JSONParse(const uint8_t *bytes, NSUInteger length);
 
+/** Advances past JSON whitespace (space, tab, CR, LF). */
+const uint8_t *SG_JSONSkipWhitespace(const uint8_t *p, const uint8_t *end);
+
 #endif

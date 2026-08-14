@@ -19,6 +19,14 @@
     return 0.45;
 }
 
++ (instancetype)begunActivityWithShowBlock:(SNDeferredActivityBlock)showBlock
+                                 hideBlock:(SNDeferredActivityBlock)hideBlock {
+    SNDeferredActivity *activity =
+        [[[self alloc] initWithShowBlock:showBlock hideBlock:hideBlock] autorelease];
+    [activity begin];
+    return activity;
+}
+
 - (id)initWithShowBlock:(SNDeferredActivityBlock)showBlock
               hideBlock:(SNDeferredActivityBlock)hideBlock {
     return [self initWithDelay:[[self class] defaultPresentationDelay]
@@ -59,6 +67,7 @@ minimumVisibleDuration:(NSTimeInterval)minimumVisibleDuration
 }
 
 - (void)finishWithCompletion:(SNDeferredActivityBlock)completion {
+    [[self retain] autorelease];   /* completion may drop our last reference */
     if (_finished) return;
     _finished = YES;
 
