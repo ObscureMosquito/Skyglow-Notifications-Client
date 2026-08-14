@@ -17,7 +17,6 @@
 /** Returns the token data (E2EE key and bundle ID) for a given routing key */
 - (NSDictionary *)tokenDataForRoutingKey:(NSData *)routingKey;
 - (NSArray *)tokenEntriesForBundleIdentifier:(NSString *)bundleID;
-- (BOOL)removeTokenForBundleIdentifier:(NSString *)bundleID;
 - (BOOL)removeAllStateForBundleIdentifier:(NSString *)bundleID;
 - (NSArray *)allBundleRegistrations;
 
@@ -63,7 +62,6 @@
 /** Returns all rows currently queued for local redelivery. */
 - (NSArray *)allLocalPendingDeliveries;
 - (BOOL)removeLocalPendingDeliveryForMessageID:(NSData *)msgID;
-- (BOOL)removeLocalPendingDeliveriesForBundleIdentifier:(NSString *)bundleID;
 - (BOOL)hasLocalPendingDeliveryForMessageID:(NSData *)msgID;
 - (void)closeDatabase;
 

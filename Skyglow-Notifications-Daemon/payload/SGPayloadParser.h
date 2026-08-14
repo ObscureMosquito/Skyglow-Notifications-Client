@@ -18,12 +18,6 @@ typedef enum : uint8_t {
 /** Sentinel returned by SG_PayloadSniffFormat when the leading bytes match no known encoding */
 #define SGPayloadFormatUnknown ((SGPayloadFormat)0xFF)
 
-/** Parses an SGP binary payload, duh */
-NSDictionary *SG_PayloadParseBinaryData(const uint8_t *buffer, uint32_t length);
-
-/** Content-sniffs the leading bytes of an inner payload */
-SGPayloadFormat SG_PayloadSniffFormat(const uint8_t *buffer, uint32_t length);
-
 /** Decodes a decrypted inner payload of the declared `contentType` into a APNS dict */
 NSDictionary *SG_PayloadDecode(const uint8_t *buffer, uint32_t length, uint8_t contentType);
 

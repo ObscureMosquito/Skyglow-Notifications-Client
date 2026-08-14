@@ -11,22 +11,17 @@
 #define SGP_MAX_PAYLOAD_LEN     4096
 #define SGP_SERVER_ADDRESS_MAX_BYTES 16
 #define SGP_PONG_TIMEOUT_SEC       15
-#define SGP_CHALLENGE_WINDOW_SEC  300
 #define SGP_NET_OP_TIMEOUT_SEC      10
 #define SGP_ROUTING_KEY_LEN     32
 #define SGP_MSG_ID_LEN          16
 #define SGP_NONCE_LEN           32
-#define SGP_PING_SEQ_LEN         8
 #define SGP_GCM_IV_LEN          12
 #define SGP_GCM_TAG_LEN         16
-#define SGP_NOTIFY_OFF_ROUTING_KEY   0
-#define SGP_NOTIFY_OFF_MSG_ID       32
 #define SGP_NOTIFY_OFF_SEQ          48
 #define SGP_NOTIFY_OFF_EXPIRES_AT   56
 #define SGP_NOTIFY_OFF_FLAGS        64
 #define SGP_NOTIFY_OFF_CONTENT_TYPE 65
 #define SGP_NOTIFY_OFF_DATA_LEN     66
-#define SGP_NOTIFY_OFF_DATA         70
 #define SGP_NOTIFY_MIN_PAYLOAD      70
 #define SGP_NOTIFY_FLAG_ENCRYPTED   0x01
 #define SGP_NOTIFY_FLAG_COMPRESSED  0x02
@@ -72,8 +67,6 @@ typedef enum : uint8_t {
 typedef enum : uint8_t {
     SGP_DISC_NORMAL           = 0x00,
     SGP_DISC_AUTH_FAIL        = 0x01,
-    SGP_DISC_PROTOCOL         = 0x02,
-    SGP_DISC_SERVER_ERR       = 0x03,
     SGP_DISC_REPLACED         = 0x04,
     SGP_DISC_VERSION_MISMATCH = 0x05,
 } SGPDisconnReason;
@@ -157,12 +150,6 @@ uint32_t SGP_GetLastDisconnectRetryAfter(void);
 
 /** Sends a keep-alive ping if connected and no ping is already pending */
 BOOL SGP_SendKeepAlivePing(void);
-
-/**
- * Returns the monotonic timestamp of the last received server frame,
- * or 0.0 if no frames have been received this connection.
- */
-double SGP_GetLastFrameReceivedAt(void);
 
 /**
  * Returns how many WALL-CLOCK seconds the current keep-alive ping has gone

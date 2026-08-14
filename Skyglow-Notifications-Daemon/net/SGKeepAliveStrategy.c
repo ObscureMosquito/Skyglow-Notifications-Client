@@ -10,7 +10,6 @@
 #define SG_KA_VARIANCE             20.0
 #define SG_KA_BACKOFF_MULTIPLE      0.5
 #define SG_KA_HIGH_WATERMARK      330.0
-#define SG_KA_STEADY_TIMEOUT_MIN 3600.0
 
 static double sg_growth_step(double increment) {
     double r = (double)arc4random() / 4294967296.0;
@@ -52,7 +51,7 @@ static void sg_initial_growth(SGKeepAliveAlgorithm *a, SGKeepAliveAction action)
         sg_set_interval(a, a->lastInterval);
         a->stage = SGKeepAliveStageRefinedGrowth;
         SGKeepAlive_ProcessAction(a, SGKeepAliveActionSuccess);
-    } else if (action == SGKeepAliveActionSuccess || action == SGKeepAliveActionProbe) {
+    } else if (action == SGKeepAliveActionSuccess) {
         if (a->currentInterval >= a->maxInterval)
             a->stage = SGKeepAliveStageSteadyState;
         if (a->currentInterval > a->highWatermark)
@@ -68,7 +67,7 @@ static void sg_refined_growth(SGKeepAliveAlgorithm *a, SGKeepAliveAction action)
         sg_set_interval(a, a->lastInterval);
         a->stage = SGKeepAliveStageSteadyState;
         SGKeepAlive_ProcessAction(a, SGKeepAliveActionSuccess);
-    } else if (action == SGKeepAliveActionSuccess || action == SGKeepAliveActionProbe) {
+    } else if (action == SGKeepAliveActionSuccess) {
         if (a->lastGrowthAttempt > 0.0 && a->currentInterval >= a->lastGrowthAttempt) {
             a->stage = SGKeepAliveStageInitialGrowth;
             SGKeepAlive_ProcessAction(a, SGKeepAliveActionSuccess);
@@ -99,7 +98,7 @@ static void sg_steady_state(SGKeepAliveAlgorithm *a, SGKeepAliveAction action) {
 static void sg_backoff(SGKeepAliveAlgorithm *a, SGKeepAliveAction action) {
     if (action == SGKeepAliveActionFailure) {
         sg_set_interval(a, a->currentInterval * SG_KA_BACKOFF_MULTIPLE);
-    } else if (action == SGKeepAliveActionSuccess || action == SGKeepAliveActionProbe) {
+    } else if (action == SGKeepAliveActionSuccess) {
         a->stage = SGKeepAliveStageInitialGrowth;
         SGKeepAlive_ProcessAction(a, SGKeepAliveActionSuccess);
     }
@@ -135,8 +134,3 @@ double SGKeepAlive_GetCurrentInterval(SGKeepAliveAlgorithm *algo) {
     return algo ? algo->currentInterval : SG_KA_INITIAL_INTERVAL;
 }
 
-double SGKeepAlive_SteadyStateReprobeDelay(SGKeepAliveAlgorithm *algo) {
-    if (!algo || algo->stage != SGKeepAliveStageSteadyState) return 0.0;
-    double t = algo->currentInterval * 24.0;
-    return (t > SG_KA_STEADY_TIMEOUT_MIN) ? t : SG_KA_STEADY_TIMEOUT_MIN;
-}

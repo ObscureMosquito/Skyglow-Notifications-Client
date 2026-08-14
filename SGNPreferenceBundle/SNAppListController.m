@@ -208,10 +208,6 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
     [self.navigationItem setHidesBackButton:NO animated:NO];
 }
 
-- (void)_setBackButtonDisabledForDeletingState {
-    [self.navigationItem setHidesBackButton:[self _hasDeleteRequestInFlight] animated:NO];
-}
-
 - (void)_setSpecifier:(PSSpecifier *)specifier deleting:(BOOL)deleting bundleId:(NSString *)bundleId {
     if (deleting) {
         if (bundleId.length) [self.deletingBundleIDs addObject:bundleId];
@@ -352,8 +348,7 @@ static NSString * const kSGNAPNsPopulatedFooter = @"These apps were registered w
             if (!ok) {
                 [self _showDeletionErrorForBundleId:bidCopy message:message];
             } else {
-                if ([secCopy isEqualToString:kSGNSectionSkyglow]) {
-                } else if ([secCopy isEqualToString:kSGNSectionAPNs]) {
+                if ([secCopy isEqualToString:kSGNSectionAPNs]) {
                     [self _removeAPNsBundleFromCachedList:bidCopy];
                 }
                 [self _setSpecifier:specRet deleting:NO bundleId:bidCopy];

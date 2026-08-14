@@ -5,10 +5,10 @@
 #include <unistd.h>
 
 NSString * const SGDurableEventFormatVersionKey = @"formatVersion";
-NSString * const SGDurableEventIdentifierKey = @"eventID";
+static NSString * const SGDurableEventIdentifierKey = @"eventID";
 NSString * const SGDurableEventTypeKey = @"type";
 NSString * const SGDurableEventBundleIdentifierKey = @"bundleID";
-NSString * const SGDurableEventCreatedAtKey = @"createdAt";
+static NSString * const SGDurableEventCreatedAtKey = @"createdAt";
 NSString * const SGDurableEventFilePathKey = @"_eventFilePath";
 NSString * const SGDurableEventDeleteApp = @"delete_app";
 

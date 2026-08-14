@@ -74,15 +74,5 @@ static void SGReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkRea
     return (flags & kSCNetworkFlagsReachable) && !(flags & kSCNetworkFlagsConnectionRequired);
 }
 
-- (BOOL)isWWAN {
-#if TARGET_OS_IPHONE
-    SCNetworkReachabilityFlags flags = 0;
-    if (_reachabilityRef) SCNetworkReachabilityGetFlags(_reachabilityRef, &flags);
-    /* kSCNetworkReachabilityFlagsIsWWAN is never set on WiFi-only devices (e.g. iPod touch). */
-    return (flags & kSCNetworkReachabilityFlagsIsWWAN);
-#else
-    return NO;   /* macOS has no WWAN interface */
-#endif
-}
 
 @end

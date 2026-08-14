@@ -4,10 +4,8 @@
 #import <Foundation/Foundation.h>
 
 extern NSString * const SGDurableEventFormatVersionKey;
-extern NSString * const SGDurableEventIdentifierKey;
 extern NSString * const SGDurableEventTypeKey;
 extern NSString * const SGDurableEventBundleIdentifierKey;
-extern NSString * const SGDurableEventCreatedAtKey;
 extern NSString * const SGDurableEventFilePathKey;
 extern NSString * const SGDurableEventDeleteApp;
 

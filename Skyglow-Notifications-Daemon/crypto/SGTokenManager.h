@@ -9,10 +9,6 @@
 - (NSData *)synchronizedTokenForBundleIdentifier:(NSString *)bundleIdentifier 
                                            error:(NSError **)outError;
 
-/** Generates and stores a token locally */
-- (NSData *)generateTokenLocallyForBundleIdentifier:(NSString *)bundleIdentifier
-                                              error:(NSError **)outError;
-
 @end
 
 #endif

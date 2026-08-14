@@ -32,7 +32,6 @@ static inline BOOL SG_LooksLikePEMCertificate(NSString *pem) {
 #define SG_CONTROL_MAX_PAYLOAD                      4096
 #define SG_CONTROL_MAX_TOKEN_SIZE                   48
 #define SG_CONTROL_MAX_BUNDLE_ID_SIZE               256
-#define SG_CONTROL_MAX_REASON_SIZE                  64
 #define SG_CONTROL_MAX_USERINFO_SIZE                3072
 #define SG_CONTROL_MAX_ERROR_DETAIL_SIZE            256
 #define SG_CONTROL_MAX_EVENT_DATA_SIZE              1024
@@ -51,7 +50,6 @@ typedef enum : uint8_t {
     SGCMSG_SUBSCRIBE                = 0x17,
     SGCMSG_UNSUBSCRIBE              = 0x18,
     SGCMSG_REGISTER_INPUT_APP       = 0x19,
-    SGCMSG_UNREGISTER_INPUT_APP     = 0x1A,
     SGCMSG_ENABLE_APP               = 0x1B,
     SGCMSG_DISABLE_APP              = 0x1C,
     SGCMSG_DELETE_APP               = 0x1D,

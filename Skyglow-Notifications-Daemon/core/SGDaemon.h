@@ -21,7 +21,6 @@ typedef NS_ENUM(NSInteger, SGEvent) {
     SGEventAuthSuccess,
     SGEventAuthFailed,
     SGEventRegistrationRejected,
-    SGEventReplaced,
     SGEventDisconnected,
     SGEventVersionMismatch,
     SGEventBackoffTimerFired,
@@ -49,20 +48,11 @@ typedef NS_ENUM(NSInteger, SGEvent) {
 /** Starts the daemon's connection state machine */
 - (void)start;
 
-/** Signals the daemon that network reachability has changed. */
-- (void)systemNetworkReachabilityDidChangeWithWWANStatus:(BOOL)isWWAN;
-
-/** Signals the daemon that the network has dropped completely. */
-- (void)systemNetworkDidDrop;
-
 /** Triggers a reload of the configuration and forces a reconnection if needed. */
 - (void)handleConfigurationReloadRequest;
 
 /** Requests a graceful disconnection and loop termination. */
 - (BOOL)requestGracefulDisconnect;
-
-/** Called by the IOKit power notification callback */
-- (void)handleSystemWake;
 
 /** Atomically deletes a profile slot */
 - (BOOL)performDeleteProfileAtIndex:(NSInteger)profileIdx;

@@ -7,7 +7,6 @@ BOOL     SGN_BundleRegisteredWithNativePush(NSString *bundleId);
 /** True while a native deregister cascade for this bundle is in flight. */
 BOOL SGN_IsCascadeReEntry(NSString *bundleId);
 
-void SGN_DeregisterAppNatively(NSString *bundleId);
 void SGN_DeregisterAppNativelyWithCompletion(
     NSString *bundleId,
     void (^completion)(SGControlError error, NSString *detail));

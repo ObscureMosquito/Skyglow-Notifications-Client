@@ -53,11 +53,7 @@ typedef void (^SGControlConnectionHandler)(BOOL connected);
                  handler:(SGControlEventHandler)handler
               completion:(SGControlSubscribeCompletion)completion;
 
-- (void)unsubscribe:(uint64_t)subscriptionId;
-
 - (void)setConnectionHandler:(SGControlConnectionHandler)handler;
-
-- (BOOL)isConnected;
 
 @end
 

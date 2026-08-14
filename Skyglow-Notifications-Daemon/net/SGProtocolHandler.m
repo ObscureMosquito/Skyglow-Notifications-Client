@@ -45,7 +45,6 @@ static BOOL      _hasPendingNonce = NO;
 static uint64_t  _pingSeq = 0;
 static double    _pingPendingSince = 0.0;
 static int64_t   _pingPendingWallSince = 0;
-static double    _lastFrameReceivedAt = 0.0;
 static uint32_t  _lastRetryHint = 0;
 
 static void SGP_ClearPendingPing(void) {
@@ -399,7 +398,6 @@ uint64_t SGP_GetConnectionGeneration(void) { return atomic_load(&_connectionGene
 
 int SGP_GetSocketFD(void) { return _sock; }
 uint32_t SGP_GetLastDisconnectRetryAfter(void) { return _lastRetryHint; }
-double SGP_GetLastFrameReceivedAt(void) { return _lastFrameReceivedAt; }
 
 static BOOL SGP_SendPingIfIdle(void) {
     pthread_mutex_lock(&_pingLock);
@@ -458,7 +456,6 @@ void SGP_DisconnectFromServer(void) {
     SGP_ClearPendingRegistrationKeypairLocked();
     pthread_mutex_unlock(&_regKeyLock);
     SGP_ClearPendingPing();
-    _lastFrameReceivedAt = 0.0;
     _phase = SGPProtoPreHello;
     _v1HelloConsumed = NO;
     SGKAOffload_Reset();
@@ -476,7 +473,6 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     SGP_DisconnectFromServer();
     atomic_store(&_lastConnectOSError, 0);
     _lastRetryHint = 0;
-    _lastFrameReceivedAt = 0.0;
 
     struct sockaddr_storage peerAddress;
     memset(&peerAddress, 0, sizeof(peerAddress));
@@ -757,7 +753,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
 
     uint8_t hdr[8];
     if (SG_SSLReadExact(hdr, 8) != 0) return SGP_ERR_IO;
-    _lastFrameReceivedAt = SG_GetMonotonicSeconds();
 
     if (_phase == SGPProtoPreHello && !_v1HelloConsumed && hdr[0] != SGP_MAGIC) {
         uint32_t v1Len = SG_DecodeBE32(hdr);

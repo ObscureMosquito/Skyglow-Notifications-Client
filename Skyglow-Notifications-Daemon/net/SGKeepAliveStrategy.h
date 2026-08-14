@@ -21,13 +21,11 @@ typedef enum {
  * Actions given to the algorithm:
  *   Success — a keepalive was acknowledged (pong received)
  *   Failure — a keepalive timed out
- *   Probe   — the SteadyState re-probe timer fired
  *   Reset   — hard reset to the minimum interval
  */
 typedef enum {
     SGKeepAliveActionSuccess = 0,
     SGKeepAliveActionFailure = 1,
-    SGKeepAliveActionProbe   = 2,
     SGKeepAliveActionReset   = 3,
 } SGKeepAliveAction;
 
@@ -52,8 +50,5 @@ void SGKeepAlive_ProcessAction(SGKeepAliveAlgorithm *algo, SGKeepAliveAction act
 
 /** Current keep-alive interval in seconds. */
 double SGKeepAlive_GetCurrentInterval(SGKeepAliveAlgorithm *algo);
-
-/** Delay before the next SteadyState reprobe */
-double SGKeepAlive_SteadyStateReprobeDelay(SGKeepAliveAlgorithm *algo);
 
 #endif

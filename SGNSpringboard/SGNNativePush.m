@@ -71,10 +71,6 @@ void SGN_DeregisterAppNativelyWithCompletion(
         }];
 }
 
-void SGN_DeregisterAppNatively(NSString *bundleId) {
-    SGN_DeregisterAppNativelyWithCompletion(bundleId, nil);
-}
-
 #pragma mark - Token Registration
 
 void SGN_DeliverSuccess(NSString *bundleId, id application, id environment,

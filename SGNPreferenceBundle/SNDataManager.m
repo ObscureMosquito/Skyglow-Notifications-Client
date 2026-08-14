@@ -132,7 +132,6 @@ static inline NSString * SGDBPath(void) { return SGPath(SG_DB_PATH); }
 - (NSString *)serverAddress   { return [[self profile] objectForKey:@"server_address"]; }
 - (NSString *)deviceAddress   { return [[self profile] objectForKey:@"device_address"]; }
 - (NSString *)serverPubKeyPEM { return [[self profile] objectForKey:@"server_pub_key"]; }
-- (BOOL)isRegistered { return ([self serverAddress] != nil && [[self serverAddress] length] > 0); }
 
 static sqlite3 *openDBReadOnly(void) {
     sqlite3 *db = NULL;

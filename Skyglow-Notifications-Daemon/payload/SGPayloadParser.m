@@ -4,7 +4,7 @@
 #import <string.h>
 #import <zlib.h>
 
-NSDictionary *SG_PayloadParseBinaryData(const uint8_t *buffer, uint32_t length) {
+static NSDictionary *SG_PayloadParseBinaryData(const uint8_t *buffer, uint32_t length) {
     if (!buffer || length == 0) return @{};
 
     NSMutableDictionary *parsedData = [NSMutableDictionary dictionary];
@@ -43,7 +43,7 @@ NSDictionary *SG_PayloadParseBinaryData(const uint8_t *buffer, uint32_t length) 
 
 #pragma mark - Format sniffing
 
-SGPayloadFormat SG_PayloadSniffFormat(const uint8_t *buffer, uint32_t length) {
+static SGPayloadFormat SG_PayloadSniffFormat(const uint8_t *buffer, uint32_t length) {
     if (!buffer || length == 0) return SGPayloadFormatUnknown;
 
     if (length >= 8 && memcmp(buffer, "bplist0", 7) == 0) return SGPayloadFormatPlist;

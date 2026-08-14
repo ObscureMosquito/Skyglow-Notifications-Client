@@ -34,18 +34,12 @@ void SGLog_Write(SGLogLevel level, const char *tag, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
 
 void SGLog_SetMinLevel(SGLogLevel level);
-SGLogLevel SGLog_GetMinLevel(void);
 
 int  SGLog_OpenFile(const char *path, size_t rotateBytes);
 void SGLog_CloseFile(void);
 void SGLog_Flush(void);
 
 void SGLog_SetProcessName(const char *name);
-
-/* Runtime switches initialized from the compile-time defaults above. */
-void SGLog_SetFileEnabled(int enabled);
-void SGLog_SetConsoleEnabled(int enabled);
-void SGLog_SetTTYEnabled(int enabled);
 
 /* Console uses ASL on legacy systems and Foundation's unified-log path on
  * modern systems. TTY output is additionally guarded by isatty(stdout). */
@@ -56,10 +50,8 @@ void SGLog_SetTTYEnabled(int enabled);
 
 #if defined(DEBUG) && !defined(NDEBUG)
   #define SGLOGD(tag, fmt, ...) SGLog_Write(SGLogLevelDebug, #tag, fmt, ##__VA_ARGS__)
-  #define SGLOGT(tag, fmt, ...) SGLog_Write(SGLogLevelTrace, #tag, fmt, ##__VA_ARGS__)
 #else
   #define SGLOGD(tag, fmt, ...) ((void)0)
-  #define SGLOGT(tag, fmt, ...) ((void)0)
 #endif
 
 #ifdef __cplusplus

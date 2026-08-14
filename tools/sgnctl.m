@@ -1,5 +1,4 @@
 #import <Foundation/Foundation.h>
-#import "SGAvailability.h"
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
 #import "SGControlPayloadCodec.h"

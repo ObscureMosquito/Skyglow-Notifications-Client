@@ -425,29 +425,6 @@ static void *SGCRecvThreadEntry(void *arg) {
     });
 }
 
-- (void)unsubscribe:(uint64_t)subscriptionId {
-    if (_isServer) return;
-    SGCUnsubscribePayload payload;
-    memset(&payload, 0, sizeof(payload));
-    payload.subscriptionId = subscriptionId;
-    NSData *payloadData = [NSData dataWithBytes:&payload length:sizeof(payload)];
-
-    [self sendRequest:SGCMSG_UNSUBSCRIBE payload:payloadData timeout:kSGCDefaultTimeoutSec
-           completion:^(SGControlError err, const SGControlChannelMessage *response) {
-        dispatch_async(_stateQueue, ^{
-            [_eventHandlers removeObjectForKey:@(subscriptionId)];
-        });
-    }];
-}
-
-- (BOOL)isConnected {
-    __block BOOL c = NO;
-    dispatch_sync(_stateQueue, ^{
-        c = _isServer ? _started : (_connected && !_stopping);
-    });
-    return c;
-}
-
 - (void)_runReceiveLoop {
     const size_t bufSize = sizeof(SGControlChannelMessage) + SGC_RECV_TRAILER_BYTES;
 

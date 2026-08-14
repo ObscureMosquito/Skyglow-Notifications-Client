@@ -59,32 +59,10 @@ static void SNSendCommand(uint8_t messageType, NSData *payloadData, uint32_t tim
     }];
 }
 
-+ (void)postReloadConfig {
-    [DaemonClient() sendRequest:SGCMSG_RELOAD_CONFIG
-                        payload:nil
-                        timeout:0
-                     completion:nil];
-}
-
 + (void)restartDaemonWithCompletion:(SNChannelCommandCompletion)completion {
     SNSendCommand(SGCMSG_RESTART_DAEMON, nil, SG_CONTROL_DEFAULT_REQUEST_TIMEOUT_SEC,
                   @"The daemon could not be reached.",
                   @"The daemon rejected the restart request.", completion);
-}
-
-+ (void)postTestInject {
-    [DaemonClient() sendRequest:SGCMSG_TEST_INJECT
-                        payload:nil
-                        timeout:0
-                     completion:nil];
-}
-
-+ (void)postRegisterInputAppForBundleId:(NSString *)bundleId {
-    if (bundleId.length == 0) return;
-    [DaemonClient() sendRequest:SGCMSG_REGISTER_INPUT_APP
-                        payload:SNBundleIdPayloadData(bundleId)
-                        timeout:0
-                     completion:nil];
 }
 
 + (void)registerInputAppForBundleId:(NSString *)bundleId

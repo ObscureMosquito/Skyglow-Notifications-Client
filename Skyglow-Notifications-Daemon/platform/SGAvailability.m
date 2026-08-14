@@ -65,8 +65,7 @@ static const SGCapabilityEntry kCapabilityTable[SGCapabilityCount] = {
     [SGCapabilityGrowthAlgorithm]  = { "PCMultiStageGrowthAlgorithm", SGPlatformMaskIOS,                         6.0, 6.99 },
     [SGCapabilityPowerAssertion]   = { NULL,                          SGPlatformMaskIOS | SGPlatformMaskMacOS,    2.0, 0.0  },
     [SGCapabilityScheduledWake]    = { NULL,                          SGPlatformMaskIOS | SGPlatformMaskMacOS,    2.0, 5.99 },
-    [SGCapabilityKeepAliveOffload] = { NULL,                          SGPlatformMaskIOS,                        99.0, 0.0  },
-    [SGCapabilityUnifiedLogging]   = { NULL,                          SGPlatformMaskIOS | SGPlatformMaskMacOS,  10.0, 0.0  },
+    [SGCapabilityKeepAliveOffload] = { NULL,                          SGPlatformMaskIOS,                        99.0, 0.0  },  /* 99.0 = off until the offload path ships */
 };
 
 @interface NSObject (PCPrivateTimerAPI)
@@ -309,10 +308,6 @@ static void SGPowerEventCallback(void *refcon, io_service_t service,
 
 #pragma mark - Capability Queries
 
-- (double)systemVersion {
-    return _systemVersion;
-}
-
 - (BOOL)isCapabilityAvailable:(SGCapability)cap {
     if (cap < 0 || cap >= SGCapabilityCount) return NO;
     return _capabilityClasses[cap] != Nil;
@@ -322,24 +317,12 @@ static void SGPowerEventCallback(void *refcon, io_service_t service,
     return [self isCapabilityAvailable:SGCapabilityPersistentTimer];
 }
 
-- (BOOL)growthAlgorithmAvailable {
-    return [self isCapabilityAvailable:SGCapabilityGrowthAlgorithm];
-}
-
-- (BOOL)powerAssertionAvailable {
-    return [self isCapabilityAvailable:SGCapabilityPowerAssertion];
-}
-
 - (BOOL)scheduledWakeAvailable {
     return [self isCapabilityAvailable:SGCapabilityScheduledWake];
 }
 
 - (BOOL)keepAliveOffloadAvailable {
     return [self isCapabilityAvailable:SGCapabilityKeepAliveOffload];
-}
-
-- (BOOL)unifiedLoggingAvailable {
-    return [self isCapabilityAvailable:SGCapabilityUnifiedLogging];
 }
 
 - (SGKeepAliveOffloadBackend)keepAliveOffloadBackend {
@@ -537,16 +520,3 @@ static void SGPowerEventCallback(void *refcon, io_service_t service,
 
 @end
 
-BOOL SGAvailability_HasUnifiedLogging(void) {
-    static dispatch_once_t once;
-    static BOOL result = NO;
-    dispatch_once(&once, ^{
-        double ver = SGSystemVersionRead();
-#if TARGET_OS_IPHONE
-        result = (ver >= 10.0);
-#else
-        result = (ver >= 10.12);
-#endif
-    });
-    return result;
-}

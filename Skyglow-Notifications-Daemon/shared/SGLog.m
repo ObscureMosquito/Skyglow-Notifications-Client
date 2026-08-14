@@ -105,22 +105,6 @@ void SGLog_SetMinLevel(SGLogLevel level) {
     _minLevel = level;
 }
 
-SGLogLevel SGLog_GetMinLevel(void) {
-    return _minLevel;
-}
-
-void SGLog_SetFileEnabled(int enabled) {
-    _fileEnabled = enabled ? 1 : 0;
-}
-
-void SGLog_SetConsoleEnabled(int enabled) {
-    _consoleEnabled = enabled ? 1 : 0;
-}
-
-void SGLog_SetTTYEnabled(int enabled) {
-    _ttyEnabled = enabled ? 1 : 0;
-}
-
 void SGLog_SetProcessName(const char *name) {
     pthread_mutex_lock(&_logLock);
     if (name && name[0] != '\0') {
@@ -246,10 +230,7 @@ void SGLog_Write(SGLogLevel level, const char *tag, const char *fmt, ...) {
     pthread_mutex_unlock(&_logLock);
 
     if (consoleEnabled && consoleBackend == SGLogConsoleBackendASL) {
-        int aslLevel = _aslLevels[level];
-        if (aslLevel >= 0) {
-            asl_log(aslSnapshot, NULL, aslLevel, "[%s] %s", safeTag, body);
-        }
+        asl_log(aslSnapshot, NULL, _aslLevels[level], "[%s] %s", safeTag, body);
     } else if (consoleEnabled && consoleBackend == SGLogConsoleBackendNSLog) {
         NSLog(@"[%c] [%s] %s", levelChar, safeTag, body);
     }

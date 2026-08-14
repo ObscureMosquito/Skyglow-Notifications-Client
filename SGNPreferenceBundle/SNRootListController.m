@@ -3,7 +3,6 @@
 #import <Preferences/PSSpecifier.h>
 #import "SNRootListController.h"
 #import "SNPaneHeader.h"
-#import "SNServerInfoViewController.h"
 #import "SNDebugViewController.h"
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
@@ -86,10 +85,6 @@
     SNDebugViewController *vc = [[SNDebugViewController alloc] init];
     [self.navigationController pushViewController:vc animated:YES];
     [vc release];
-}
-
-- (NSString *)getServerAddressFromPreferences {
-    return [[SNDataManager shared] serverAddressInput];
 }
 
 @end

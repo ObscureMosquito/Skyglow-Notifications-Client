@@ -138,21 +138,11 @@ static void test_reset_action(void) {
     CHECK(a.stage == SGKeepAliveStageSteadyState, "reset not steady: %d", a.stage);
 }
 
-static void test_reprobe_delay(void) {
-    SGKeepAliveAlgorithm a;
-    SGKeepAlive_Initialize(&a, true, INITIAL);
-    CHECK(SGKeepAlive_SteadyStateReprobeDelay(&a) == 21600.0, "reprobe @900: %f",
-          SGKeepAlive_SteadyStateReprobeDelay(&a));
-    SGKeepAlive_Initialize(&a, true, 0.0);
-    CHECK(SGKeepAlive_SteadyStateReprobeDelay(&a) == 0.0, "reprobe when not steady should be 0");
-}
-
 static void test_null_safety(void) {
     SGKeepAlive_Initialize(NULL, true, 0.0);
     SGKeepAlive_ProcessAction(NULL, SGKeepAliveActionSuccess);
     SGKeepAlive_ProcessHeartbeatResult(NULL, true);
     CHECK(SGKeepAlive_GetCurrentInterval(NULL) == INITIAL, "NULL default");
-    CHECK(SGKeepAlive_SteadyStateReprobeDelay(NULL) == 0.0, "NULL reprobe");
 }
 
 int main(void) {
@@ -165,7 +155,6 @@ int main(void) {
     test_initial_failure_enters_refined_growth();
     test_refined_growth_climbs_by_120();
     test_reset_action();
-    test_reprobe_delay();
     test_null_safety();
 
     if (failures == 0) { printf("OK - all keepalive strategy tests passed\n"); return 0; }

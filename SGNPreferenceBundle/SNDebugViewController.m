@@ -276,15 +276,8 @@ typedef enum {
                 [self.tableView reloadData];
             }];
             _manualBundleIDParams.text = @"";
-
-        } else if (indexPath.row == 2) {
-
-            [SNChannelGateway postTestInject];
-
-            [self showAlert:@"Test Triggered"
-                    message:@"Test-inject request sent to the daemon."];
         }
-        
+
     } else if (indexPath.section == SectionSavedTokens && _savedApps.count > 0) {
         NSDictionary *app = _savedApps[indexPath.row];
         NSString *hex = [[SNDataManager shared] hexStringFromData:app[@"token"]];

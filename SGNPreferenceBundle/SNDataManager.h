@@ -25,7 +25,6 @@ typedef enum {
 - (NSString *)serverAddress;
 - (NSString *)deviceAddress;
 - (NSString *)serverPubKeyPEM;
-- (BOOL)isRegistered;
 - (NSInteger)activeProfileIndex;
 - (NSString *)profilePathForIndex:(NSInteger)index;
 - (NSDictionary *)profileForIndex:(NSInteger)index;

@@ -31,12 +31,6 @@
     }
 }
 
-- (NSData *)generateTokenLocallyForBundleIdentifier:(NSString *)bundleIdentifier error:(NSError **)outError {
-    @synchronized([SGTokenManager class]) {
-        return [self _generateTokenLocallyForBundleIdentifier:bundleIdentifier error:outError];
-    }
-}
-
 - (NSData *)_generateTokenLocallyForBundleIdentifier:(NSString *)bundleIdentifier error:(NSError **)outError {
     if (outError) *outError = nil;
     NSString *serverAddr = [[SGConfiguration sharedConfiguration] serverAddress];

@@ -6,19 +6,10 @@ typedef void (^SNChannelBundleListCompletion)(BOOL ok, NSArray *bundleIds, NSStr
 
 @interface SNChannelGateway : NSObject
 
-/** Tells the daemon to re-read its configuration plist. */
-+ (void)postReloadConfig;
-
 /** Asks the daemon to acknowledge and then shut down cleanly. */
 + (void)restartDaemonWithCompletion:(SNChannelCommandCompletion)completion;
 
-/** Pretty obvious what this does */
-+ (void)postTestInject;
-
-/** Asks the appropiate manager to attempt toregister the given bundle id */
-+ (void)postRegisterInputAppForBundleId:(NSString *)bundleId;
-
-/** Same as postRegisterInputAppForBundleId: but waits for the manager to acknowledge. */
+/** Asks SpringBoard to register the given bundle id and waits for its ack. */
 + (void)registerInputAppForBundleId:(NSString *)bundleId
                          completion:(SNChannelCommandCompletion)completion;
 

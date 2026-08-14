@@ -46,6 +46,9 @@ static BOOL isValidPort(NSString *port) {
 @interface SGDaemon ()
 - (SGControlError)_deliverPushTopic:(NSString *)topic
                            payload:(NSDictionary *)payload;
+- (void)systemNetworkReachabilityDidChangeWithWWANStatus:(BOOL)isWWAN;
+- (void)systemNetworkDidDrop;
+- (void)handleSystemWake;
 @end
 
 @implementation SGDaemon {

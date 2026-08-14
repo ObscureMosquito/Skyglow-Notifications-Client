@@ -206,22 +206,6 @@ static sqlite3_int64 SGActiveProfileID(void) {
     return results;
 }
 
-- (BOOL)removeTokenForBundleIdentifier:(NSString *)bundleID {
-    __block BOOL ok = NO;
-    dispatch_sync(_databaseQueue, ^{
-        sqlite3_int64 profileID = SGActiveProfileID();
-        const char *sql = "DELETE FROM notifications WHERE profile_id = ? AND bundle_id = ?";
-        sqlite3_stmt *stmt;
-        if (sqlite3_prepare_v2(_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, profileID);
-            sqlite3_bind_text(stmt, 2, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
-            ok = (sqlite3_step(stmt) == SQLITE_DONE);
-            sqlite3_finalize(stmt);
-        }
-    });
-    return ok;
-}
-
 - (BOOL)removeAllStateForBundleIdentifier:(NSString *)bundleID {
     if (![bundleID length]) return NO;
     __block BOOL ok = NO;
@@ -710,24 +694,6 @@ static sqlite3_int64 SGActiveProfileID(void) {
         if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
             sqlite3_bind_int64(stmt, 1, profileID);
             sqlite3_bind_blob(stmt, 2, [msgID bytes], (int)[msgID length], SQLITE_TRANSIENT);
-            ok = (sqlite3_step(stmt) == SQLITE_DONE);
-            sqlite3_finalize(stmt);
-        }
-    });
-    return ok;
-}
-
-- (BOOL)removeLocalPendingDeliveriesForBundleIdentifier:(NSString *)bundleID {
-    if (!bundleID || [bundleID length] == 0) return NO;
-    __block BOOL ok = NO;
-    dispatch_sync(_databaseQueue, ^{
-        sqlite3_int64 profileID = SGActiveProfileID();
-        const char *sql = "DELETE FROM local_pending_deliveries "
-                          "WHERE profile_id = ? AND bundle_id = ?";
-        sqlite3_stmt *stmt;
-        if (sqlite3_prepare_v2(self->_database, sql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, profileID);
-            sqlite3_bind_text(stmt, 2, [bundleID UTF8String], -1, SQLITE_TRANSIENT);
             ok = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
         }
