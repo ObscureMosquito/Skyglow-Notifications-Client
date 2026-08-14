@@ -1,5 +1,6 @@
 #include "SGConnectionPolicy.h"
 #include <stddef.h>
+#include <errno.h>
 
 typedef struct {
     SGState from;
@@ -53,6 +54,11 @@ static const SGTransition kLegalTransitions[] = {
     { SGStateErrorBadConfig,     SGStateResolvingDNS         },
     { SGStateErrorVersionMismatch, SGStateResolvingDNS       },
     { SGStateDisabled,           SGStateResolvingDNS         },
+    { SGStateDisabled,           SGStateIdleNoNetwork        },
+    { SGStateIdleUnregistered,   SGStateIdleNoNetwork        },
+    { SGStateErrorAuth,          SGStateIdleNoNetwork        },
+    { SGStateErrorBadConfig,     SGStateIdleNoNetwork        },
+    { SGStateErrorVersionMismatch, SGStateIdleNoNetwork      },
 };
 
 bool SGConnectionTransitionIsLegal(SGState from, SGState to) {
@@ -91,11 +97,11 @@ bool SGConnectionStateNeedsActiveServices(SGState state) {
 SGState SGConnectionStateForConfiguration(bool enabled,
                                           bool hasProfile,
                                           bool valid,
-                                          SGState currentState) {
+                                          bool pathViable) {
     if (!enabled) return SGStateDisabled;
     if (!hasProfile) return SGStateIdleUnregistered;
     if (!valid) return SGStateErrorBadConfig;
-    if (currentState == SGStateIdleNoNetwork) return SGStateIdleNoNetwork;
+    if (!pathViable) return SGStateIdleNoNetwork;
     return SGStateResolvingDNS;
 }
 
@@ -126,4 +132,44 @@ uint32_t SGConnectionRetryDelay(unsigned int consecutiveFailures,
             ? SG_MAX_BACKOFF_SECONDS : serverRetryHint;
     }
     return delay;
+}
+
+SGFailureClass SGFailureClassForOSError(int osError) {
+    switch (osError) {
+        case ENETDOWN:
+        case ENETUNREACH:
+        case EHOSTUNREACH:
+        case EHOSTDOWN:
+        case EADDRNOTAVAIL:
+            return SGFailureClassPath;
+        default:
+            return SGFailureClassTransport;
+    }
+}
+
+SGConnectionRecovery SGConnectionRecoveryForFailure(SGFailureClass failureClass,
+                                                    unsigned int consecutiveFailures,
+                                                    bool pathViable,
+                                                    uint32_t jitterSeconds,
+                                                    uint32_t serverRetryHint) {
+    SGConnectionRecovery recovery;
+
+    if (failureClass == SGFailureClassPath || !pathViable) {
+        recovery.state           = SGStateIdleNoNetwork;
+        recovery.delaySeconds    = 0;
+        recovery.countsAsFailure = false;
+        return recovery;
+    }
+
+    if (consecutiveFailures >= SG_CIRCUIT_TRIP_FAILURES) {
+        recovery.state           = SGStateIdleCircuitOpen;
+        recovery.delaySeconds    = SG_CIRCUIT_FLOOR_SECONDS;
+        recovery.countsAsFailure = true;
+        return recovery;
+    }
+
+    recovery.state           = SGStateBackingOff;
+    recovery.delaySeconds    = SGConnectionRetryDelay(consecutiveFailures, jitterSeconds, serverRetryHint);
+    recovery.countsAsFailure = true;
+    return recovery;
 }

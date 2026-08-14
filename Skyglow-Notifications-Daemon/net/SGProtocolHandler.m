@@ -492,10 +492,17 @@ void SGP_DisconnectFromServer(void) {
     SGKAOffload_Reset();
 }
 
+static _Atomic int _lastConnectOSError = 0;
+
+int SGP_GetLastConnectOSError(void) {
+    return atomic_load(&_lastConnectOSError);
+}
+
 int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     signal(SIGPIPE, SIG_IGN);
     atomic_fetch_add(&_connectionGeneration, 1);
     SGP_DisconnectFromServer();
+    atomic_store(&_lastConnectOSError, 0);
     _lastRetryHint = 0;
     _lastFrameReceivedAt = 0.0;
 
@@ -538,7 +545,11 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
     }
 
     _sock = socket(addressFamily, SOCK_STREAM, 0);
-    if (_sock < 0) { SGP_DisconnectFromServer(); return -1; }
+    if (_sock < 0) {
+        atomic_store(&_lastConnectOSError, errno);
+        SGP_DisconnectFromServer();
+        return -1;
+    }
 
     int yes = 1;
     setsockopt(_sock, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
@@ -548,6 +559,7 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
 
     int connectResult = connect(_sock, (struct sockaddr *)&peerAddress, peerAddressLength);
     if (connectResult < 0 && errno != EINPROGRESS) {
+        atomic_store(&_lastConnectOSError, errno);
         SGP_DisconnectFromServer();
         return -2;
     }
@@ -557,11 +569,19 @@ int SGP_ConnectToServer(const char *ip, int port, NSString *pinnedCert) {
         fd_set wfds; FD_ZERO(&wfds); FD_SET(_sock, &wfds);
         struct timeval tv = {SGP_NET_OP_TIMEOUT_SEC, 0};
         int sel = select(_sock + 1, NULL, &wfds, NULL, &tv);
-        if (sel <= 0) { SGP_DisconnectFromServer(); return -3; }
+        if (sel <= 0) {
+            atomic_store(&_lastConnectOSError, (sel == 0) ? ETIMEDOUT : errno);
+            SGP_DisconnectFromServer();
+            return -3;
+        }
 
         int sockErr = 0; socklen_t errLen = sizeof(sockErr);
         getsockopt(_sock, SOL_SOCKET, SO_ERROR, &sockErr, &errLen);
-        if (sockErr != 0) { SGP_DisconnectFromServer(); return -4; }
+        if (sockErr != 0) {
+            atomic_store(&_lastConnectOSError, sockErr);
+            SGP_DisconnectFromServer();
+            return -4;
+        }
     }
 
     fcntl(_sock, F_SETFL, flags);

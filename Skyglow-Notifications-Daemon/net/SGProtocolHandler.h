@@ -137,6 +137,9 @@ const char *SGP_ErrorName(int code);
 /** Returns a stable symbolic name for SGP_ConnectToServer setup failures */
 const char *SGP_ConnectErrorName(int code);
 
+/** errno-domain detail from the most recent SGP_ConnectToServer attempt. */
+int SGP_GetLastConnectOSError(void);
+
 /** Sends or persists an acknowledgement for a received notification */
 void SGP_EnqueueAcknowledgement(NSData *msgID, int status);
 

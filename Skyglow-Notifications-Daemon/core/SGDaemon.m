@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <stdatomic.h>
 #include <libkern/OSAtomic.h>
+#include <errno.h>
 
 static const int64_t kSGGracefulDisconnectTimeoutSec = 2;
 
@@ -155,6 +156,7 @@ static BOOL isValidPort(NSString *port) {
 }
 
 - (void)start {
+    [self _startReachabilityMonitor];
     [self reconcileTokensWithPlist];
     [self handleEvent:SGEventStartRequested payload:nil];
 }
@@ -176,7 +178,6 @@ static BOOL isValidPort(NSString *port) {
     [_stateLock unlock];
 
     [_notificationProcessor kickPendingDeliveryDrain];
-    [self _startReachabilityMonitor];
     __unsafe_unretained SGDaemon *daemonSelf = self;
     [[SGAvailability shared]
         startPowerEventMonitoringWithWakeHandler:^{
@@ -198,7 +199,6 @@ static BOOL isValidPort(NSString *port) {
     [self _invalidateKeepAliveTimer];
     [[SGAvailability shared] cancelPendingScheduledWake];
     [_notificationProcessor suspendPendingDeliveryRetries];
-    [self _stopReachabilityMonitor];
     [[SGAvailability shared] stopPowerEventMonitoring];
 }
 
@@ -215,11 +215,8 @@ static BOOL isValidPort(NSString *port) {
     [_reachability startMonitoringSystemNetworkChanges];
 }
 
-- (void)_stopReachabilityMonitor {
-    if (!_reachability) return;
-    [_reachability stopMonitoringSystemNetworkChanges];
-    [_reachability release];
-    _reachability = nil;
+- (bool)_isNetworkPathViable {
+    return _reachability ? [_reachability isReachable] : true;
 }
 
 - (void)reconcileTokensWithPlist {
@@ -305,7 +302,8 @@ static BOOL isValidPort(NSString *port) {
     if (event == SGEventStartRequested || event == SGEventConfigReloaded) {
         SGConfiguration *config = [SGConfiguration sharedConfiguration];
         SGState target = SGConnectionStateForConfiguration(
-            [config isEnabled], [config hasProfile], [config isValid], currentState);
+            [config isEnabled], [config hasProfile], [config isValid],
+            [self _isNetworkPathViable]);
 
         _consecutiveFailures = 0;
         switch (target) {
@@ -317,6 +315,9 @@ static BOOL isValidPort(NSString *port) {
                 break;
             case SGStateErrorBadConfig:
                 strlcpy(_lastErrorDetail, "Missing server address or certificate", sizeof(_lastErrorDetail));
+                break;
+            case SGStateIdleNoNetwork:
+                strlcpy(_lastErrorDetail, "No network connection available", sizeof(_lastErrorDetail));
                 break;
             default:
                 _lastErrorDetail[0] = '\0';
@@ -363,7 +364,8 @@ static BOOL isValidPort(NSString *port) {
             break;
 
         case SGStateIdleNoNetwork:
-            if (event == SGEventNetworkUp) {
+            if (event == SGEventNetworkUp || event == SGEventSystemDidWake) {
+                _consecutiveFailures = 0;
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             }
             break;
@@ -376,7 +378,7 @@ static BOOL isValidPort(NSString *port) {
                 [self executeTransitionToState:SGStateConnecting backoff:0 ip:[txt[@"tcp_addr"] UTF8String]];
             } else if (event == SGEventDNSFailed) {
                 strlcpy(_lastErrorDetail, "DNS resolution failed", sizeof(_lastErrorDetail));
-                [self executeFailureBackoff];
+                [self executeFailureRecovery:SGFailureClassDNS];
             }
             break;
 
@@ -395,14 +397,17 @@ static BOOL isValidPort(NSString *port) {
                 [self executeTransitionToState:SGStateAuthenticating backoff:0 ip:NULL];
             } else if (event == SGEventConnectFailed || event == SGEventDisconnected) {
                 strlcpy(_lastErrorDetail, "Connection to server failed", sizeof(_lastErrorDetail));
-                [self executeFailureBackoff];
+                SGFailureClass cls = [payload isKindOfClass:[NSNumber class]]
+                    ? (SGFailureClass)[(NSNumber *)payload intValue]
+                    : SGFailureClassTransport;
+                [self executeFailureRecovery:cls];
             }
             break;
 
         case SGStateRegistering:
             if (event == SGEventAuthFailed) {
                 strlcpy(_lastErrorDetail, "Registration succeeded but key could not be stored", sizeof(_lastErrorDetail));
-                [self executeFailureBackoff];
+                [self executeFailureRecovery:SGFailureClassTransport];
             } else if (event == SGEventRegistrationRejected) {
                 NSDictionary *info = [payload isKindOfClass:[NSDictionary class]] ? (NSDictionary *)payload : nil;
                 NSString *reason = [info objectForKey:@"reason"];
@@ -413,11 +418,11 @@ static BOOL isValidPort(NSString *port) {
                 if (code == 0x05) {
                     [self executeTransitionToState:SGStateErrorAuth backoff:0 ip:NULL];
                 } else {
-                    [self executeFailureBackoff];
+                    [self executeFailureRecovery:SGFailureClassTransport];
                 }
             } else if (event == SGEventDisconnected) {
                 strlcpy(_lastErrorDetail, "Disconnected during registration", sizeof(_lastErrorDetail));
-                [self executeFailureBackoff];
+                [self executeFailureRecovery:SGFailureClassTransport];
             }
             break;
 
@@ -431,17 +436,17 @@ static BOOL isValidPort(NSString *port) {
                 [self executeTransitionToState:SGStateErrorAuth backoff:0 ip:NULL];
             } else if (event == SGEventAuthTimeout) {
                 strlcpy(_lastErrorDetail, "Authentication timed out (30s)", sizeof(_lastErrorDetail));
-                [self executeFailureBackoff];
+                [self executeFailureRecovery:SGFailureClassTransport];
             } else if (event == SGEventDisconnected) {
                 strlcpy(_lastErrorDetail, "Disconnected during authentication", sizeof(_lastErrorDetail));
-                [self executeFailureBackoff];
+                [self executeFailureRecovery:SGFailureClassTransport];
             }
             break;
 
         case SGStateConnected:
             if (event == SGEventDisconnected) {
                 strlcpy(_lastErrorDetail, "Connection lost", sizeof(_lastErrorDetail));
-                [self executeFailureBackoff];
+                [self executeFailureRecovery:SGFailureClassTransport];
             } else if (event == SGEventAuthFailed) {
 
                 strlcpy(_lastErrorDetail, "Server revoked authentication, re-register to recover", sizeof(_lastErrorDetail));
@@ -464,6 +469,8 @@ static BOOL isValidPort(NSString *port) {
             } else if (event == SGEventSystemDidWake) {
                 SGLOGI(SGDaemon, "code=%s state=IdleCircuitOpen action=reset_failures", SGND_WAKE_CIRCUIT_RESET);
                 _consecutiveFailures = 0;
+                [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
+            } else if (event == SGEventBackoffTimerFired) {
                 [self executeTransitionToState:SGStateResolvingDNS backoff:0 ip:NULL];
             }
             break;
@@ -563,10 +570,19 @@ static BOOL isValidPort(NSString *port) {
                 break;
             case SGStateBackingOff:
                 SGP_AbortConnection();
-                [self scheduleTimerForEvent:SGEventBackoffTimerFired delay:backoff generation:capturedGen];
+                [self scheduleTimerForEvent:SGEventBackoffTimerFired
+                                      delay:backoff
+                              leewayPercent:SG_RETRY_LEEWAY_PERCENT
+                                 generation:capturedGen];
                 break;
             case SGStateIdleCircuitOpen:
                 SGP_AbortConnection();
+                if (backoff > 0) {
+                    [self scheduleTimerForEvent:SGEventBackoffTimerFired
+                                          delay:backoff
+                                  leewayPercent:SG_CIRCUIT_LEEWAY_PERCENT
+                                     generation:capturedGen];
+                }
                 break;
             case SGStateDisabled:
             case SGStateIdleUnregistered:
@@ -594,31 +610,42 @@ static BOOL isValidPort(NSString *port) {
         if (kSGStateDeadlines[i].state == state) {
             [self scheduleTimerForEvent:kSGStateDeadlines[i].onTimeout
                                   delay:kSGStateDeadlines[i].seconds
+                          leewayPercent:0
                              generation:generation];
             return;
         }
     }
 }
 
-- (void)executeFailureBackoff {
-    _consecutiveFailures++;
-
+- (void)executeFailureRecovery:(SGFailureClass)failureClass {
     uint32_t jitter = arc4random_uniform(SG_MAX_JITTER_SECONDS + 1);
     uint32_t serverHint = SGP_GetLastDisconnectRetryAfter();
-    uint32_t finalDelay = SGConnectionRetryDelay(
-        (unsigned int)_consecutiveFailures, jitter, serverHint);
+    SGConnectionRecovery recovery = SGConnectionRecoveryForFailure(
+        failureClass, (unsigned int)_consecutiveFailures + 1,
+        [self _isNetworkPathViable], jitter, serverHint);
+    if (recovery.countsAsFailure) _consecutiveFailures++;
 
-    if (serverHint > finalDelay) {
-        SGLOGW(SGDaemon, "code=%s retry_after=%u capped=%u action=cap_for_liveness",
-               SGND_BACKOFF_RETRY_AFTER, serverHint, finalDelay);
-    } else if (serverHint > 0) {
-        SGLOGI(SGDaemon, "code=%s retry_after=%u action=honor",
-               SGND_BACKOFF_RETRY_AFTER, serverHint);
+    if (recovery.state == SGStateIdleNoNetwork) {
+        strlcpy(_lastErrorDetail, "No network connection available", sizeof(_lastErrorDetail));
+        [self executeTransitionToState:SGStateIdleNoNetwork backoff:0 ip:NULL];
+        return;
     }
 
-    SGLOGI(SGDaemon, "code=%s delay=%u failure=%d action=retry_forever",
-           SGND_BACKOFF_SCHEDULED, finalDelay, _consecutiveFailures);
-    [self executeTransitionToState:SGStateBackingOff backoff:finalDelay ip:NULL];
+    if (recovery.state == SGStateBackingOff) {
+        if (serverHint > recovery.delaySeconds) {
+            SGLOGW(SGDaemon, "code=%s retry_after=%u capped=%u action=cap_for_liveness",
+                   SGND_BACKOFF_RETRY_AFTER, serverHint, recovery.delaySeconds);
+        } else if (serverHint > 0) {
+            SGLOGI(SGDaemon, "code=%s retry_after=%u action=honor",
+                   SGND_BACKOFF_RETRY_AFTER, serverHint);
+        }
+        SGLOGI(SGDaemon, "code=%s delay=%u failure=%d action=retry",
+               SGND_BACKOFF_SCHEDULED, recovery.delaySeconds, _consecutiveFailures);
+    } else {
+        SGLOGW(SGDaemon, "code=%s failure=%d floor=%u action=wait_for_signal_or_floor",
+               SGND_CIRCUIT_TRIPPED, _consecutiveFailures, recovery.delaySeconds);
+    }
+    [self executeTransitionToState:recovery.state backoff:recovery.delaySeconds ip:NULL];
 }
 
 - (void)protocolDidReceiveWelcomeChallenge {
@@ -742,9 +769,6 @@ static BOOL isValidPort(NSString *port) {
         return;
     }
 
-    /* The on-disk copy went away with the commit; zero the protocol handler's
-     * heap copy too rather than leaving the private key resident until the next
-     * connection attempt overwrites it. */
     SGP_SetRegistrationIdentity(nil);
 
     [[SGConfiguration sharedConfiguration] reloadFromDisk];
@@ -869,8 +893,6 @@ static BOOL isValidPort(NSString *port) {
     }];
     if (!persisted) return NO;
 
-    /* Same reload path RELOAD_CONFIG uses: re-read config and drive the FSM so
-     * the enable/disable takes effect immediately (connect or tear down). */
     [self handleConfigurationReloadRequest];
     return YES;
 }
@@ -957,8 +979,7 @@ static BOOL isValidPort(NSString *port) {
     if (wasActive) {
         [configuration reloadFromDisk];
         [_notificationProcessor resetInMemoryDeduplication];
-        /* Success selects IdleUnregistered; compensated failure reconnects the
-         * restored profile and resumes the runtime that was quiesced above. */
+
         [self handleEvent:SGEventConfigReloaded payload:nil];
     }
 
@@ -1181,8 +1202,6 @@ static BOOL isValidPort(NSString *port) {
     uint32_t gen = _fsmGeneration;
     [_stateLock unlock];
 
-    /* The ResolvingDNS watchdog is armed centrally from the deadline table in
-     * executeTransitionToState; this method only performs the lookup. */
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSDictionary *txt = [SGServerLocator resolveEndpointForServerAddress:address];
 
@@ -1272,7 +1291,9 @@ static BOOL isValidPort(NSString *port) {
                 }
                 [SGServerLocator refreshDNSCacheAsynchronouslyForAddress:serverAddr];
 
-                [self handleEvent:SGEventConnectFailed payload:nil];
+                SGFailureClass cls = SGFailureClassForOSError(SGP_GetLastConnectOSError());
+                [self handleEvent:SGEventConnectFailed
+                          payload:[NSNumber numberWithInt:(int)cls]];
             }
             [ipCopy release];
         }
@@ -1336,18 +1357,32 @@ static BOOL isValidPort(NSString *port) {
     });
 }
 
-- (void)scheduleTimerForEvent:(SGEvent)event delay:(uint32_t)seconds generation:(uint32_t)generation {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, seconds * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+- (void)scheduleTimerForEvent:(SGEvent)event
+                        delay:(uint32_t)seconds
+                leewayPercent:(uint32_t)leewayPercent
+                   generation:(uint32_t)generation {
+    dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+    if (!timer) return;
+
+    uint64_t leewayNsec = (uint64_t)seconds * NSEC_PER_SEC / 100 * leewayPercent;
+    dispatch_source_set_timer(timer,
+                              dispatch_walltime(NULL, (int64_t)seconds * (int64_t)NSEC_PER_SEC),
+                              DISPATCH_TIME_FOREVER, leewayNsec);
+    dispatch_source_set_event_handler(timer, ^{
+        dispatch_source_cancel(timer);
+        dispatch_release(timer);
         [self->_stateLock lock];
         BOOL isStale = (self->_fsmGeneration != generation);
         [self->_stateLock unlock];
-        
+
         if (isStale) {
             SGLOGD(SGDaemon, "code=%s generation=%u event=%ld action=discard", SGND_FSM_TIMER_STALE, generation, (long)event);
             return;
         }
         [self handleEvent:event payload:nil];
     });
+    dispatch_resume(timer);
 }
 
 @end

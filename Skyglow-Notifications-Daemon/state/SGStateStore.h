@@ -13,28 +13,19 @@
 - (BOOL)commitRegistrationForProfileAtIndex:(NSInteger)profileIdx
                               deviceAddress:(NSString *)deviceAddress
                               privateKeyPEM:(NSData *)privateKeyPEM;
-
 - (BOOL)wipeProfileCredentialsAtIndex:(NSInteger)profileIdx;
-
 - (BOOL)saveProfileAtIndex:(NSInteger)profileIdx
              serverAddress:(NSString *)serverAddress
             certificatePEM:(NSString *)certificatePEM
     invalidatedCredentials:(BOOL *)outInvalidatedCredentials;
-
 - (BOOL)setRegistrationIdentityAtIndex:(NSInteger)profileIdx
                            identityPEM:(NSString *)identityPEM;
-
 - (BOOL)setLastRegistrationFailureCode:(uint8_t)code atIndex:(NSInteger)profileIdx;
-
 - (BOOL)removeProfileAtIndex:(NSInteger)profileIdx;
-
 - (BOOL)performSetAppEnabled:(BOOL)enabled
          forBundleIdentifier:(NSString *)bundleID;
-
 - (BOOL)performClearAppIntentForBundleIdentifier:(NSString *)bundleID;
-
 - (BOOL)performDeleteAppStateForBundleIdentifier:(NSString *)bundleID;
-
 - (void)drainDurableEventInbox;
 
 @end
