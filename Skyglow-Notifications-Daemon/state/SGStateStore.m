@@ -105,7 +105,7 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
 
 - (BOOL)commitRegistrationForProfileAtIndex:(NSInteger)profileIdx
                               deviceAddress:(NSString *)deviceAddress
-                              privateKeyPEM:(NSString *)privateKeyPEM {
+                              privateKeyPEM:(NSData *)privateKeyPEM {
     if (!SGProfileIndexIsValid(profileIdx) ||
         ![deviceAddress length] || ![privateKeyPEM length]) {
         SGLOGE(SGStateStore, "code=%s profile=%ld result=rejected reason=invalid_input",
@@ -113,7 +113,7 @@ static BOOL SGProfileIndexIsValid(NSInteger profileIdx) {
         return NO;
     }
     @synchronized(self) {
-        if (!SGKeychain_StorePrivateKeyPEM(privateKeyPEM, profileIdx)) {
+        if (!SGKeychain_StorePrivateKeyData(privateKeyPEM, profileIdx)) {
             SGLOGE(SGStateStore, "code=%s profile=%ld result=failed",
                    SGND_REGISTRATION_KEY_WRITE_FAILED, (long)profileIdx);
             return NO;

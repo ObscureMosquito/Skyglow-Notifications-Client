@@ -727,16 +727,15 @@ static BOOL isValidPort(NSString *port) {
 
     NSInteger profileIdx = [[SGConfiguration sharedConfiguration] activeProfileIndex];
 
-    NSString *pemString = [[NSString alloc] initWithBytes:pemKey
-                                                   length:pemLen
-                                                 encoding:NSUTF8StringEncoding];
+    NSMutableData *pemData = [[NSMutableData alloc] initWithBytes:pemKey length:pemLen];
     SGP_ZeroAndFreeKeyMaterial(pemKey, pemLen);
     pemKey = NULL;
 
     BOOL committed = [_stateStore commitRegistrationForProfileAtIndex:profileIdx
                                                         deviceAddress:deviceAddress
-                                                        privateKeyPEM:pemString];
-    [pemString release];
+                                                        privateKeyPEM:pemData];
+    [pemData resetBytesInRange:NSMakeRange(0, [pemData length])];
+    [pemData release];
 
     if (!committed) {
         [self handleEvent:SGEventDisconnected payload:nil];

@@ -9,9 +9,10 @@
 
 #pragma mark - Profile-slot persistence choke points
 
+/** Takes NSData so the caller can wipe the PEM bytes. */
 - (BOOL)commitRegistrationForProfileAtIndex:(NSInteger)profileIdx
                               deviceAddress:(NSString *)deviceAddress
-                              privateKeyPEM:(NSString *)privateKeyPEM;
+                              privateKeyPEM:(NSData *)privateKeyPEM;
 
 - (BOOL)wipeProfileCredentialsAtIndex:(NSInteger)profileIdx;
 
