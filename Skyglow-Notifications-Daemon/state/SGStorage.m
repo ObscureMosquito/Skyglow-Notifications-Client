@@ -1,4 +1,4 @@
-#import "SGAtomicFile.h"
+#import "SGStorage.h"
 #include <CoreFoundation/CoreFoundation.h>
 #include <TargetConditionals.h>
 #include <errno.h>
@@ -77,7 +77,7 @@ NSData *SGAtomicReadData(NSString *path, NSUInteger maxLength) {
     return [NSData dataWithContentsOfFile:path];
 }
 
-static BOOL SGAtomicFileWriteAll(int fd, const uint8_t *bytes, NSUInteger length) {
+static BOOL SGStorageWriteAll(int fd, const uint8_t *bytes, NSUInteger length) {
     NSUInteger offset = 0;
     while (offset < length) {
         ssize_t written = write(fd, bytes + offset, length - offset);
@@ -126,7 +126,7 @@ BOOL SGAtomicWriteData(NSData *data,
     }
 
     BOOL ok = (fchmod(fd, mode) == 0) &&
-              SGAtomicFileWriteAll(fd, (const uint8_t *)[data bytes], [data length]) &&
+              SGStorageWriteAll(fd, (const uint8_t *)[data bytes], [data length]) &&
               (fsync(fd) == 0);
     int savedError = ok ? 0 : errno;
     if (close(fd) != 0 && ok) {

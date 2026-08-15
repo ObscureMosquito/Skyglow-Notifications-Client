@@ -1,4 +1,4 @@
-#include "SGStatusServer.h"
+#include "SGStatus.h"
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
@@ -6,7 +6,7 @@
 static SGStatusPayload  _current;
 static pthread_mutex_t  _lock = PTHREAD_MUTEX_INITIALIZER;
 
-void SGStatusServer_Start(int64_t startTime) {
+void SGStatus_Start(int64_t startTime) {
     pthread_mutex_lock(&_lock);
     memset(&_current, 0, sizeof(_current));
     _current.state                   = SGStateStarting;
@@ -15,7 +15,7 @@ void SGStatusServer_Start(int64_t startTime) {
     pthread_mutex_unlock(&_lock);
 }
 
-void SGStatusServer_Post(SGState state, uint32_t failures, uint32_t backoff,
+void SGStatus_Post(SGState state, uint32_t failures, uint32_t backoff,
                          const char *ip, const char *errorDetail,
                          uint32_t activeProfile) {
     pthread_mutex_lock(&_lock);
@@ -31,7 +31,7 @@ void SGStatusServer_Post(SGState state, uint32_t failures, uint32_t backoff,
     pthread_mutex_unlock(&_lock);
 }
 
-void SGStatusServer_Current(SGStatusPayload *outPayload) {
+void SGStatus_Current(SGStatusPayload *outPayload) {
     if (!outPayload) return;
     pthread_mutex_lock(&_lock);
     *outPayload = _current;

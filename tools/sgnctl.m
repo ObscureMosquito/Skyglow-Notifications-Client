@@ -2,7 +2,7 @@
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
 #import "SGControlPayloadCodec.h"
-#import "SGStatusServer.h"
+#import "SGStatus.h"
 #import "SGConfiguration.h"
 #import "SGSharedConstants.h"
 

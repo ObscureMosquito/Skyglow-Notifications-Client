@@ -1,5 +1,5 @@
 #import "SGDurableInbox.h"
-#import "SGAtomicFile.h"
+#import "SGStorage.h"
 #include <CoreFoundation/CoreFoundation.h>
 #include <errno.h>
 #include <unistd.h>
@@ -8,7 +8,7 @@ NSString * const SGDurableEventFormatVersionKey = @"formatVersion";
 static NSString * const SGDurableEventIdentifierKey = @"eventID";
 NSString * const SGDurableEventTypeKey = @"type";
 NSString * const SGDurableEventBundleIdentifierKey = @"bundleID";
-static NSString * const SGDurableEventCreatedAtKey = @"createdAt";
+NSString * const SGDurableEventCreatedAtKey = @"createdAt";
 NSString * const SGDurableEventFilePathKey = @"_eventFilePath";
 NSString * const SGDurableEventDeleteApp = @"delete_app";
 
@@ -107,12 +107,6 @@ BOOL SGDurableEventRemove(NSDictionary *event) {
     NSString *path = [event objectForKey:SGDurableEventFilePathKey];
     if ([path length] == 0) return NO;
     return SGDurableRemoveItem(path, NULL);
-}
-
-BOOL SGDurableEventQuarantine(NSDictionary *event) {
-    NSString *path = [event objectForKey:SGDurableEventFilePathKey];
-    if ([path length] == 0) return NO;
-    return SGDurableRenameItem(path, [path stringByAppendingString:@".invalid"], NULL);
 }
 
 NSUInteger SGDurableEventPurgeForBundleIdentifier(NSString *inboxPath,

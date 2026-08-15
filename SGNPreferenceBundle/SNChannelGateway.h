@@ -1,5 +1,5 @@
 #import <Foundation/Foundation.h>
-#import "SGStatusServer.h"
+#import "SGStatus.h"
 
 typedef void (^SNChannelCommandCompletion)(BOOL ok, NSString *message);
 typedef void (^SNChannelBundleListCompletion)(BOOL ok, NSArray *bundleIds, NSString *message);

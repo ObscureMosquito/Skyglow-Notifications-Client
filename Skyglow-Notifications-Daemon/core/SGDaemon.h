@@ -3,7 +3,7 @@
 
 #import <Foundation/Foundation.h>
 #import "SGProtocolHandler.h"
-#import "SGStatusServer.h"
+#import "SGStatus.h"
 #import "SGControlChannelProtocol.h"
 
 @protocol SGPlatform;

@@ -24,8 +24,7 @@
 - (BOOL)setMuted:(BOOL)muted forBundleIdentifier:(NSString *)bundleID;
 - (BOOL)isMutedForRoutingKey:(NSData *)routingKey;
 - (NSSet *)registeredBundleIdentifiers;
-- (BOOL)clearAllTokens;
-- (BOOL)clearAllDNSCache;
+- (BOOL)clearDNSCacheForProfile:(NSInteger)profileIndex;
 
 /** Drops every server-bound operational row for one profile */
 - (BOOL)clearOperationalStateForProfile:(NSInteger)profileIndex;

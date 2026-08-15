@@ -7,7 +7,7 @@
 #import "SGControlChannelProtocol.h"
 #import "SGControlPayloadCodec.h"
 #import "SGDatabaseManager.h"
-#import "SGStatusServer.h"
+#import "SGStatus.h"
 #import "SGProtocolHandler.h"
 #import "SGTokenManager.h"
 #import "SGLog.h"
@@ -175,7 +175,7 @@ static void SGCDeferBoolReply(SGControlReplyBlock reply,
                                       SGControlReplyBlock reply,
                                       SGControlReplyErrorBlock replyError) {
         SGStatusPayload snapshot;
-        SGStatusServer_Current(&snapshot);
+        SGStatus_Current(&snapshot);
         reply(SGCMSG_STATUS_RESPONSE,
               [NSData dataWithBytes:&snapshot length:sizeof(snapshot)]);
     } forMessageType:SGCMSG_QUERY_STATUS];

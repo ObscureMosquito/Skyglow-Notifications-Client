@@ -1,5 +1,5 @@
-#ifndef SKYGLOW_SG_STATUS_SERVER_H
-#define SKYGLOW_SG_STATUS_SERVER_H
+#ifndef SKYGLOW_SG_STATUS_H
+#define SKYGLOW_SG_STATUS_H
 
 #include <stdint.h>
 #include <time.h>
@@ -38,13 +38,13 @@ typedef struct {
 } SGStatusPayload;
 #pragma pack()
 
-void SGStatusServer_Start(int64_t startTime);
+void SGStatus_Start(int64_t startTime);
 
-void SGStatusServer_Post(SGState state, uint32_t failures, uint32_t backoff,
+void SGStatus_Post(SGState state, uint32_t failures, uint32_t backoff,
                          const char *ip, const char *errorDetail,
                          uint32_t activeProfile);
 
-void SGStatusServer_Current(SGStatusPayload *outPayload);
+void SGStatus_Current(SGStatusPayload *outPayload);
 
 const char *SGState_GetName(SGState state);
 

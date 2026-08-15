@@ -1,5 +1,5 @@
-#ifndef SKYGLOW_SG_ATOMIC_FILE_H
-#define SKYGLOW_SG_ATOMIC_FILE_H
+#ifndef SKYGLOW_SG_STORAGE_H
+#define SKYGLOW_SG_STORAGE_H
 
 #import <Foundation/Foundation.h>
 #include <sys/types.h>

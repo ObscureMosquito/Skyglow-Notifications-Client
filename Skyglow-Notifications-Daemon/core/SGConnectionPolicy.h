@@ -3,7 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include "SGStatusServer.h"
+#include "SGStatus.h"
 
 #define SG_INITIAL_BACKOFF_SECONDS  2
 #define SG_MAX_BACKOFF_SECONDS      600

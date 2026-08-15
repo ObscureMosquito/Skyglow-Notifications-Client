@@ -1,5 +1,5 @@
 #import "SGDatabaseManager.h"
-#import "SGAtomicFile.h"
+#import "SGStorage.h"
 #import "SGConfiguration.h"
 #import "SGDatabaseSchema.h"
 #import "SGLog.h"
@@ -246,27 +246,14 @@ static sqlite3_int64 SGActiveProfileID(void) {
     return ok;
 }
 
-- (BOOL)clearAllTokens {
-    __block BOOL ok = NO;
-    dispatch_sync(_databaseQueue, ^{
-        sqlite3_stmt *stmt = NULL;
-        if (sqlite3_prepare_v2(_database,
-                "DELETE FROM notifications WHERE profile_id = ?", -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, SGActiveProfileID());
-            ok = (sqlite3_step(stmt) == SQLITE_DONE);
-            sqlite3_finalize(stmt);
-        }
-    });
-    return ok;
-}
-
-- (BOOL)clearAllDNSCache {
+- (BOOL)clearDNSCacheForProfile:(NSInteger)profileIndex {
+    if (!SGProfileIndexIsValid(profileIndex)) return NO;
     __block BOOL ok = NO;
     dispatch_sync(_databaseQueue, ^{
         sqlite3_stmt *stmt = NULL;
         if (sqlite3_prepare_v2(_database,
                 "DELETE FROM dns_cache WHERE profile_id = ?", -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, SGActiveProfileID());
+            sqlite3_bind_int64(stmt, 1, (sqlite3_int64)profileIndex);
             ok = (sqlite3_step(stmt) == SQLITE_DONE);
             sqlite3_finalize(stmt);
         }

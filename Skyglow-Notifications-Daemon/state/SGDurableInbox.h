@@ -5,6 +5,7 @@
 
 extern NSString * const SGDurableEventFormatVersionKey;
 extern NSString * const SGDurableEventTypeKey;
+extern NSString * const SGDurableEventCreatedAtKey;
 extern NSString * const SGDurableEventBundleIdentifierKey;
 extern NSString * const SGDurableEventFilePathKey;
 extern NSString * const SGDurableEventDeleteApp;
@@ -16,8 +17,6 @@ NSString *SGDurableEventEnqueueDeleteApp(NSString *inboxPath,
 NSArray *SGDurableEventPendingEvents(NSString *inboxPath);
 
 BOOL SGDurableEventRemove(NSDictionary *event);
-
-BOOL SGDurableEventQuarantine(NSDictionary *event);
 
 NSUInteger SGDurableEventPurgeForBundleIdentifier(NSString *inboxPath,
                                                   NSString *bundleIdentifier);

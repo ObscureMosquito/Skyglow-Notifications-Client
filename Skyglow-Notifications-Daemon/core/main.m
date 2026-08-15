@@ -5,7 +5,7 @@
 #import "SGServerLocator.h"
 #import "SGConfiguration.h"
 #import "SGDatabaseManager.h"
-#import "SGStatusServer.h"
+#import "SGStatus.h"
 #import "SGProtocolHandler.h"
 #import "SGTokenManager.h"
 #import "SGControlChannel.h"
@@ -46,6 +46,7 @@ int main(int argc, char *argv[]) {
             SGLOGW(Skyglow, "code=%s path=%s result=syslog_only", SGND_DAEMON_LOG_FILE_UNAVAILABLE, [SGPath(SG_LOG_PATH) UTF8String]);
         }
 
+        /* Before SGConfiguration is first touched; the only sanctioned store bypass. */
         if (!SGMigrationRunIfNeeded()) {
             SGLOGE(Skyglow, "code=SGN_MIGRATION_FAILED result=exiting");
             exit(EXIT_FAILURE);
@@ -74,7 +75,7 @@ int main(int argc, char *argv[]) {
         SGLOGI(Skyglow, "code=%s pid=%d result=starting", SGND_DAEMON_STARTED, (int)getpid());
 
         _sgDaemonStartTime = (int64_t)time(NULL);
-        SGStatusServer_Start(_sgDaemonStartTime);
+        SGStatus_Start(_sgDaemonStartTime);
 
         signal(SIGTERM, SIG_IGN);
         dispatch_source_t sigtermSource = dispatch_source_create(

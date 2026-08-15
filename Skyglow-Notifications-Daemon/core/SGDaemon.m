@@ -68,6 +68,8 @@ static BOOL isValidPort(NSString *port) {
     SGControlChannel      *_controlChannel;
     id<SGPlatform>         _deliveryPlatform;
     SGReachabilityMonitor *_reachability;
+    NSString              *_resolvedIP;
+    NSString              *_resolvedPort;
     _Atomic uint32_t       _probeAssertionID;
     _Atomic bool           _probeInFlight;
 }
@@ -100,6 +102,8 @@ static BOOL isValidPort(NSString *port) {
     [_deliveryPlatform release];
     [_reachability stopMonitoringSystemNetworkChanges];
     [_reachability release];
+    [_resolvedIP release];
+    [_resolvedPort release];
     [[SGAvailability shared] stopPowerEventMonitoring];
     if (_keepAliveTimer) { [_keepAliveTimer invalidate]; [_keepAliveTimer release]; }
     dispatch_release(_entryActionQueue);
@@ -147,14 +151,14 @@ static BOOL isValidPort(NSString *port) {
 
 - (void)start {
     [self _startReachabilityMonitor];
-    [self reconcileTokensWithPlist];
+    [_stateStore reconcileTokensWithDatabase];
     [self handleEvent:SGEventStartRequested payload:nil];
 }
 
 #pragma mark - Active / Disabled Mode Lifecycle
 
 - (void)_enterActiveMode {
-    [self reconcileTokensWithPlist];
+    [_stateStore reconcileTokensWithDatabase];
 
     [_stateLock lock];
     if (!_growthAlgorithm) {
@@ -209,72 +213,18 @@ static BOOL isValidPort(NSString *port) {
     return _reachability ? [_reachability isReachable] : true;
 }
 
-- (void)reconcileTokensWithPlist {
-    NSDictionary *appStatus = [_stateStore appStatusDictionary];
-    SGDatabaseManager *db = [SGDatabaseManager sharedManager];
-
-    NSMutableSet *plistYes = [NSMutableSet set];
-    NSMutableSet *plistNo  = [NSMutableSet set];
-    for (NSString *bundleID in appStatus) {
-        if ([[appStatus objectForKey:bundleID] boolValue]) {
-            [plistYes addObject:bundleID];
-        } else {
-            [plistNo addObject:bundleID];
-        }
-    }
-
-    NSSet *dbBundles = [db registeredBundleIdentifiers];
-
-    for (NSString *bundleID in dbBundles) {
-        if ([plistYes containsObject:bundleID]) {
-            [db setMuted:NO  forBundleIdentifier:bundleID];
-        } else if ([plistNo containsObject:bundleID]) {
-            [db setMuted:YES forBundleIdentifier:bundleID];
-        }
-    }
-
-    NSString *serverAddr = [[SGConfiguration sharedConfiguration] serverAddress];
-    BOOL mutated = NO;
-    if (serverAddr && [serverAddr length] > 0) {
-        SGTokenManager *tokenMgr = [[SGTokenManager alloc] init];
-        NSMutableSet *allOptedIn = [NSMutableSet setWithSet:plistYes];
-        [allOptedIn unionSet:plistNo];
-        for (NSString *bundleID in allOptedIn) {
-            if (![dbBundles containsObject:bundleID]) {
-                NSError *err = nil;
-                NSData *token = [tokenMgr synchronizedTokenForBundleIdentifier:bundleID error:&err];
-                if (token) {
-                    SGLOGI(SGDaemon, "code=%s bundle=%s result=generated", SGND_TOKEN_MISSING_GENERATED, [bundleID UTF8String]);
-                    if ([plistNo containsObject:bundleID]) {
-                        [db setMuted:YES forBundleIdentifier:bundleID];
-                    }
-                    mutated = YES;
-                } else {
-                    SGLOGE(SGDaemon, "code=%s bundle=%s result=failed reason=%s", SGND_TOKEN_GENERATE_FAILED,
-                                [bundleID UTF8String], [[err description] UTF8String]);
-                }
-            }
-        }
-        [tokenMgr release];
-    } else {
-        NSMutableSet *allOptedIn = [NSMutableSet setWithSet:plistYes];
-        [allOptedIn unionSet:plistNo];
-        for (NSString *bundleID in allOptedIn) {
-            if (![dbBundles containsObject:bundleID]) {
-                SGLOGI(SGDaemon, "code=%s bundle=%s action=defer_until_registration", SGND_TOKEN_DEFER_UNREGISTERED, [bundleID UTF8String]);
-            }
-        }
-    }
-    if (mutated) {
-        SGP_FlushActiveTopicFilter();
-    }
+- (void)_setResolvedEndpointLockedIP:(NSString *)ip port:(NSString *)port {
+    [_resolvedIP release];
+    _resolvedIP = [ip copy];
+    [_resolvedPort release];
+    _resolvedPort = [port copy];
 }
 
 - (void)handleEvent:(SGEvent)event payload:(id)payload {
     [_stateLock lock];
     
     SGStatusPayload currentStatus;
-    SGStatusServer_Current(&currentStatus);
+    SGStatus_Current(&currentStatus);
     SGState currentState = (SGState)currentStatus.state;
     
     SGLOGD(SGDaemon, "code=%s event=%ld state=%s", SGND_FSM_EVENT, (long)event, SGState_GetName(currentState));
@@ -288,6 +238,7 @@ static BOOL isValidPort(NSString *port) {
     }
 
     if (event == SGEventStartRequested || event == SGEventConfigReloaded) {
+        [self _setResolvedEndpointLockedIP:nil port:nil];
         SGConfiguration *config = [SGConfiguration sharedConfiguration];
         SGState target = SGConnectionStateForConfiguration(
             [config isEnabled], [config hasProfile], [config isValid],
@@ -361,8 +312,7 @@ static BOOL isValidPort(NSString *port) {
         case SGStateResolvingDNS:
             if (event == SGEventDNSResolved) {
                 NSDictionary *txt = (NSDictionary *)payload;
-                [[SGConfiguration sharedConfiguration] setServerIPAddress:txt[@"tcp_addr"]];
-                [[SGConfiguration sharedConfiguration] setServerPort:txt[@"tcp_port"]];
+                [self _setResolvedEndpointLockedIP:txt[@"tcp_addr"] port:txt[@"tcp_port"]];
                 [self executeTransitionToState:SGStateConnecting backoff:0 ip:[txt[@"tcp_addr"] UTF8String]];
             } else if (event == SGEventDNSFailed) {
                 strlcpy(_lastErrorDetail, "DNS resolution failed", sizeof(_lastErrorDetail));
@@ -477,7 +427,7 @@ static BOOL isValidPort(NSString *port) {
 
 - (void)executeTransitionToState:(SGState)newState backoff:(uint32_t)backoff ip:(const char *)ip {
     SGStatusPayload current;
-    SGStatusServer_Current(&current);
+    SGStatus_Current(&current);
     if (!SGConnectionTransitionIsLegal((SGState)current.state, newState)) {
         SGLOGE(SGDaemon, "code=%s from=%s to=%s result=rejected", SGND_FSM_TRANSITION_INVALID,
                     SGState_GetName((SGState)current.state), SGState_GetName(newState));
@@ -487,8 +437,7 @@ static BOOL isValidPort(NSString *port) {
     _fsmGeneration++;
     uint32_t capturedGen = _fsmGeneration;
 
-    NSString *currentIPStr = [[SGConfiguration sharedConfiguration] serverIPAddress];
-    const char *resolvedIP = ip ? ip : (currentIPStr ? [currentIPStr UTF8String] : NULL);
+    const char *resolvedIP = ip ? ip : (_resolvedIP ? [_resolvedIP UTF8String] : NULL);
 
     if (newState == SGStateConnected || newState == SGStateResolvingDNS ||
         newState == SGStateConnecting || newState == SGStateAuthenticating ||
@@ -498,7 +447,7 @@ static BOOL isValidPort(NSString *port) {
 
     SGConfiguration *config = [SGConfiguration sharedConfiguration];
     uint32_t activeProfile = [config hasProfile] ? (uint32_t)[config activeProfileIndex] : 0;
-    SGStatusServer_Post(newState, (uint32_t)_consecutiveFailures, backoff,
+    SGStatus_Post(newState, (uint32_t)_consecutiveFailures, backoff,
                         resolvedIP, _lastErrorDetail, activeProfile);
     SGLOGD(SGDaemon, "code=%s to=%s generation=%u", SGND_FSM_TRANSITION, SGState_GetName(newState), capturedGen);
 
@@ -509,7 +458,7 @@ static BOOL isValidPort(NSString *port) {
          * deadlock).  The serial entry-action queue preserves STATE_CHANGED
          * ordering and runs the entry action for this state right after. */
         SGStatusPayload snapshot;
-        SGStatusServer_Current(&snapshot);
+        SGStatus_Current(&snapshot);
         NSData *payload = [NSData dataWithBytes:&snapshot length:sizeof(snapshot)];
         SGControlChannel *channel = _controlChannel;
         dispatch_async(_entryActionQueue, ^{
@@ -649,7 +598,7 @@ static BOOL isValidPort(NSString *port) {
 
     RSA *privKey = SG_CryptoGetClientPrivateKey();
     if (!privKey) {
-        SGLOGW(SGDaemon, "code=%s reason=missing_or_invalid_private_key action=wipe_profile", SGND_REGISTRATION_PROFILE_INVALID);
+        SGLOGW(SGDaemon, "code=%s reason=missing_or_invalid_private_key action=park_error_auth", SGND_REGISTRATION_PROFILE_INVALID);
         [self handleEvent:SGEventAuthFailed payload:nil];
         return;
     }
@@ -756,15 +705,10 @@ static BOOL isValidPort(NSString *port) {
 
     SGP_SetRegistrationIdentity(nil);
 
-    [[SGConfiguration sharedConfiguration] reloadFromDisk];
-
-    [self reconcileTokensWithPlist];
-
     RSA *privKey = SG_CryptoGetClientPrivateKey();
     if (!privKey) {
         SGLOGE(SGDaemon, "code=%s profile=%ld action=wipe_profile", SGND_REGISTRATION_KEY_RELOAD_FAILED, (long)profileIdx);
         [_stateStore wipeProfileCredentialsAtIndex:profileIdx];
-        [[SGConfiguration sharedConfiguration] reloadFromDisk];
         [self handleEvent:SGEventAuthFailed payload:nil];
         return;
     }
@@ -836,8 +780,8 @@ static BOOL isValidPort(NSString *port) {
 }
 
 - (void)handleConfigurationReloadRequest {
-    [[SGConfiguration sharedConfiguration] reloadFromDisk];
-    [self reconcileTokensWithPlist];
+    [_stateStore reloadConfiguration];
+    [_stateStore reconcileTokensWithDatabase];
     [self handleEvent:SGEventConfigReloaded payload:nil];
     [_stateStore drainDurableEventInbox];
 }
@@ -898,9 +842,6 @@ static BOOL isValidPort(NSString *port) {
     if (hasNewCertificate && !SG_CryptoCertificatePEMIsValid(certificatePEM)) return NO;
 
     BOOL isActive = ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx);
-    NSString *previousAddress = isActive
-        ? [[SGConfiguration sharedConfiguration] serverAddress] : nil;
-    BOOL addressChanged = (previousAddress && ![previousAddress isEqualToString:address]);
 
     BOOL credentialsInvalidated = NO;
     if (![_stateStore saveProfileAtIndex:profileIdx
@@ -910,16 +851,7 @@ static BOOL isValidPort(NSString *port) {
         return NO;
     }
 
-    [[SGConfiguration sharedConfiguration] reloadFromDisk];
-
     if (isActive) {
-        if (credentialsInvalidated) {
-            [[SGDatabaseManager sharedManager] clearAllTokens];
-        }
-
-        if (addressChanged) {
-            [[SGDatabaseManager sharedManager] clearAllDNSCache];
-        }
         [self handleEvent:SGEventConfigReloaded payload:nil];
     }
 
@@ -940,8 +872,6 @@ static BOOL isValidPort(NSString *port) {
     }
 
     if ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx) {
-        [[SGConfiguration sharedConfiguration] reloadFromDisk];
-
         [self handleEvent:SGEventConfigReloaded payload:nil];
     }
     return YES;
@@ -962,9 +892,7 @@ static BOOL isValidPort(NSString *port) {
     BOOL removed = [_stateStore removeProfileAtIndex:profileIdx];
 
     if (wasActive) {
-        [configuration reloadFromDisk];
         [_notificationProcessor resetInMemoryDeduplication];
-
         [self handleEvent:SGEventConfigReloaded payload:nil];
     }
 
@@ -972,23 +900,11 @@ static BOOL isValidPort(NSString *port) {
 }
 
 - (BOOL)performSetActiveProfileAtIndex:(NSInteger)profileIdx {
-    if (!SGProfileIndexIsValid(profileIdx)) return NO;
-
-    NSString *profilePath = SGProfilePlistPathForIndex(profileIdx);
-    if (![[NSFileManager defaultManager] fileExistsAtPath:profilePath]) return NO;
-
     if ([[SGConfiguration sharedConfiguration] activeProfileIndex] == profileIdx) return YES;
-
-    BOOL persisted = [_stateStore updateMainPreferences:^(NSMutableDictionary *preferences) {
-        [preferences setObject:[NSNumber numberWithInteger:profileIdx]
-                        forKey:@"activeProfile"];
-    }];
-    if (!persisted) return NO;
-
-    [[SGConfiguration sharedConfiguration] reloadFromDisk];
+    if (![_stateStore setActiveProfileIndex:profileIdx]) return NO;
 
     [_notificationProcessor resetInMemoryDeduplication];
-    [self reconcileTokensWithPlist];
+    [_stateStore reconcileTokensWithDatabase];
     [self handleEvent:SGEventConfigReloaded payload:nil];
     [_notificationProcessor kickPendingDeliveryDrain];
     [_stateStore drainDurableEventInbox];
@@ -1044,7 +960,7 @@ static BOOL isValidPort(NSString *port) {
         BOOL stale = [self _generationIsStale:generation];
 
         SGStatusPayload status;
-        SGStatusServer_Current(&status);
+        SGStatus_Current(&status);
         if (stale || status.state != SGStateConnected || !SGP_IsConnected()) {
             SGLOGD(SGDaemon, "code=%s generation=%u action=discard",
                    SGND_KEEPALIVE_TIMER_IGNORED, generation);
@@ -1196,8 +1112,10 @@ static BOOL isValidPort(NSString *port) {
 }
 
 - (void)performSocketConnection {
-    NSString *ip = [[SGConfiguration sharedConfiguration] serverIPAddress];
-    NSString *portStr = [[SGConfiguration sharedConfiguration] serverPort];
+    [_stateLock lock];
+    NSString *ip = [[_resolvedIP copy] autorelease];
+    NSString *portStr = [[_resolvedPort copy] autorelease];
+    [_stateLock unlock];
     NSString *cert = [[SGConfiguration sharedConfiguration] serverPubKeyPEM];
 
     if (!ip || !portStr || !cert) {
@@ -1254,7 +1172,8 @@ static BOOL isValidPort(NSString *port) {
                 if (rc == -9 || rc == -10) {
                     SGLOGW(SGDaemon, "code=%s rc=%d action=purge_dns_cache",
                            SGND_PROTOCOL_CONNECT_FAILED, rc);
-                    [[SGDatabaseManager sharedManager] clearAllDNSCache];
+                    [[SGDatabaseManager sharedManager] clearDNSCacheForProfile:
+                        [[SGConfiguration sharedConfiguration] activeProfileIndex]];
                 }
                 [SGServerLocator refreshDNSCacheAsynchronouslyForAddress:serverAddr];
 

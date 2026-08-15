@@ -27,7 +27,7 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/state/SGDatabaseManager.m \
     Skyglow-Notifications-Daemon/crypto/SGCryptoEngine.m \
     Skyglow-Notifications-Daemon/crypto/SGTokenManager.m \
-    Skyglow-Notifications-Daemon/shared/SGStatusServer.c \
+    Skyglow-Notifications-Daemon/shared/SGStatus.c \
     Skyglow-Notifications-Daemon/payload/SGPayloadParser.m \
     Skyglow-Notifications-Daemon/payload/SGJSONParser.m \
     Skyglow-Notifications-Daemon/payload/SGStructuredTLV.m \
@@ -40,7 +40,7 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/platform/SGAvailability.m \
     Skyglow-Notifications-Daemon/platform/SGPlatformFactory.m \
     $(SGN_PLATFORM_SRC) \
-    Skyglow-Notifications-Daemon/state/SGAtomicFile.m \
+    Skyglow-Notifications-Daemon/state/SGStorage.m \
     Skyglow-Notifications-Daemon/state/SGDurableInbox.m \
     Skyglow-Notifications-Daemon/state/SGStateStore.m \
     Skyglow-Notifications-Daemon/state/SGMigration.m \

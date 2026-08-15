@@ -579,29 +579,28 @@ static NSString *SNLogDiagnosticCodeForLine(NSString *line) {
 }
 
 static NSString *SNLogSubsystemForCode(NSString *code) {
-    if ([code hasPrefix:@"SGN_DAEMON_"] ||
-        [code hasPrefix:@"SGN_CONFIG_"] ||
-        [code hasPrefix:@"SGN_AVAILABILITY_"] ||
-        [code hasPrefix:@"SGN_FSM_"] ||
-        [code hasPrefix:@"SGN_BACKOFF_"] ||
-        [code hasPrefix:@"SGN_KEEPALIVE_"] ||
-        [code hasPrefix:@"SGN_TOKEN_"]) {
-        return @"Core";
+    if (!code.length) return @"Unstructured";
+    static NSDictionary *prefixToSubsystem = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        prefixToSubsystem = [@{
+            @"SGN_DAEMON_": @"Core",       @"SGN_CONFIG_": @"Core",
+            @"SGN_AVAILABILITY_": @"Core", @"SGN_FSM_": @"Core",
+            @"SGN_BACKOFF_": @"Core",      @"SGN_KEEPALIVE_": @"Core",
+            @"SGN_TOKEN_": @"Core",        @"SGN_SCHEDULED_": @"Core",
+            @"SGN_WAKE_": @"Core",         @"SGN_CIRCUIT_": @"Core",
+            @"SGN_MIGRATION_": @"Core",
+            @"SGN_PROTOCOL_": @"Network",  @"SGN_CONTROL_": @"Network",
+            @"SGN_DNS_": @"Network",       @"SGN_REGISTRATION_": @"Network",
+            @"SGN_DELIVERY_": @"Delivery",
+            @"SGN_DATABASE_": @"Storage",  @"SGN_CRYPTO_": @"Storage",
+            @"SGN_DURABLE_": @"Storage",   @"SGN_APP_": @"Storage",
+        } retain];
+    });
+    for (NSString *prefix in prefixToSubsystem) {
+        if ([code hasPrefix:prefix]) return prefixToSubsystem[prefix];
     }
-    if ([code hasPrefix:@"SGN_PROTOCOL_"] ||
-        [code hasPrefix:@"SGN_CONTROL_"] ||
-        [code hasPrefix:@"SGN_DNS_"] ||
-        [code hasPrefix:@"SGN_REGISTRATION_"]) {
-        return @"Network";
-    }
-    if ([code hasPrefix:@"SGN_DELIVERY_"]) {
-        return @"Delivery";
-    }
-    if ([code hasPrefix:@"SGN_DATABASE_"] ||
-        [code hasPrefix:@"SGN_CRYPTO_"]) {
-        return @"Storage";
-    }
-    return code.length ? @"Other" : @"Unstructured";
+    return @"Other";
 }
 
 - (BOOL)subsystem:(NSString *)subsystem passesScopeFilter:(SNLogScopeFilter)filter {

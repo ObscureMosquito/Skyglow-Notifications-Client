@@ -1,17 +1,19 @@
 #import "SGStateStore.h"
-#import "SGAtomicFile.h"
+#import "SGStorage.h"
 #import "SGDurableInbox.h"
 #import "SGConfiguration.h"
 #import "SGDatabaseManager.h"
 #import "SGKeychainStore.h"
 #import "SGTokenManager.h"
 #import "SGControlChannelProtocol.h"
-#import "SGStatusServer.h"
+#import "SGStatus.h"
 #import "SGProtocolHandler.h"
 #import "SGCryptoEngine.h"
 #import "SGLog.h"
 #import "SGLogDiagnostics.h"
 #include <unistd.h>
+
+#define SG_DURABLE_EVENT_TTL_SECONDS (30.0 * 86400.0)
 
 @implementation SGStateStore {
     dispatch_queue_t _storageQueue;
@@ -39,10 +41,89 @@ static BOOL SGUpdatePlistAtPath(NSString *plistPath,
     return SGAtomicWritePropertyList(contents, plistPath, 0644, NULL);
 }
 
-/* restores a file to its pre-transaction contents */
 static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode) {
     if (snapshot) return SGAtomicWriteData(snapshot, path, mode, NULL);
     return SGDurableRemoveItem(path, NULL);
+}
+
+#pragma mark - Configuration ownership
+
+- (void)_republishConfigurationLocked {
+    [[SGConfiguration sharedConfiguration] reloadFromDisk];
+}
+
+- (void)reloadConfiguration {
+    @synchronized(self) {
+        [self _republishConfigurationLocked];
+    }
+}
+
+- (void)reconcileTokensWithDatabase {
+    @synchronized(self) {
+        NSDictionary *preferences = [NSDictionary dictionaryWithContentsOfFile:
+            SGPath(SG_PREFS_PLIST_PATH)] ?: @{};
+        NSDictionary *appStatus =
+            [preferences objectForKey:SG_PREFS_KEY_APP_STATUS] ?: @{};
+        SGDatabaseManager *db = [SGDatabaseManager sharedManager];
+
+        NSMutableSet *optedIn  = [NSMutableSet set];
+        NSMutableSet *optedOut = [NSMutableSet set];
+        for (NSString *bundleID in appStatus) {
+            if ([[appStatus objectForKey:bundleID] boolValue]) {
+                [optedIn addObject:bundleID];
+            } else {
+                [optedOut addObject:bundleID];
+            }
+        }
+
+        NSSet *dbBundles = [db registeredBundleIdentifiers];
+        for (NSString *bundleID in dbBundles) {
+            if ([optedIn containsObject:bundleID]) {
+                [db setMuted:NO forBundleIdentifier:bundleID];
+            } else if ([optedOut containsObject:bundleID]) {
+                [db setMuted:YES forBundleIdentifier:bundleID];
+            }
+        }
+
+        NSMutableSet *allIntents = [NSMutableSet setWithSet:optedIn];
+        [allIntents unionSet:optedOut];
+        NSString *serverAddress =
+            [[SGConfiguration sharedConfiguration] serverAddress];
+        BOOL mutated = NO;
+
+        if ([serverAddress length] > 0) {
+            SGTokenManager *tokenManager = [[SGTokenManager alloc] init];
+            for (NSString *bundleID in allIntents) {
+                if ([dbBundles containsObject:bundleID]) continue;
+                NSError *tokenError = nil;
+                NSData *token = [tokenManager
+                    synchronizedTokenForBundleIdentifier:bundleID
+                                                   error:&tokenError];
+                if (token) {
+                    SGLOGI(SGStateStore, "code=%s bundle=%s result=generated",
+                           SGND_TOKEN_MISSING_GENERATED, [bundleID UTF8String]);
+                    if ([optedOut containsObject:bundleID]) {
+                        [db setMuted:YES forBundleIdentifier:bundleID];
+                    }
+                    mutated = YES;
+                } else {
+                    SGLOGE(SGStateStore, "code=%s bundle=%s result=failed reason=%s",
+                           SGND_TOKEN_GENERATE_FAILED, [bundleID UTF8String],
+                           [[tokenError description] UTF8String]);
+                }
+            }
+            [tokenManager release];
+        } else {
+            for (NSString *bundleID in allIntents) {
+                if (![dbBundles containsObject:bundleID]) {
+                    SGLOGI(SGStateStore, "code=%s bundle=%s action=defer_until_registration",
+                           SGND_TOKEN_DEFER_UNREGISTERED, [bundleID UTF8String]);
+                }
+            }
+        }
+
+        if (mutated) SGP_FlushActiveTopicFilter();
+    }
 }
 
 #pragma mark - Main-prefs choke points
@@ -51,7 +132,9 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
     (void (^)(NSMutableDictionary *preferences))mutation {
     if (!mutation) return NO;
     @synchronized(self) {
-        return SGUpdatePlistAtPath(SGPath(SG_PREFS_PLIST_PATH), mutation);
+        BOOL persisted = SGUpdatePlistAtPath(SGPath(SG_PREFS_PLIST_PATH), mutation);
+        if (persisted) [self _republishConfigurationLocked];
+        return persisted;
     }
 }
 
@@ -136,6 +219,7 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
             return NO;
         }
         SGDurableRemoveItem(SGPath(SGProfileRegIdentityPathForIndex(profileIdx)), NULL);
+        [self _republishConfigurationLocked];
         return YES;
     }
 }
@@ -144,12 +228,14 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
     if (!SGProfileIndexIsValid(profileIdx)) return NO;
     @synchronized(self) {
         SGKeychain_DeletePrivateKey(profileIdx);
-        return [self _updateProfileAtIndex:profileIdx
-                                  mutation:^(NSMutableDictionary *profile) {
+        BOOL persisted = [self _updateProfileAtIndex:profileIdx
+                                            mutation:^(NSMutableDictionary *profile) {
             [profile removeObjectForKey:@"device_address"];
             [profile removeObjectForKey:@"privateKey"];
             [profile removeObjectForKey:@"last_reg_fail"];
         }];
+        if (persisted) [self _republishConfigurationLocked];
+        return persisted;
     }
 }
 
@@ -207,8 +293,15 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
             return NO;
         }
 
-        if (invalidate) SGKeychain_DeletePrivateKey(profileIdx);
+        if (invalidate) {
+            SGKeychain_DeletePrivateKey(profileIdx);
+            [[SGDatabaseManager sharedManager]
+                clearOperationalStateForProfile:profileIdx];
+        } else if (addressChanged) {
+            [[SGDatabaseManager sharedManager] clearDNSCacheForProfile:profileIdx];
+        }
         if (outInvalidatedCredentials) *outInvalidatedCredentials = invalidate;
+        [self _republishConfigurationLocked];
         return YES;
     }
 }
@@ -235,22 +328,24 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
         NSString *storedPath = SGProfileRegIdentityPathForIndex(profileIdx);
         NSString *diskPath = SGPath(storedPath);
 
+        BOOL persisted;
         if ([identityPEM length] > 0) {
             SGEnsureRuntimeDirectories();
             NSData *pemData = [identityPEM dataUsingEncoding:NSUTF8StringEncoding];
             if (!SGAtomicWriteData(pemData, diskPath, 0600, NULL)) return NO;
-            return [self _updateProfileAtIndex:profileIdx
-                                      mutation:^(NSMutableDictionary *profile) {
+            persisted = [self _updateProfileAtIndex:profileIdx
+                                          mutation:^(NSMutableDictionary *profile) {
                 [profile setObject:storedPath forKey:@"registration_identity"];
                 [profile removeObjectForKey:@"last_reg_fail"];
             }];
+        } else {
+            persisted = [self _updateProfileAtIndex:profileIdx
+                                          mutation:^(NSMutableDictionary *profile) {
+                [profile removeObjectForKey:@"registration_identity"];
+            }];
+            if (persisted) SGDurableRemoveItem(diskPath, NULL);
         }
-
-        BOOL persisted = [self _updateProfileAtIndex:profileIdx
-                                            mutation:^(NSMutableDictionary *profile) {
-            [profile removeObjectForKey:@"registration_identity"];
-        }];
-        if (persisted) SGDurableRemoveItem(diskPath, NULL);
+        if (persisted) [self _republishConfigurationLocked];
         return persisted;
     }
 }
@@ -313,8 +408,43 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
         }
         if (ok) {
             SGDurableRemoveItem(SGPath(SGProfileRegIdentityPathForIndex(profileIdx)), NULL);
+
+            NSDictionary *preferences = [NSDictionary dictionaryWithContentsOfFile:
+                SGPath(SG_PREFS_PLIST_PATH)] ?: @{};
+            if ([[preferences objectForKey:@"activeProfile"] integerValue] == profileIdx) {
+                NSInteger nextActive = 1;
+                for (NSInteger i = 1; i <= SG_PROFILE_INDEX_MAX; i++) {
+                    if (i != profileIdx && [fm fileExistsAtPath:SGProfilePlistPathForIndex(i)]) {
+                        nextActive = i;
+                        break;
+                    }
+                }
+                SGUpdatePlistAtPath(SGPath(SG_PREFS_PLIST_PATH),
+                                    ^(NSMutableDictionary *preferences) {
+                    [preferences setObject:[NSNumber numberWithInteger:nextActive]
+                                    forKey:@"activeProfile"];
+                });
+            }
+            [self _republishConfigurationLocked];
         }
         return ok;
+    }
+}
+
+- (BOOL)setActiveProfileIndex:(NSInteger)profileIdx {
+    if (!SGProfileIndexIsValid(profileIdx)) return NO;
+    @synchronized(self) {
+        if (![[NSFileManager defaultManager]
+                fileExistsAtPath:SGProfilePlistPathForIndex(profileIdx)]) {
+            return NO;
+        }
+        BOOL persisted = SGUpdatePlistAtPath(SGPath(SG_PREFS_PLIST_PATH),
+                                             ^(NSMutableDictionary *preferences) {
+            [preferences setObject:[NSNumber numberWithInteger:profileIdx]
+                            forKey:@"activeProfile"];
+        });
+        if (persisted) [self _republishConfigurationLocked];
+        return persisted;
     }
 }
 
@@ -444,58 +574,65 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
 - (void)drainDurableEventInbox {
     dispatch_async(_storageQueue, ^{
         @autoreleasepool {
-            NSArray *events = SGDurableEventPendingEvents(
-                SGPath(SG_DURABLE_EVENT_INBOX_PATH));
+            NSString *inboxPath = SGPath(SG_DURABLE_EVENT_INBOX_PATH);
             NSMutableSet *blockedBundles = [NSMutableSet set];
-            for (NSDictionary *event in events) {
-                NSString *type = [event objectForKey:SGDurableEventTypeKey];
-                NSString *bundleID =
-                    [event objectForKey:SGDurableEventBundleIdentifierKey];
-                BOOL knownType =
-                    [type isEqualToString:SGDurableEventDeleteApp];
-                BOOL structurallyValid =
-                    [[event objectForKey:SGDurableEventFormatVersionKey]
-                        integerValue] == 1 &&
-                    [type isKindOfClass:[NSString class]] &&
-                    SG_IsIdentifierStringSafe(bundleID) &&
-                    knownType;
-                if (!structurallyValid) {
-                    SGLOGE(SGStateStore, "code=%s file=%s action=quarantine",
-                           SGND_DURABLE_EVENT_INVALID,
-                           [[[event objectForKey:SGDurableEventFilePathKey]
-                               lastPathComponent] UTF8String]);
-                    SGDurableEventQuarantine(event);
-                    continue;
-                }
+            NSUInteger claimed = 0;
 
-                if ([blockedBundles containsObject:bundleID]) continue;
+            do {
+                claimed = 0;
+                for (NSDictionary *event in SGDurableEventPendingEvents(inboxPath)) {
+                    NSString *type = [event objectForKey:SGDurableEventTypeKey];
+                    NSString *bundleID =
+                        [event objectForKey:SGDurableEventBundleIdentifierKey];
+                    const char *file =
+                        [[[event objectForKey:SGDurableEventFilePathKey]
+                            lastPathComponent] UTF8String];
 
-                BOOL applied = NO;
-                BOOL superseded = NO;
-                @synchronized(self) {
-                    NSString *eventPath =
-                        [event objectForKey:SGDurableEventFilePathKey];
-                    if (access([eventPath fileSystemRepresentation],
-                               F_OK) != 0) {
-                        superseded = YES;
-                    } else {
+                    BOOL structurallyValid =
+                        [[event objectForKey:SGDurableEventFormatVersionKey]
+                            integerValue] == 1 &&
+                        [type isEqualToString:SGDurableEventDeleteApp] &&
+                        SG_IsIdentifierStringSafe(bundleID);
+                    double createdAt =
+                        [[event objectForKey:SGDurableEventCreatedAtKey] doubleValue];
+                    BOOL expired = (createdAt > 0.0 &&
+                        [[NSDate date] timeIntervalSince1970] - createdAt >
+                            SG_DURABLE_EVENT_TTL_SECONDS);
+
+                    if (!structurallyValid || expired) {
+                        SGLOGE(SGStateStore, "code=%s file=%s action=%s",
+                               SGND_DURABLE_EVENT_INVALID, file,
+                               expired ? "drop_expired" : "drop_malformed");
+                        SGDurableEventRemove(event);
+                        claimed++;
+                        continue;
+                    }
+
+                    if ([blockedBundles containsObject:bundleID]) continue;
+
+                    /* Removing the file first is the cross-process claim: a
+                     * concurrent purge either wins entirely or finds nothing. */
+                    if (!SGDurableEventRemove(event)) continue;
+                    claimed++;
+
+                    BOOL applied;
+                    @synchronized(self) {
                         applied = [self _applyDurableEvent:event];
                     }
-                }
-                if (superseded) continue;
 
-                if (applied) {
-                    SGDurableEventRemove(event);
-                    SGLOGI(SGStateStore, "code=%s type=%s bundle=%s",
-                           SGND_DURABLE_EVENT_APPLIED, [type UTF8String],
-                           [bundleID UTF8String]);
-                } else {
-                    SGLOGW(SGStateStore, "code=%s type=%s bundle=%s action=retry_later",
-                           SGND_DURABLE_EVENT_DEFERRED, [type UTF8String],
-                           [bundleID UTF8String]);
-                    [blockedBundles addObject:bundleID];
+                    if (applied) {
+                        SGLOGI(SGStateStore, "code=%s type=%s bundle=%s",
+                               SGND_DURABLE_EVENT_APPLIED, [type UTF8String],
+                               [bundleID UTF8String]);
+                    } else {
+                        SGDurableEventEnqueueDeleteApp(inboxPath, bundleID, NULL);
+                        SGLOGW(SGStateStore, "code=%s type=%s bundle=%s action=retry_later",
+                               SGND_DURABLE_EVENT_DEFERRED, [type UTF8String],
+                               [bundleID UTF8String]);
+                        [blockedBundles addObject:bundleID];
+                    }
                 }
-            }
+            } while (claimed > 0);
         }
     });
 }

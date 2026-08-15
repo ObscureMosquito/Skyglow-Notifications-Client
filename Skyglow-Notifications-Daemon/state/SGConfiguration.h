@@ -47,8 +47,6 @@ static inline NSString *SGProfileRegIdentityPathForIndex(NSInteger profileIdx) {
 + (SGConfiguration *)sharedConfiguration;
 
 @property (nonatomic, readonly, copy) NSString *serverAddress;
-@property (nonatomic, copy) NSString *serverIPAddress;
-@property (nonatomic, copy) NSString *serverPort;
 @property (nonatomic, readonly) BOOL isValid;
 @property (nonatomic, readonly) BOOL isEnabled;
 @property (nonatomic, readonly) BOOL hasProfile;

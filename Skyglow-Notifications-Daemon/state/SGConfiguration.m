@@ -1,5 +1,5 @@
 #import "SGConfiguration.h"
-#import "SGAtomicFile.h"
+#import "SGStorage.h"
 #import "SGCryptoEngine.h"
 #import "SGKeychainStore.h"
 #import "SGLog.h"
@@ -42,8 +42,6 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
 
 @implementation SGConfiguration {
     NSString *_serverAddress;
-    NSString *_serverIPAddress;
-    NSString *_serverPort;
 
     BOOL _isEnabled;
     BOOL _hasProfile;
@@ -124,10 +122,6 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
         [self->_registrationIdentityPEM release];
         self->_registrationIdentityPEM = nextRegistrationIdentityPEM;
 
-        [self->_serverIPAddress release];
-        self->_serverIPAddress = nil;
-        [self->_serverPort release];
-        self->_serverPort = nil;
     });
 }
 
@@ -194,8 +188,6 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
 
 - (void)dealloc {
     [_serverAddress release];
-    [_serverIPAddress release];
-    [_serverPort release];
     [_deviceAddress release];
     SG_ZeroAndReleaseData(_privateKeyPEM);
     [_serverPubKeyPEM release];
@@ -208,40 +200,6 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
     __block NSString *result = nil;
     dispatch_sync(_isolationQueue, ^{
         result = [self->_serverAddress retain];
-    });
-    return [result autorelease];
-}
-
-- (void)setServerIPAddress:(NSString *)ip {
-    dispatch_barrier_sync(_isolationQueue, ^{
-        if (self->_serverIPAddress != ip) {
-            [self->_serverIPAddress release];
-            self->_serverIPAddress = [ip copy];
-        }
-    });
-}
-
-- (NSString *)serverIPAddress {
-    __block NSString *result = nil;
-    dispatch_sync(_isolationQueue, ^{
-        result = [self->_serverIPAddress retain];
-    });
-    return [result autorelease];
-}
-
-- (void)setServerPort:(NSString *)port {
-    dispatch_barrier_sync(_isolationQueue, ^{
-        if (self->_serverPort != port) {
-            [self->_serverPort release];
-            self->_serverPort = [port copy];
-        }
-    });
-}
-
-- (NSString *)serverPort {
-    __block NSString *result = nil;
-    dispatch_sync(_isolationQueue, ^{
-        result = [self->_serverPort retain];
     });
     return [result autorelease];
 }

@@ -1,6 +1,6 @@
 #import "SGMigration.h"
 #import "SGControlChannelProtocol.h"
-#import "SGAtomicFile.h"
+#import "SGStorage.h"
 #import "SGConfiguration.h"
 #import "SGDatabaseSchema.h"
 #import "SGKeychainStore.h"
@@ -161,7 +161,14 @@ static BOOL SGMigrateLegacyProfileIfNeeded(void) {
         [deviceAddress length] > 0 || [privateKeyPEM length] > 0 ||
         [profilePrefs objectForKey:@"privateKey"] ||
         [mainPrefs objectForKey:@"privateKey"];
-    if (!hasLegacyProfileMaterial) return YES;
+    if (!hasLegacyProfileMaterial) {
+        if ([migrationVersion integerValue] >= SG_MIGRATION_VERSION) return YES;
+        NSMutableDictionary *stamped =
+            [NSMutableDictionary dictionaryWithDictionary:mainPrefs];
+        [stamped setObject:[NSNumber numberWithInteger:SG_MIGRATION_VERSION]
+                    forKey:kSGMigrationVersionKey];
+        return SGAtomicWritePropertyList(stamped, mainPath, 0644, NULL);
+    }
 
     if (![serverAddress length] || !SG_LooksLikePEMCertificate(serverCertPEM)) {
         SGLOGW(SGMigration,
@@ -474,6 +481,6 @@ static BOOL SGMigrateLegacyDatabaseIfNeeded(void) {
 BOOL SGMigrationRunIfNeeded(void) {
     BOOL profileOK = SGMigrateLegacyProfileIfNeeded();
     BOOL keychainOK = profileOK && SGMigrateKeychainAccessibilityIfNeeded();
-    BOOL databaseOK = SGMigrateLegacyDatabaseIfNeeded();
+    BOOL databaseOK = profileOK && SGMigrateLegacyDatabaseIfNeeded();
     return profileOK && keychainOK && databaseOK;
 }

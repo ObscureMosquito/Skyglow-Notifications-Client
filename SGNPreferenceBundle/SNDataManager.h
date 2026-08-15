@@ -1,7 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
-#include "SGStatusServer.h"
+#include "SGStatus.h"
 
 typedef enum {
     SNRegistrationNotRegistered     = 0,

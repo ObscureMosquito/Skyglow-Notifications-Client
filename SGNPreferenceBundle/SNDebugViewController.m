@@ -1,4 +1,5 @@
 #import "SNDebugViewController.h"
+#import "SGSharedConstants.h"
 #import "SNDataManager.h"
 #import "SNLogTailViewController.h"
 #import "SNChannelGateway.h"
@@ -114,7 +115,7 @@ typedef enum {
     if (section == SectionSavedTokens && _savedApps.count > 0)
         return @"Tap to copy token. Swipe to delete.";
     if (section == SectionLogs)
-        return @"Live tail of /var/log/skyglow.log.";
+        return [NSString stringWithFormat:@"Live tail of %@.", SG_LOG_PATH];
     if (section == SectionDaemon)
         return @"Stops and restarts the background daemon process.";
     return nil;
