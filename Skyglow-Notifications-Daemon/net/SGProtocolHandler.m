@@ -3,7 +3,7 @@
 #import "SGDatabaseManager.h"
 #import "SGConfiguration.h"
 #import "SGKeepAliveOffload.h"
-#import "SGAvailability.h"
+#import "SGPlatform.h"
 #import "SGLog.h"
 #include "SGByteOrder.h"
 #include <openssl/ssl.h>
@@ -708,7 +708,7 @@ BOOL SGP_SendClientDisconnect(void) {
     return SGP_LowLevelSend(SGP_C_DISCONNECT, &reason, 1) == 0;
 }
 
-int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
+int SGP_ProcessNextIncomingMessage(void) {
     if (!SGP_IsConnected()) return SGP_ERR_IO;
 
     int hasPending = (_ssl && SSL_pending(_ssl) > 0);
@@ -717,8 +717,8 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
         if (_sock >= FD_SETSIZE) return SGP_ERR_IO;
         fd_set rfds; FD_ZERO(&rfds); FD_SET(_sock, &rfds);
     
-        struct timeval tv = {(long)pingIntervalSec, 0};
-        struct timeval *tv_ptr = (pingIntervalSec > 0.0) ? &tv : NULL;
+        struct timeval tv = {0, 0};
+        struct timeval *tv_ptr = NULL;
 
         pthread_mutex_lock(&_pingLock);
         double pendingSince = _pingPendingSince;
@@ -743,10 +743,6 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
                 double elapsed = SG_GetMonotonicSeconds() - pendingAtTimeout;
                 return (elapsed >= (double)SGP_PONG_TIMEOUT_SEC) ? SGP_ERR_TIMEOUT : SGP_OK;
             }
-
-            if (pingIntervalSec <= 0.0) return SGP_OK;
-
-            (void)SGP_SendPingIfIdle();
             return SGP_OK;
         }
     }
@@ -828,7 +824,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
     uint32_t rxAssertion = 0;
     uint8_t *raw = NULL;
     if (len > 0) {
-        rxAssertion = [[SGAvailability shared]
+        rxAssertion = [[SGPlatform currentPlatform].system.power
             createTimedPowerAssertionWithName:@"com.skyglow.sgn.receive"
                                       timeout:SG_POWER_ASSERTION_TIMEOUT_SEC];
         raw = malloc(len);
@@ -1070,7 +1066,7 @@ int SGP_ProcessNextIncomingMessage(double pingIntervalSec) {
     }
 
 cleanup:
-    if (rxAssertion) [[SGAvailability shared] releasePowerAssertion:rxAssertion];
+    if (rxAssertion) [[SGPlatform currentPlatform].system.power releasePowerAssertion:rxAssertion];
     free(raw);
     return result;
 }

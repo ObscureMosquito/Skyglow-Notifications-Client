@@ -3,7 +3,7 @@
 #import "SGDurableInbox.h"
 #import "SGConfiguration.h"
 #import "SGDatabaseManager.h"
-#import "SGKeychainStore.h"
+#import "SGPlatform.h"
 #import "SGTokenManager.h"
 #import "SGControlChannelProtocol.h"
 #import "SGStatus.h"
@@ -192,17 +192,17 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
         return NO;
     }
     @synchronized(self) {
-        if (!SGKeychain_StorePrivateKeyData(privateKeyPEM, profileIdx)) {
+        if (![[SGPlatform currentPlatform].keyStore storeKeyData:privateKeyPEM forProfile:profileIdx]) {
             SGLOGE(SGStateStore, "code=%s profile=%ld result=failed",
                    SGND_REGISTRATION_KEY_WRITE_FAILED, (long)profileIdx);
             return NO;
         }
 
         NSMutableData *verifyKey = nil;
-        if (!SGKeychain_CopyPrivateKeyPEM(profileIdx, &verifyKey) || !verifyKey || [verifyKey length] == 0) {
+        if (![[SGPlatform currentPlatform].keyStore copyKeyData:&verifyKey forProfile:profileIdx] || !verifyKey || [verifyKey length] == 0) {
             SGLOGE(SGStateStore, "code=%s profile=%ld result=failed reason=readback_failed",
                    SGND_REGISTRATION_KEY_WRITE_FAILED, (long)profileIdx);
-            SGKeychain_DeletePrivateKey(profileIdx);
+            [[SGPlatform currentPlatform].keyStore deleteKeyForProfile:profileIdx];
             if (verifyKey) SG_CryptoWipeData(verifyKey);
             return NO;
         }
@@ -214,7 +214,7 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
             [profile removeObjectForKey:@"last_reg_fail"];
         }];
         if (!persisted) {
-            SGKeychain_DeletePrivateKey(profileIdx);
+            [[SGPlatform currentPlatform].keyStore deleteKeyForProfile:profileIdx];
             return NO;
         }
 
@@ -232,7 +232,7 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
             [profile removeObjectForKey:@"privateKey"];
             [profile removeObjectForKey:@"last_reg_fail"];
         }];
-        SGKeychain_DeletePrivateKey(profileIdx);
+        [[SGPlatform currentPlatform].keyStore deleteKeyForProfile:profileIdx];
         if (persisted) [self _republishConfigurationLocked];
         return persisted;
     }
@@ -311,7 +311,7 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
         }
 
         if (invalidate) {
-            SGKeychain_DeletePrivateKey(profileIdx);
+            [[SGPlatform currentPlatform].keyStore deleteKeyForProfile:profileIdx];
             [[SGDatabaseManager sharedManager]
                 clearOperationalStateForProfile:profileIdx];
         } else if (addressChanged) {
@@ -385,7 +385,7 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
 
         if ((hadProfile && !profileSnapshot) ||
             (hadCertificate && !certificateSnapshot) ||
-            !SGKeychain_CopyPrivateKeyPEM(profileIdx, &keySnapshot)) {
+            ![[SGPlatform currentPlatform].keyStore copyKeyData:&keySnapshot forProfile:profileIdx]) {
             if (keySnapshot) {
                 SG_CryptoWipeData(keySnapshot);
             }
@@ -395,7 +395,7 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
         NSError *removeError = nil;
         BOOL ok = SGDurableRemoveItem(plistPath, &removeError) &&
                   SGDurableRemoveItem(certDiskPath, &removeError) &&
-                  SGKeychain_DeletePrivateKey(profileIdx) &&
+                  [[SGPlatform currentPlatform].keyStore deleteKeyForProfile:profileIdx] &&
                   [[SGDatabaseManager sharedManager]
                       clearOperationalStateForProfile:profileIdx];
 
@@ -406,8 +406,8 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
                     certDiskPath, certificateSnapshot, 0644) && rollbackOK;
             }
             if (keySnapshot) {
-                rollbackOK = SGKeychain_StorePrivateKeyData(
-                    keySnapshot, profileIdx) && rollbackOK;
+                rollbackOK = [[SGPlatform currentPlatform].keyStore
+                    storeKeyData:keySnapshot forProfile:profileIdx] && rollbackOK;
             }
             if (hadProfile) {
                 rollbackOK = SGRestoreFileSnapshot(

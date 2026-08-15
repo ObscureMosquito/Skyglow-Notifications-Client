@@ -2,37 +2,24 @@
 #define SKYGLOW_SG_PLATFORM_H
 
 #import <Foundation/Foundation.h>
-#import <mach/mach.h>
-#import "SGControlChannelProtocol.h"
+#import "capabilities/SGCapabilityTable.h"
+#import "keychain/SGKeyStore.h"
+#import "delivery/SGNotificationDelivery.h"
+#import "network/SGNetworkInfo.h"
+#import "system/SGSystemServices.h"
 
-@protocol SGPlatform <NSObject>
+/** platform abstraction layer one host, so a singleton, my genius invention :) */
+@interface SGPlatform : NSObject
 
-- (BOOL)start;
-- (void)stop;
-- (SGControlError)sendNotificationForBundleID:(NSString *)bundleID
-                                      payload:(NSDictionary *)payload;
-- (void)resetAppRegistrationForBundleID:(NSString *)bundleID
-                             completion:(void (^)(SGControlError err,
-                                                   NSString *detail))completion;
++ (instancetype)currentPlatform;
 
-@end
+- (BOOL)hasCapability:(SGCapability)capability;
 
-
-@protocol SGNativePushPlatform <SGPlatform>
-
-- (void)listNativePushAppsWithCompletion:(void (^)(SGControlError err, NSData *listPayload))completion;
-- (void)registerNativePushAppForBundleID:(NSString *)bundleID
-                              completion:(void (^)(SGControlError err,
-                                                   NSString *detail))completion;
-- (void)requestNativeNotificationAuthorizationForBundleID:(NSString *)bundleID
-    completion:(void (^)(SGControlError err, NSString *detail))completion;
-- (void)registerInputAppForBundleID:(NSString *)bundleID
-                         completion:(void (^)(SGControlError err,
-                                               NSString *detail))completion;
+@property (nonatomic, readonly) id<SGKeyStore>             keyStore;
+@property (nonatomic, readonly) id<SGNotificationDelivery> delivery;
+@property (nonatomic, readonly) id<SGNetworkInfo>          network;
+@property (nonatomic, readonly) SGSystemServices          *system;
 
 @end
-
-FOUNDATION_EXPORT id<SGPlatform> SGPlatformCreate(
-    void (^deliveryReadyHandler)(void));
 
 #endif

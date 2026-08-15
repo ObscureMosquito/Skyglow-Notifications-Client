@@ -1,6 +1,6 @@
 #import "SGKeepAliveOffload.h"
 #import "SGProtocolHandler.h"
-#import "SGAvailability.h"
+#import "SGPlatform.h"
 #import "SGLog.h"
 #import "SGLogDiagnostics.h"
 
@@ -12,22 +12,14 @@ static int sg_offload_ios6(int fd, double interval) {
 }
 
 bool SGKAOffload_Available(void) {
-    return [[SGAvailability shared] keepAliveOffloadBackend] !=
-        SGKeepAliveOffloadBackendNone;
+    return [[SGPlatform currentPlatform] hasCapability:SGCapabilityKeepAliveOffload];
 }
 
 int SGKAOffload_TryEnable(double intervalSec) {
     if (!SGKAOffload_Available()) return SGKAOffloadUnimplemented;
     if (!SGP_IsConnected() || SGP_GetSocketFD() < 0) return SGKAOffloadNoSocket;
 
-    int rc = SGKAOffloadUnimplemented;
-    switch ([[SGAvailability shared] keepAliveOffloadBackend]) {
-        case SGKeepAliveOffloadBackendIOS6Broadcom:
-            rc = sg_offload_ios6(SGP_GetSocketFD(), intervalSec);
-            break;
-        case SGKeepAliveOffloadBackendNone:
-            break;
-    }
+    int rc = sg_offload_ios6(SGP_GetSocketFD(), intervalSec);
     _active = (rc == SGKAOffloadOK);
     SGLOGI(SGKAOffload, "code=%s interval=%.0fs rc=%d result=%s", SGND_KEEPALIVE_OFFLOAD_ATTEMPT,
            intervalSec, rc, _active ? "active" : "inactive");

@@ -6,11 +6,10 @@
 #import "SGTokenManager.h"
 #import "SGProtocolHandler.h"
 #import "SGKeepAliveOffload.h"
+#import "SGKeepAliveStrategy.h"
 #import "SGServerLocator.h"
 #import "SGCryptoEngine.h"
-#import "SGAvailability.h"
 #import "SGControlChannel.h"
-#import "SGReachabilityMonitor.h"
 #import "SGStateStore.h"
 #import "SGLog.h"
 #import "SGPlatform.h"
@@ -54,20 +53,18 @@ static BOOL isValidPort(NSString *port) {
 @implementation SGDaemon {
     NSLock                *_stateLock;
     int                    _consecutiveFailures;
-    id                     _growthAlgorithm;
+    SGKeepAliveAlgorithm   _keepAlive;
     SGNotificationProcessor *_notificationProcessor;
     BOOL                   _activeModeEntered;
     uint32_t               _fsmGeneration;
     dispatch_queue_t       _entryActionQueue;
     dispatch_queue_t       _connectionQueue;
     dispatch_queue_t       _protocolWorkerQueue;
-    id                     _keepAliveTimer;
+    dispatch_source_t      _keepAliveTimer;
     BOOL                   _isWiFi;
     char                   _lastErrorDetail[128];
     SGStateStore          *_stateStore;
     SGControlChannel      *_controlChannel;
-    id<SGPlatform>         _deliveryPlatform;
-    SGReachabilityMonitor *_reachability;
     NSString              *_resolvedIP;
     NSString              *_resolvedPort;
     _Atomic uint32_t       _probeAssertionID;
@@ -97,15 +94,12 @@ static BOOL isValidPort(NSString *port) {
     [_notificationProcessor suspendPendingDeliveryRetries];
     [_notificationProcessor release];
     [_stateLock release];
-    [_growthAlgorithm release];
     [_controlChannel release];
-    [_deliveryPlatform release];
-    [_reachability stopMonitoringSystemNetworkChanges];
-    [_reachability release];
+    [[SGPlatform currentPlatform].network stopMonitoring];
     [_resolvedIP release];
     [_resolvedPort release];
-    [[SGAvailability shared] stopPowerEventMonitoring];
-    if (_keepAliveTimer) { [_keepAliveTimer invalidate]; [_keepAliveTimer release]; }
+    [[SGPlatform currentPlatform].system.power stopPowerEventMonitoring];
+    [self _cancelKeepAliveTimer];
     dispatch_release(_entryActionQueue);
     dispatch_release(_connectionQueue);
     dispatch_release(_protocolWorkerQueue);
@@ -138,13 +132,6 @@ static BOOL isValidPort(NSString *port) {
     _controlChannel = channel;
 }
 
-- (void)attachDeliveryPlatform:(id<SGPlatform>)platform {
-    if (platform == _deliveryPlatform) return;
-    [platform retain];
-    [_deliveryPlatform release];
-    _deliveryPlatform = platform;
-}
-
 - (void)kickLocalDeliveryDrain {
     [_notificationProcessor kickPendingDeliveryDrain];
 }
@@ -161,56 +148,39 @@ static BOOL isValidPort(NSString *port) {
     [_stateStore reconcileTokensWithDatabase];
 
     [_stateLock lock];
-    if (!_growthAlgorithm) {
-
-        _isWiFi = YES;
-        double savedInterval = [[SGDatabaseManager sharedManager] loadKeepAliveIntervalForWiFi:YES];
-        _growthAlgorithm = [[SGAvailability shared]
-            reinitializeGrowthAlgorithmForWiFi:YES
-                                 savedInterval:savedInterval];
-    }
+    _isWiFi = YES;
+    SGKeepAlive_Initialize(&_keepAlive, true,
+        [[SGDatabaseManager sharedManager] loadKeepAliveIntervalForWiFi:YES]);
     [_stateLock unlock];
 
     [_notificationProcessor kickPendingDeliveryDrain];
     __unsafe_unretained SGDaemon *daemonSelf = self;
-    [[SGAvailability shared]
+    [[SGPlatform currentPlatform].system.power
         startPowerEventMonitoringWithWakeHandler:^{
             [daemonSelf handleSystemWake];
-        }
-        willSleepHandler:^{
-            [daemonSelf _armScheduledWakeIfNeeded];
         }];
 }
 
 - (void)_exitActiveMode {
-    [_stateLock lock];
-    if (_growthAlgorithm) {
-        [_growthAlgorithm release];
-        _growthAlgorithm = nil;
-    }
-    [_stateLock unlock];
-
     [self _invalidateKeepAliveTimer];
-    [[SGAvailability shared] cancelPendingScheduledWake];
     [_notificationProcessor suspendPendingDeliveryRetries];
-    [[SGAvailability shared] stopPowerEventMonitoring];
+    [[SGPlatform currentPlatform].system.power stopPowerEventMonitoring];
 }
 
 - (void)_startReachabilityMonitor {
-    if (_reachability) return;
     __unsafe_unretained SGDaemon *daemonSelf = self;
-    _reachability = [[SGReachabilityMonitor alloc] initWithChangeHandler:^(BOOL isReachable, BOOL isWWAN) {
-        if (isReachable) {
-            [daemonSelf systemNetworkReachabilityDidChangeWithWWANStatus:isWWAN];
+    [[SGPlatform currentPlatform].network
+        startMonitoringWithHandler:^(BOOL reachable, BOOL activePathIsCellular) {
+        if (reachable) {
+            [daemonSelf systemNetworkReachabilityDidChangeWithWWANStatus:activePathIsCellular];
         } else {
             [daemonSelf systemNetworkDidDrop];
         }
     }];
-    [_reachability startMonitoringSystemNetworkChanges];
 }
 
 - (bool)_isNetworkPathViable {
-    return _reachability ? [_reachability isReachable] : true;
+    return [[SGPlatform currentPlatform].network isReachable];
 }
 
 - (void)_setResolvedEndpointLockedIP:(NSString *)ip port:(NSString *)port {
@@ -629,7 +599,7 @@ static BOOL isValidPort(NSString *port) {
 
 - (void)_attemptKeepAliveOffload {
     [_stateLock lock];
-    double interval = [self _currentKeepAliveInterval];
+    double interval = SGKeepAlive_GetCurrentInterval(&_keepAlive);
     [_stateLock unlock];
     SGKAOffload_TryEnable(interval);
 }
@@ -643,9 +613,9 @@ static BOOL isValidPort(NSString *port) {
     [self _releaseProbeAssertion:atomic_load(&_probeAssertionID)];
 
     [_stateLock lock];
-    double oldVal = [self _currentKeepAliveInterval];
-    [self _processKeepAliveResult:YES];
-    double newVal = [self _currentKeepAliveInterval];
+    double oldVal = SGKeepAlive_GetCurrentInterval(&_keepAlive);
+    SGKeepAlive_ProcessHeartbeatResult(&_keepAlive, true);
+    double newVal = SGKeepAlive_GetCurrentInterval(&_keepAlive);
     BOOL isWiFi = _isWiFi;
     [_stateLock unlock];
     
@@ -725,8 +695,8 @@ static BOOL isValidPort(NSString *port) {
 - (void)systemNetworkReachabilityDidChangeWithWWANStatus:(BOOL)isWWAN {
     [_stateLock lock];
     _isWiFi = !isWWAN;
-    double savedInterval = [[SGDatabaseManager sharedManager] loadKeepAliveIntervalForWiFi:_isWiFi];
-    [self _reinitializeKeepAliveForWiFi:_isWiFi savedInterval:savedInterval];
+    SGKeepAlive_Initialize(&_keepAlive, _isWiFi,
+        [[SGDatabaseManager sharedManager] loadKeepAliveIntervalForWiFi:_isWiFi]);
     [_stateLock unlock];
 
     [self handleEvent:SGEventNetworkUp payload:nil];
@@ -790,32 +760,8 @@ static BOOL isValidPort(NSString *port) {
 }
 
 - (void)handleSystemWake {
-    if ([SGAvailability shared].scheduledWakeAvailable) {
-        SGLOGI(SGDaemon, "code=%s result=woke", SGND_SCHEDULED_WAKE_FIRED);
-    }
+    SGLOGI(SGDaemon, "code=%s result=woke", SGND_SCHEDULED_WAKE_FIRED);
     [self handleEvent:SGEventSystemDidWake payload:nil];
-}
-
-- (void)_armScheduledWakeIfNeeded {
-    SGAvailability *avail = [SGAvailability shared];
-    if (!avail.scheduledWakeAvailable) return;
-
-    if (SGKAOffload_IsActive()) {
-        SGLOGI(SGDaemon, "code=%s action=skip_rtc_wake_offload_active", SGND_KEEPALIVE_OFFLOAD_SUPPRESS_WAKE);
-        [avail cancelPendingScheduledWake];
-        return;
-    }
-
-    if (!SGP_IsConnected()) {
-        [avail cancelPendingScheduledWake];
-        return;
-    }
-
-    [_stateLock lock];
-    double interval = [self _currentKeepAliveInterval];
-    [_stateLock unlock];
-
-    [avail scheduleWakeAfterInterval:interval];
 }
 
 - (BOOL)performSetEnabled:(BOOL)enabled {
@@ -919,43 +865,24 @@ static BOOL isValidPort(NSString *port) {
 - (SGControlError)_deliverPushTopic:(NSString *)topic payload:(NSDictionary *)payload {
     if (!topic || [topic length] == 0) return SGCERR_INVALID_REQUEST;
 
-    if (!_deliveryPlatform) {
+    id<SGNotificationDelivery> delivery = [SGPlatform currentPlatform].delivery;
+    if (!delivery) {
         SGLOGW(SGDaemon, "code=%s bundle=%s result=unavailable", SGND_DELIVERY_PLATFORM_UNAVAILABLE,
                     [topic length] ? [topic UTF8String] : "none");
         return SGCERR_UNREACHABLE;
     }
 
-    SGControlError kr = [_deliveryPlatform
-        sendNotificationForBundleID:topic payload:payload];
+    SGControlError kr = [delivery sendNotificationForBundleID:topic payload:payload];
     SGLOGI(SGDaemon, "code=%s bundle=%s result=%s", SGND_DELIVERY_DISPATCHING,
                 [topic UTF8String], (kr == SGCERR_OK) ? "delivered" : "failed");
     return kr;
 }
 
-#pragma mark - Keepalive Algorithm Helpers
-
-- (double)_currentKeepAliveInterval {
-    return [[SGAvailability shared] currentIntervalForGrowthAlgorithm:_growthAlgorithm];
-}
-
-- (void)_processKeepAliveResult:(BOOL)success {
-    [[SGAvailability shared] processResult:success forGrowthAlgorithm:_growthAlgorithm];
-}
-
-- (void)_reinitializeKeepAliveForWiFi:(BOOL)isWiFi savedInterval:(double)savedInterval {
-    [_growthAlgorithm release];
-    _growthAlgorithm = [[SGAvailability shared]
-        reinitializeGrowthAlgorithmForWiFi:isWiFi
-                             savedInterval:savedInterval];
-}
-
-#pragma mark - PCPersistentTimer Keepalive (Survives Deep Sleep)
+#pragma mark - Keepalive Timer (wall clock + scheduled wake)
 
 - (void)_scheduleKeepAliveTimer {
-    if (![SGAvailability shared].persistentTimerAvailable) return;
-
     [_stateLock lock];
-    double interval = [self _currentKeepAliveInterval];
+    double interval = SGKeepAlive_GetCurrentInterval(&_keepAlive);
     uint32_t generation = _fsmGeneration;
     [_stateLock unlock];
 
@@ -970,37 +897,46 @@ static BOOL isValidPort(NSString *port) {
             return;
         }
 
-        if (self->_keepAliveTimer) {
-            [self->_keepAliveTimer invalidate];
-            [self->_keepAliveTimer release];
-            self->_keepAliveTimer = nil;
+        [self _cancelKeepAliveTimer];
+
+        dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                                         dispatch_get_main_queue());
+        if (!timer) return;
+        dispatch_source_set_timer(timer,
+                                  dispatch_walltime(NULL, (int64_t)(interval * NSEC_PER_SEC)),
+                                  DISPATCH_TIME_FOREVER, 0);
+        dispatch_source_set_event_handler(timer, ^{ [self _keepAliveTimerFired:timer]; });
+        self->_keepAliveTimer = timer;
+        dispatch_resume(timer);
+
+        id<SGSystemPower> power = [SGPlatform currentPlatform].system.power;
+        if (SGKAOffload_IsActive()) {
+            SGLOGI(SGDaemon, "code=%s action=skip_rtc_wake_offload_active", SGND_KEEPALIVE_OFFLOAD_SUPPRESS_WAKE);
+            [power cancelPendingScheduledWake];
+        } else if ([[SGPlatform currentPlatform] hasCapability:SGCapabilityScheduledWake]) {
+            [power scheduleWakeAfterInterval:interval];
         }
-
-        self->_keepAliveTimer = [[SGAvailability shared]
-            createPersistentTimerWithInterval:interval
-                           serviceIdentifier:@"com.skyglow.sgn"
-                                      target:self
-                                    selector:@selector(_keepAliveTimerFired:)];
-
-        if (!self->_keepAliveTimer) return;
-
-        [[SGAvailability shared] schedulePersistentTimer:self->_keepAliveTimer inRunLoop:[NSRunLoop mainRunLoop]];
 
         SGLOGI(SGDaemon, "code=%s interval=%.0fs result=scheduled", SGND_KEEPALIVE_TIMER_SCHEDULED, interval);
     });
 }
 
+- (void)_cancelKeepAliveTimer {
+    if (_keepAliveTimer) {
+        dispatch_source_cancel(_keepAliveTimer);
+        dispatch_release(_keepAliveTimer);
+        _keepAliveTimer = NULL;
+    }
+}
+
 - (void)_invalidateKeepAliveTimer {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self->_keepAliveTimer) {
-            [self->_keepAliveTimer invalidate];
-            [self->_keepAliveTimer release];
-            self->_keepAliveTimer = nil;
-        }
+        [self _cancelKeepAliveTimer];
+        [[SGPlatform currentPlatform].system.power cancelPendingScheduledWake];
     });
 }
 
-- (void)_keepAliveTimerFired:(id)timer {
+- (void)_keepAliveTimerFired:(dispatch_source_t)timer {
     if (timer != _keepAliveTimer || !SGP_IsConnected()) {
         SGLOGD(SGDaemon, "code=%s reason=stale_or_not_connected action=ignore", SGND_KEEPALIVE_TIMER_IGNORED);
         return;
@@ -1032,7 +968,7 @@ static BOOL isValidPort(NSString *port) {
     if (!assertionID) return;
     uint32_t expected = assertionID;
     if (atomic_compare_exchange_strong(&_probeAssertionID, &expected, 0)) {
-        [[SGAvailability shared] releasePowerAssertion:assertionID];
+        [[SGPlatform currentPlatform].system.power releasePowerAssertion:assertionID];
     }
 }
 
@@ -1051,11 +987,11 @@ static BOOL isValidPort(NSString *port) {
             return;
         }
 
-        uint32_t assertionID = [[SGAvailability shared]
+        uint32_t assertionID = [[SGPlatform currentPlatform].system.power
             createTimedPowerAssertionWithName:@"com.skyglow.sgn.probe"
                                       timeout:SG_POWER_ASSERTION_TIMEOUT_SEC];
         uint32_t previous = atomic_exchange(&_probeAssertionID, assertionID);
-        if (previous) [[SGAvailability shared] releasePowerAssertion:previous];
+        if (previous) [[SGPlatform currentPlatform].system.power releasePowerAssertion:previous];
 
         SGP_SendKeepAlivePing();
 
@@ -1080,9 +1016,9 @@ static BOOL isValidPort(NSString *port) {
 
 - (void)_recordKeepAliveFailureFeedback {
     [_stateLock lock];
-    double oldVal = [self _currentKeepAliveInterval];
-    [self _processKeepAliveResult:NO];
-    double newVal = [self _currentKeepAliveInterval];
+    double oldVal = SGKeepAlive_GetCurrentInterval(&_keepAlive);
+    SGKeepAlive_ProcessHeartbeatResult(&_keepAlive, false);
+    double newVal = SGKeepAlive_GetCurrentInterval(&_keepAlive);
     BOOL isWiFi = _isWiFi;
     [_stateLock unlock];
 
@@ -1202,19 +1138,10 @@ static BOOL isValidPort(NSString *port) {
                SGND_PROTOCOL_WORKER_STARTED,
                (unsigned long long)connectionGeneration);
 
-        BOOL timerDrivenPings = [SGAvailability shared].persistentTimerAvailable;
-
         while (SGP_IsConnected() &&
                SGP_GetConnectionGeneration() == connectionGeneration) {
             @autoreleasepool {
-                double pingInterval = 0.0;
-                if (!timerDrivenPings) {
-                    [self->_stateLock lock];
-                    pingInterval = [self _currentKeepAliveInterval];
-                    [self->_stateLock unlock];
-                }
-
-                int rc = SGP_ProcessNextIncomingMessage(pingInterval);
+                int rc = SGP_ProcessNextIncomingMessage();
 
                 if (rc != SGP_OK) {
                     BOOL isCurrentConnection =

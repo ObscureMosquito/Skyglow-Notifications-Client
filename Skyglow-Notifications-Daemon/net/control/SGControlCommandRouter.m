@@ -84,31 +84,27 @@ static void SGCDeferBoolReply(SGControlReplyBlock reply,
 }
 
 @implementation SGControlCommandRouter {
-    SGDaemon   *_daemon;
-    id<SGPlatform> _platform;
+    SGDaemon *_daemon;
 }
 
-- (instancetype)initWithDaemon:(SGDaemon *)daemon
-                       platform:(id<SGPlatform>)platform {
+- (instancetype)initWithDaemon:(SGDaemon *)daemon {
     if ((self = [super init])) {
         _daemon = [daemon retain];
-        _platform = [platform retain];
     }
     return self;
 }
 
 - (void)dealloc {
     [_daemon release];
-    [_platform release];
     [super dealloc];
 }
 
 - (void)attachToChannel:(SGControlChannel *)controlChannel {
-    SGDaemon   *daemon   = _daemon;
-    id<SGPlatform> platform = _platform;
-    id<SGNativePushPlatform> nativePlatform =
-        [(id)platform conformsToProtocol:@protocol(SGNativePushPlatform)]
-            ? (id<SGNativePushPlatform>)platform : nil;
+    SGDaemon *daemon = _daemon;
+    id<SGNotificationDelivery> platform = [SGPlatform currentPlatform].delivery;
+    id<SGNativePushDelivery> nativePlatform =
+        [(id)platform conformsToProtocol:@protocol(SGNativePushDelivery)]
+            ? (id<SGNativePushDelivery>)platform : nil;
 
     [controlChannel registerHandler:^(const SGControlChannelMessage *req,
                                       SGControlReplyBlock reply,

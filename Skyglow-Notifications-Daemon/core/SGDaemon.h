@@ -6,7 +6,6 @@
 #import "SGStatus.h"
 #import "SGControlChannelProtocol.h"
 
-@protocol SGPlatform;
 
 typedef NS_ENUM(NSInteger, SGEvent) {
     SGEventStartRequested,
@@ -39,8 +38,7 @@ typedef NS_ENUM(NSInteger, SGEvent) {
 /** Used to publish STATE_CHANGED events to any subscriber */
 - (void)attachControlChannel:(SGControlChannel *)channel;
 
-/** Handle to the platform layer, used only for final local notification delivery */
-- (void)attachDeliveryPlatform:(id<SGPlatform>)platform;
+/** handle to the platform layer, used only for final local notification delivery */
 
 /** Retry pending local deliveries */
 - (void)kickLocalDeliveryDrain;

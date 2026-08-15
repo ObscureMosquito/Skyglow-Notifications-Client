@@ -3,22 +3,7 @@
 
 #import <Foundation/Foundation.h>
 #import "SGSharedConstants.h"
-#include <TargetConditionals.h>
-
-#define SG_MACOS_ROOT @"/usr/local/var/skyglow"
-
-/** resolves a system root relative constant to its real path. */
-static inline NSString * SGPath(NSString *path) {
-#if TARGET_OS_OSX
-    return [SG_MACOS_ROOT stringByAppendingString:path];
-#else
-    static int _sgPathIsRootless = -1;
-    if (__builtin_expect(_sgPathIsRootless < 0, 0)) {
-        _sgPathIsRootless = [[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"] ? 1 : 0;
-    }
-    return _sgPathIsRootless ? [@"/var/jb" stringByAppendingString:path] : path;
-#endif
-}
+#import "SGPlatformConstants.h"
 
 void SGEnsureRuntimeDirectories(void);
 

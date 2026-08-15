@@ -6,7 +6,6 @@
 #include <sqlite3.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <TargetConditionals.h>
 
 #define SG_DEDUP_DEFAULT_RETENTION_SEC ((int64_t)86400)
 
@@ -50,7 +49,7 @@ static sqlite3_int64 SGActiveProfileID(void) {
         sqlite3_busy_timeout(_database, 3000);
 
         chmod([dbPath fileSystemRepresentation], 0600);
-        SGStorageApplyMobileOwnership(dbPath);
+        SGStorageApplyStateOwnership(dbPath);
 
         sqlite3_exec(_database, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
         sqlite3_exec(_database, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
@@ -59,8 +58,8 @@ static sqlite3_int64 SGActiveProfileID(void) {
         NSString *shmPath = [dbPath stringByAppendingString:@"-shm"];
         chmod([walPath fileSystemRepresentation], 0600);
         chmod([shmPath fileSystemRepresentation], 0600);
-        SGStorageApplyMobileOwnership(walPath);
-        SGStorageApplyMobileOwnership(shmPath);
+        SGStorageApplyStateOwnership(walPath);
+        SGStorageApplyStateOwnership(shmPath);
 
         if (![self _initializeSchema]) {
             [self release];

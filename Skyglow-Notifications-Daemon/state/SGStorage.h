@@ -32,7 +32,7 @@ BOOL SGDurableRemoveItem(NSString *path, NSError **outError);
 BOOL SGDurableRenameItem(NSString *fromPath, NSString *toPath, NSError **outError);
 
 /** chown to the mobile user where one exists, no-op on macOS. */
-void SGStorageApplyMobileOwnership(NSString *path);
+void SGStorageApplyStateOwnership(NSString *path);
 
 /** chmod 0700 + mobile ownership on an existing directory. */
 void SGStorageApplyPrivateDirectoryProtection(NSString *path);

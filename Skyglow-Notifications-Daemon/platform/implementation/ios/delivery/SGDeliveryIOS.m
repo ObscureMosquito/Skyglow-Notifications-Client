@@ -1,6 +1,4 @@
-#import "SGIOSPlatform.h"
-
-#if !TARGET_OS_OSX
+#import "SGDeliveryIOS.h"
 
 #import "SGControlChannel.h"
 #import "SGControlChannelProtocol.h"
@@ -10,21 +8,23 @@
 #import <libkern/OSAtomic.h>
 #import <stddef.h>
 
-@implementation SGIOSPlatform {
+@implementation SGDeliveryIOS {
     SGControlChannel *_channel;
 }
 
-- (instancetype)initWithDeliveryReadyHandler:(void (^)(void))handler {
+- (id)init {
     if ((self = [super init])) {
         _channel = [[SGControlChannel clientForServiceName:
             SKYGLOW_CONTROL_SERVICE_SPRINGBOARD] retain];
-        if (handler) {
-            [_channel setConnectionHandler:^(BOOL connected) {
-                if (connected) handler();
-            }];
-        }
     }
     return self;
+}
+
+- (void)setDeliveryReadyHandler:(void (^)(void))handler {
+    void (^handlerCopy)(void) = [[handler copy] autorelease];
+    [_channel setConnectionHandler:^(BOOL connected) {
+        if (connected && handlerCopy) handlerCopy();
+    }];
 }
 
 - (BOOL)start {
@@ -176,5 +176,3 @@
 }
 
 @end
-
-#endif

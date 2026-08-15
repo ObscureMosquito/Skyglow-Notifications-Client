@@ -11,7 +11,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
-#include <TargetConditionals.h>
 
 static pthread_mutex_t _logLock = PTHREAD_MUTEX_INITIALIZER;
 

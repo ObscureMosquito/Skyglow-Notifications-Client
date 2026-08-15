@@ -8,11 +8,19 @@ include $(THEOS)/makefiles/common.mk
  
 ifeq ($(SGN_MACOS),1)
 SGN_OPENSSL      := $(THEOS_PROJECT_DIR)/libraries/openssl/macos
-SGN_PLATFORM_SRC := Skyglow-Notifications-Daemon/platform/SGMacPlatform.m
+SGN_PLATFORM_DIR := Skyglow-Notifications-Daemon/platform/implementation/macos
+SGN_PLATFORM_SRC := $(SGN_PLATFORM_DIR)/capabilities/SGCapabilityTable.m \
+                    $(SGN_PLATFORM_DIR)/delivery/SGDeliveryMac.m \
+                    $(SGN_PLATFORM_DIR)/keychain/SGKeyStoreMac.m \
+                    $(SGN_PLATFORM_DIR)/network/SGNetworkInfoMac.m
 SGN_DAEMON_PATH   = /usr/local/libexec/SkyglowNotificationsDaemon
 else
 SGN_OPENSSL      := $(THEOS_PROJECT_DIR)/libraries/openssl/ios
-SGN_PLATFORM_SRC := Skyglow-Notifications-Daemon/platform/SGIOSPlatform.m
+SGN_PLATFORM_DIR := Skyglow-Notifications-Daemon/platform/implementation/ios
+SGN_PLATFORM_SRC := $(SGN_PLATFORM_DIR)/capabilities/SGCapabilityTable.m \
+                    $(SGN_PLATFORM_DIR)/delivery/SGDeliveryIOS.m \
+                    $(SGN_PLATFORM_DIR)/keychain/SGKeyStoreIOS.m \
+                    $(SGN_PLATFORM_DIR)/network/SGNetworkInfoIOS.m
 SGN_DAEMON_PATH   = $(THEOS_PACKAGE_INSTALL_PREFIX)/usr/libexec/SkyglowNotificationsDaemon
 endif
 
@@ -32,12 +40,13 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/payload/SGJSONParser.m \
     Skyglow-Notifications-Daemon/payload/SGStructuredTLV.m \
     Skyglow-Notifications-Daemon/state/SGConfiguration.m \
-    Skyglow-Notifications-Daemon/state/SGKeychainStore.m \
     Skyglow-Notifications-Daemon/net/SGKeepAliveStrategy.c \
     Skyglow-Notifications-Daemon/net/SGKeepAliveOffload.m \
-    Skyglow-Notifications-Daemon/net/SGReachabilityMonitor.m \
+    Skyglow-Notifications-Daemon/platform/implementation/common/network/SGReachabilityMonitor.m \
     Skyglow-Notifications-Daemon/core/SGDaemon.m \
-    Skyglow-Notifications-Daemon/platform/SGAvailability.m \
+    Skyglow-Notifications-Daemon/platform/implementation/common/system/SGSystemServices.m \
+    Skyglow-Notifications-Daemon/platform/implementation/common/system/power/SGSystemPowerCommon.m \
+    Skyglow-Notifications-Daemon/platform/SGPlatform.m \
     Skyglow-Notifications-Daemon/platform/SGPlatformFactory.m \
     $(SGN_PLATFORM_SRC) \
     Skyglow-Notifications-Daemon/state/SGStorage.m \
@@ -47,7 +56,7 @@ SkyglowNotificationsDaemon_FILES = \
     Skyglow-Notifications-Daemon/net/control/SGControlAuthorization.m \
     Skyglow-Notifications-Daemon/net/control/SGControlChannel.m \
     Skyglow-Notifications-Daemon/net/control/SGControlCommandRouter.m \
-    Skyglow-Notifications-Daemon/platform/SGCompatibilityShim.m \
+    Skyglow-Notifications-Daemon/platform/implementation/common/SGCompatibilityShim.m \
     libraries/sqlite/sqlite3.c
 SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result \
   -fstack-protector-all -D_FORTIFY_SOURCE=2 \
@@ -60,6 +69,9 @@ SkyglowNotificationsDaemon_CFLAGS = -fno-objc-arc -Wno-unused-result \
   -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/crypto \
   -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/payload \
   -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/platform \
+  -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/platform/interface \
+  -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/platform/implementation/common \
+  -I$(THEOS_PROJECT_DIR)/$(SGN_PLATFORM_DIR) \
   -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/shared \
   -DSG_LOG_FILE_DEFAULT_ENABLED=$(SG_DAEMON_FILE_LOGGING) \
   -DSG_LOG_CONSOLE_DEFAULT_ENABLED=$(SG_DAEMON_CONSOLE_LOGGING) \
@@ -106,6 +118,8 @@ sgnctl_CFLAGS = -fno-objc-arc -Wno-deprecated-declarations \
     -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/net/control \
     -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/shared \
     -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/platform \
+    -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/platform/interface \
+    -I$(THEOS_PROJECT_DIR)/$(SGN_PLATFORM_DIR) \
     -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/core \
     -I$(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/state
 sgnctl_FRAMEWORKS = Foundation CoreFoundation

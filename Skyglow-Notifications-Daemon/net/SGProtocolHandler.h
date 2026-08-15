@@ -122,7 +122,7 @@ void SGP_PrepareRegistrationKeypair(void);
 void SGP_BeginLoginHandshake(NSString *address, RSA *privKey);
 
 /** Reads, validates, and dispatches one incoming server message. */
-int  SGP_ProcessNextIncomingMessage(double pingIntervalSec);
+int  SGP_ProcessNextIncomingMessage(void);
 
 /** Returns a stable symbolic name for SGP_OK / SGP_ERR_* return codes. */
 const char *SGP_ErrorName(int code);

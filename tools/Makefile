@@ -10,6 +10,8 @@ INCLUDES := \
 	-I$(DAEMON_DIR)/net/control \
 	-I$(DAEMON_DIR)/shared \
 	-I$(DAEMON_DIR)/platform \
+	-I$(DAEMON_DIR)/platform/interface \
+	-I$(DAEMON_DIR)/platform/implementation/macos \
 	-I$(DAEMON_DIR)/core \
 	-I$(DAEMON_DIR)/state
 

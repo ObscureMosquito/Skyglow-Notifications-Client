@@ -2,9 +2,7 @@
 #define OS_OBJECT_USE_OBJC 0
 #endif
 
-#import "SGMacPlatform.h"
-
-#if TARGET_OS_OSX
+#import "SGDeliveryMac.h"
 
 #import <xpc/xpc.h>
 #import <dlfcn.h>
@@ -46,7 +44,7 @@ static void SGCloseConnection(xpc_connection_t conn) {
 }
 @end
 
-@implementation SGMacPlatform {
+@implementation SGDeliveryMac {
     dispatch_queue_t _cacheQueue;
     NSMutableDictionary *_conns;
     NSMutableDictionary *_endpoints;
@@ -60,8 +58,11 @@ static void SGCloseConnection(xpc_connection_t conn) {
 
 #pragma mark - Lifecycle
 
-- (instancetype)initWithDeliveryReadyHandler:(void (^)(void))handler {
+- (void)setDeliveryReadyHandler:(void (^)(void))handler {
     (void)handler;
+}
+
+- (id)init {
     if ((self = [super init])) {
         _conns = [[NSMutableDictionary alloc] init];
         _endpoints = [[NSMutableDictionary alloc] init];
@@ -204,7 +205,7 @@ static void SGCloseConnection(xpc_connection_t conn) {
     if (!conn) return NULL;
     [self _forgetConnectionState:conn];
 
-    __unsafe_unretained SGMacPlatform *uself = self;
+    __unsafe_unretained SGDeliveryMac *uself = self;
     dispatch_queue_t cacheQueue = _cacheQueue;
     NSString *bundleCopy = [[bundleID copy] autorelease];
     xpc_connection_set_event_handler(conn, ^(xpc_object_t event) {
@@ -316,5 +317,3 @@ static void SGCloseConnection(xpc_connection_t conn) {
 }
 
 @end
-
-#endif

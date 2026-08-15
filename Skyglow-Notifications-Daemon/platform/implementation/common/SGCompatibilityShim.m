@@ -2,7 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 
-/** iOS 4 lacks _environ; SDK 7 code that references it fails to dlopen. */
+/** iOS 4 lacks _environ code that references it fails to dlopen thanks apple */
 char **environ __attribute__((weak)) = NULL;
 
 static id sgn_dict_subscript_get(id self, SEL _cmd, id key) {

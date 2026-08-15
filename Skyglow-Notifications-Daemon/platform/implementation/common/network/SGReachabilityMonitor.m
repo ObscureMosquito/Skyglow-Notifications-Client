@@ -1,11 +1,10 @@
 #import "SGReachabilityMonitor.h"
 #import <SystemConfiguration/SystemConfiguration.h>
 #include <netinet/in.h>
-#include <TargetConditionals.h>
 
 @implementation SGReachabilityMonitor {
     SCNetworkReachabilityRef _reachabilityRef;
-    SGReachabilityChangeHandler _handler;
+    SGNetworkChangeHandler _handler;
 }
 
 static const void *SGReachabilityRetain(const void *info) {
@@ -15,32 +14,33 @@ static void SGReachabilityRelease(const void *info) {
     [(SGReachabilityMonitor *)info release];
 }
 
-static void SGReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) {
-    SGReachabilityMonitor *monitor = (SGReachabilityMonitor *)info;
-    BOOL reachable = (flags & kSCNetworkFlagsReachable) && !(flags & kSCNetworkFlagsConnectionRequired);
-#if TARGET_OS_IPHONE
-    BOOL isWWAN = (flags & kSCNetworkReachabilityFlagsIsWWAN);
-#else
-    BOOL isWWAN = NO;   /* no cellular radio on macOS */
-#endif
-
-    if (monitor->_handler) monitor->_handler(reachable, isWWAN);
+static BOOL SGFlagsReachable(SCNetworkReachabilityFlags flags) {
+    return (flags & kSCNetworkFlagsReachable) && !(flags & kSCNetworkFlagsConnectionRequired);
 }
 
-- (instancetype)initWithChangeHandler:(SGReachabilityChangeHandler)handler {
-    if ((self = [super init])) {
-        _handler = [handler copy];
+static void SGReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags flags, void *info) {
+    SGReachabilityMonitor *monitor = (SGReachabilityMonitor *)info;
+    if (monitor->_handler) {
+        monitor->_handler(SGFlagsReachable(flags), [monitor flagsIndicateCellular:flags]);
     }
-    return self;
 }
 
 - (void)dealloc {
-    [self stopMonitoringSystemNetworkChanges];
+    [self stopMonitoring];
     [_handler release];
     [super dealloc];
 }
 
-- (void)startMonitoringSystemNetworkChanges {
+- (BOOL)flagsIndicateCellular:(uint32_t)flags {
+    (void)flags;
+    return NO;
+}
+
+- (void)startMonitoringWithHandler:(SGNetworkChangeHandler)handler {
+    if (_reachabilityRef) return;
+    [_handler release];
+    _handler = [handler copy];
+
     struct sockaddr_in zeroAddr;
     memset(&zeroAddr, 0, sizeof(zeroAddr));
     zeroAddr.sin_len    = sizeof(zeroAddr);
@@ -59,7 +59,7 @@ static void SGReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkRea
     SCNetworkReachabilityScheduleWithRunLoop(_reachabilityRef, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
 }
 
-- (void)stopMonitoringSystemNetworkChanges {
+- (void)stopMonitoring {
     if (_reachabilityRef) {
         SCNetworkReachabilityUnscheduleFromRunLoop(_reachabilityRef, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
         SCNetworkReachabilitySetCallback(_reachabilityRef, NULL, NULL);
@@ -68,11 +68,18 @@ static void SGReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkRea
     }
 }
 
-- (BOOL)isReachable {
+- (SCNetworkReachabilityFlags)_currentFlags {
     SCNetworkReachabilityFlags flags = 0;
     if (_reachabilityRef) SCNetworkReachabilityGetFlags(_reachabilityRef, &flags);
-    return (flags & kSCNetworkFlagsReachable) && !(flags & kSCNetworkFlagsConnectionRequired);
+    return flags;
 }
 
+- (BOOL)isReachable {
+    return SGFlagsReachable([self _currentFlags]);
+}
+
+- (BOOL)activePathIsCellular {
+    return [self flagsIndicateCellular:[self _currentFlags]];
+}
 
 @end

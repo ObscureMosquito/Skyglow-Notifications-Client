@@ -3,7 +3,7 @@
 #import "SGStorage.h"
 #import "SGConfiguration.h"
 #import "SGDatabaseSchema.h"
-#import "SGKeychainStore.h"
+#import "SGPlatform.h"
 #import "SGLog.h"
 
 #include <errno.h>
@@ -11,14 +11,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <TargetConditionals.h>
 
 #define SG_MIGRATION_VERSION 2
 
 static NSString * const kSGMigrationVersionKey = @"storageMigrationVersion";
-#if TARGET_OS_IPHONE
 static NSString * const kSGKeychainAccessibilityMigrationKey = @"keychainAccessibilityMigrationVersion";
-#endif
 static NSString * const kSGLegacyPrivateKeyPath = @"/var/Library/PreferenceBundles/SGNPreferenceBundle.bundle/com.skyglow.client.pem";
 static BOOL SGMStringHasText(id value) {
     return [value isKindOfClass:[NSString class]] &&
@@ -184,7 +181,8 @@ static BOOL SGMigrateLegacyProfileIfNeeded(void) {
     }
 
     if (shouldCarryRegistration &&
-        !SGKeychain_StorePrivateKeyPEM(privateKeyPEM, 1)) {
+        ![[SGPlatform currentPlatform].keyStore
+              storeKeyData:[privateKeyPEM dataUsingEncoding:NSUTF8StringEncoding] forProfile:1]) {
         /* Legacy plist may hold the only key copy; leave it for retry on next launch. */
         SGLOGW(SGMigration,
                "code=SGN_MIGRATION_KEYCHAIN_DEFERRED result=deferred profile=1");
@@ -199,7 +197,7 @@ static BOOL SGMigrateLegacyProfileIfNeeded(void) {
     if (!certData || !SGAtomicWriteData(certData, certDiskPath, 0644, NULL)) {
         SGLOGE(SGMigration,
                "code=SGN_MIGRATION_PROFILE_FAILED result=failed reason=certificate_write");
-        if (shouldCarryRegistration) SGKeychain_DeletePrivateKey(1);
+        if (shouldCarryRegistration) [[SGPlatform currentPlatform].keyStore deleteKeyForProfile:1];
         return NO;
     }
 
@@ -213,7 +211,7 @@ static BOOL SGMigrateLegacyProfileIfNeeded(void) {
     if (!SGAtomicWritePropertyList(newProfile, profilePath, 0644, NULL)) {
         SGLOGE(SGMigration,
                "code=SGN_MIGRATION_PROFILE_FAILED result=failed reason=profile_write");
-        if (shouldCarryRegistration) SGKeychain_DeletePrivateKey(1);
+        if (shouldCarryRegistration) [[SGPlatform currentPlatform].keyStore deleteKeyForProfile:1];
         return NO;
     }
 
@@ -234,9 +232,6 @@ static BOOL SGMigrateLegacyProfileIfNeeded(void) {
 }
 
 static BOOL SGMigrateKeychainAccessibilityIfNeeded(void) {
-#if !TARGET_OS_IPHONE
-    return YES;
-#else
     NSString *mainPath = SGPath(SG_PREFS_PLIST_PATH);
     NSDictionary *mainPrefs = [NSDictionary dictionaryWithContentsOfFile:mainPath] ?: @{};
     
@@ -247,8 +242,8 @@ static BOOL SGMigrateKeychainAccessibilityIfNeeded(void) {
 
     for (NSInteger profileIdx = 1; profileIdx <= SG_PROFILE_INDEX_MAX; profileIdx++) {
         BOOL found = NO;
-        if (!SGKeychain_RewrapPrivateKeyForPreUnlockAccess(profileIdx,
-                                                            &found)) {
+        if (![[SGPlatform currentPlatform].keyStore
+                  rewrapKeyForPreUnlockAccessForProfile:profileIdx found:&found]) {
             SGLOGW(SGMigration,
                    "code=SGN_MIGRATION_KEYCHAIN_ACCESSIBILITY_DEFERRED result=deferred profile=%ld",
                    (long)profileIdx);
@@ -272,7 +267,6 @@ static BOOL SGMigrateKeychainAccessibilityIfNeeded(void) {
     }
 
     return YES;
-#endif
 }
 
 static BOOL SGMSQLiteTableExists(sqlite3 *db, const char *tableName) {

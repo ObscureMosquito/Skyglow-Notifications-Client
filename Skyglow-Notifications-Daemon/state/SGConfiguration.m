@@ -1,9 +1,8 @@
 #import "SGConfiguration.h"
 #import "SGStorage.h"
 #import "SGCryptoEngine.h"
-#import "SGKeychainStore.h"
+#import "SGPlatform.h"
 #import "SGLog.h"
-#include <TargetConditionals.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -100,7 +99,9 @@ static void SG_ZeroAndReleaseData(NSMutableData *data) {
         nextHasProfile = YES;
         nextServerAddress = [profilePrefs[@"server_address"] copy];
         nextDeviceAddress = [profilePrefs[@"device_address"] copy];
-        nextPrivateKeyPEM = [SGKeychain_FetchPrivateKeyPEM(nextActiveProfileIndex) mutableCopy];
+        [[SGPlatform currentPlatform].keyStore copyKeyData:&nextPrivateKeyPEM
+                                                forProfile:nextActiveProfileIndex];
+        [nextPrivateKeyPEM retain];
         nextServerPubKeyPEM = [[self readKeyFromFile:profilePrefs[@"server_pub_key"]] copy];
         nextRegistrationIdentityPEM = [[self readKeyFromFile:profilePrefs[@"registration_identity"]] copy];
     }

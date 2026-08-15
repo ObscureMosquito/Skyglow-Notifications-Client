@@ -1,6 +1,6 @@
 #import "SGStorage.h"
 #include <CoreFoundation/CoreFoundation.h>
-#include <TargetConditionals.h>
+#import "SGPlatformConstants.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <pwd.h>
@@ -32,16 +32,10 @@ NSString *SGStorageUUIDString(void) {
     return [(NSString *)string autorelease];
 }
 
-void SGStorageApplyMobileOwnership(NSString *path) {
-#if !TARGET_OS_OSX
-    struct passwd *mobile = getpwnam("mobile");
-    if (mobile) {
-        (void)chown([path fileSystemRepresentation],
-                    mobile->pw_uid, mobile->pw_gid);
-    }
-#else
-    (void)path;
-#endif
+void SGStorageApplyStateOwnership(NSString *path) {
+    const char *owner = SG_STATE_FILE_OWNER;
+    struct passwd *pw = owner ? getpwnam(owner) : NULL;
+    if (pw) (void)chown([path fileSystemRepresentation], pw->pw_uid, pw->pw_gid);
 }
 
 void SGStorageApplyPrivateDirectoryProtection(NSString *path) {
@@ -51,7 +45,7 @@ void SGStorageApplyPrivateDirectoryProtection(NSString *path) {
         return;
     }
     chmod([path fileSystemRepresentation], 0700);
-    SGStorageApplyMobileOwnership(path);
+    SGStorageApplyStateOwnership(path);
 }
 
 static void SGStorageFsyncParentDirectory(NSString *path) {

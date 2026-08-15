@@ -4,12 +4,10 @@
 #import <Foundation/Foundation.h>
 
 @class SGDaemon;
-@protocol SGPlatform;
 @class SGControlChannel;
 
 @interface SGControlCommandRouter : NSObject
-- (instancetype)initWithDaemon:(SGDaemon *)daemon
-                       platform:(id<SGPlatform>)platform;
+- (instancetype)initWithDaemon:(SGDaemon *)daemon;
 - (void)attachToChannel:(SGControlChannel *)channel;
 @end
 
