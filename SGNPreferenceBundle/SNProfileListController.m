@@ -1,6 +1,6 @@
 #import "SNProfileListController.h"
 #import "SNInterfaceColors.h"
-#import "SNServerInfoViewController.h"
+#import "SNProfileControllerBase.h"
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
 #import "SNDeferredActivity.h"
@@ -221,9 +221,9 @@ enum {
         }
         if (newIdx == 0) return;
 
-        SNServerInfoViewController *vc = [[SNServerInfoViewController alloc] initWithProfileIndex:newIdx];
+        UIViewController *vc =
+                [SNProfileControllerBase profileControllerForIndex:newIdx];
         [self.navigationController pushViewController:vc animated:YES];
-        [vc release];
         return;
     }
 
@@ -232,9 +232,9 @@ enum {
     BOOL isActive = ([dm activeProfileIndex] == idx);
 
     if (isActive) {
-        SNServerInfoViewController *vc = [[SNServerInfoViewController alloc] initWithProfileIndex:idx];
+        UIViewController *vc =
+                [SNProfileControllerBase profileControllerForIndex:idx];
         [self.navigationController pushViewController:vc animated:YES];
-        [vc release];
     } else {
         [self _showActionSheetForProfileIndex:idx fromView:[tableView cellForRowAtIndexPath:indexPath]];
     }
@@ -364,10 +364,9 @@ enum {
         if ([buttonTitle isEqualToString:@"Set Active"]) {
             [self _performSetActiveForIndex:capturedIdx];
         } else if ([buttonTitle isEqualToString:@"View Details"]) {
-            SNServerInfoViewController *vc =
-                [[SNServerInfoViewController alloc] initWithProfileIndex:capturedIdx];
+            UIViewController *vc =
+                [SNProfileControllerBase profileControllerForIndex:capturedIdx];
             [self.navigationController pushViewController:vc animated:YES];
-            [vc release];
         }
     }];
 }

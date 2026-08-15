@@ -7,11 +7,13 @@ BUNDLE_NAME = SGNPreferenceBundle
 SGNPreferenceBundle_FILES = \
     SNAlert.m \
     SNRootListController.m \
-    SNLogViewController.m \
+    SNStatusBannerViewController.m \
     SNLogTailViewController.m \
     SNAppToggleCell.m \
     SNAppListController.m \
-    SNServerInfoViewController.m \
+    SNProfileControllerBase.m \
+    SNProfileWizardViewController.m \
+    SNProfileDetailViewController.m \
     SNProfileListController.m \
     SNCustomViewCell.m \
     SNDebugViewController.m \
@@ -19,6 +21,7 @@ SGNPreferenceBundle_FILES = \
     SNChannelGateway.m \
     SNDeferredActivity.m \
     SNPaneHeader.m \
+    SNLogParser.m \
     $(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/net/control/SGControlAuthorization.m \
     $(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/net/control/SGControlChannel.m \
     $(THEOS_PROJECT_DIR)/Skyglow-Notifications-Daemon/shared/SGLog.m \

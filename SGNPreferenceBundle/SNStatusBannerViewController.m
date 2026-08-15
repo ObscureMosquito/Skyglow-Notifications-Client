@@ -1,8 +1,8 @@
-#import "SNLogViewController.h"
+#import "SNStatusBannerViewController.h"
 #import "SNDataManager.h"
 #import "SNAlert.h"
 
-@interface SNLogViewController ()
+@interface SNStatusBannerViewController ()
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UILabel *primaryLabel;
 @property (nonatomic, strong) UILabel *detailLabel;
@@ -14,7 +14,7 @@
 @property (nonatomic, assign) CGFloat statusLineSpacing;
 @end
 
-@implementation SNLogViewController
+@implementation SNStatusBannerViewController
 
 - (void)setRootController:(id)controller   {}
 - (void)setParentController:(id)controller {}

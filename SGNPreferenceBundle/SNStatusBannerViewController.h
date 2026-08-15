@@ -1,6 +1,6 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 
-@interface SNLogViewController : UIViewController
+@interface SNStatusBannerViewController : UIViewController
 
 @end

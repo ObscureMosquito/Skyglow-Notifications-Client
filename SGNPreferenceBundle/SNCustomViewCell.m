@@ -1,10 +1,10 @@
 #import "SNCustomViewCell.h"
-#import "SNLogViewController.h"
+#import "SNStatusBannerViewController.h"
 #import <UIKit/UIKit.h>
 
 @interface SNCustomTableViewCell ()
 
-@property (nonatomic, strong) SNLogViewController *logViewController;
+@property (nonatomic, strong) SNStatusBannerViewController *statusBannerController;
 @property (nonatomic, strong) UIView              *tapOverlay;
 
 @end
@@ -29,20 +29,20 @@
         self.contentView.clipsToBounds = NO;
         self.clipsToBounds = NO;
 
-        SNLogViewController *lvc = [[SNLogViewController alloc] init];
-        self.logViewController = lvc;
+        SNStatusBannerViewController *lvc = [[SNStatusBannerViewController alloc] init];
+        self.statusBannerController = lvc;
         [lvc release];
-        self.logViewController.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        [self.contentView addSubview:self.logViewController.view];
+        self.statusBannerController.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [self.contentView addSubview:self.statusBannerController.view];
 
-        UIView *overlay = [[UIView alloc] initWithFrame:self.logViewController.view.bounds];
+        UIView *overlay = [[UIView alloc] initWithFrame:self.statusBannerController.view.bounds];
         self.tapOverlay = overlay;
         [overlay release];
         self.tapOverlay.autoresizingMask = UIViewAutoresizingFlexibleWidth |
                                            UIViewAutoresizingFlexibleHeight;
         self.tapOverlay.backgroundColor        = [UIColor clearColor];
         self.tapOverlay.userInteractionEnabled = NO;
-        [self.logViewController.view addSubview:self.tapOverlay];
+        [self.statusBannerController.view addSubview:self.tapOverlay];
 
         self.selectionStyle = UITableViewCellSelectionStyleNone;
     }
@@ -50,7 +50,7 @@
 }
 
 - (void)dealloc {
-    [_logViewController release];
+    [_statusBannerController release];
     [_tapOverlay release];
     [super dealloc];
 }
@@ -60,7 +60,7 @@
     CGRect b = self.contentView.bounds;
     CGFloat hInset = [[self class] hInset];
     CGFloat vInset = [[self class] vInset];
-    self.logViewController.view.frame = CGRectMake(hInset, vInset,
+    self.statusBannerController.view.frame = CGRectMake(hInset, vInset,
                                                    b.size.width  - hInset * 2.0f,
                                                    b.size.height - vInset * 2.0f);
 }
