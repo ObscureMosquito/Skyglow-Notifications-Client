@@ -115,6 +115,16 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
             return NO;
         }
 
+        NSMutableData *verifyKey = nil;
+        if (!SGKeychain_CopyPrivateKeyPEM(profileIdx, &verifyKey) || !verifyKey || [verifyKey length] == 0) {
+            SGLOGE(SGStateStore, "code=%s profile=%ld result=failed reason=readback_failed",
+                   SGND_REGISTRATION_KEY_WRITE_FAILED, (long)profileIdx);
+            SGKeychain_DeletePrivateKey(profileIdx);
+            if (verifyKey) SG_CryptoWipeData(verifyKey);
+            return NO;
+        }
+        SG_CryptoWipeData(verifyKey);
+
         BOOL persisted = [self _updateProfileAtIndex:profileIdx
                                             mutation:^(NSMutableDictionary *profile) {
             [profile setObject:deviceAddress forKey:@"device_address"];

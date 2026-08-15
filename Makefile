@@ -129,12 +129,16 @@ after-stage::
 	$(ECHO_NOTHING)chmod 644 $(THEOS_STAGING_DIR)/Library/LaunchDaemons/com.skyglow.snd.plist$(ECHO_END)
 
 ifeq ($(SGN_MACOS),1)
+after-stage::
+	$(ECHO_NOTHING)codesign --force --sign - "$(THEOS_STAGING_DIR)/usr/local/libexec/SkyglowNotificationsDaemon"$(ECHO_END)
+	$(ECHO_NOTHING)codesign --force --sign - "$(THEOS_STAGING_DIR)/usr/local/bin/sgnctl"$(ECHO_END)
+endif
+
+ifeq ($(SGN_MACOS),1)
 SGN_PKG_ID  := $(shell grep -i '^Package:' control | cut -d' ' -f2-)
 SGN_PKG_VER := $(shell grep -i '^Version:' control | cut -d' ' -f2-)
 
 macpkg: stage
-	codesign --force --sign - "$(THEOS_STAGING_DIR)/usr/local/libexec/SkyglowNotificationsDaemon"
-	codesign --force --sign - "$(THEOS_STAGING_DIR)/usr/local/bin/sgnctl"
 	rm -rf "$(THEOS_STAGING_DIR)/Library/Application Support"
 	rm -rf $(THEOS_PROJECT_DIR)/packages/.scripts
 	mkdir -p $(THEOS_PROJECT_DIR)/packages/.scripts
