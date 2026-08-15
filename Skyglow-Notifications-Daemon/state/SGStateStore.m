@@ -212,13 +212,12 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
                                             mutation:^(NSMutableDictionary *profile) {
             [profile setObject:deviceAddress forKey:@"device_address"];
             [profile removeObjectForKey:@"last_reg_fail"];
-            [profile removeObjectForKey:@"registration_identity"];
         }];
         if (!persisted) {
             SGKeychain_DeletePrivateKey(profileIdx);
             return NO;
         }
-        SGDurableRemoveItem(SGPath(SGProfileRegIdentityPathForIndex(profileIdx)), NULL);
+
         [self _republishConfigurationLocked];
         return YES;
     }
@@ -227,15 +226,33 @@ static BOOL SGRestoreFileSnapshot(NSString *path, NSData *snapshot, mode_t mode)
 - (BOOL)wipeProfileCredentialsAtIndex:(NSInteger)profileIdx {
     if (!SGProfileIndexIsValid(profileIdx)) return NO;
     @synchronized(self) {
-        SGKeychain_DeletePrivateKey(profileIdx);
         BOOL persisted = [self _updateProfileAtIndex:profileIdx
                                             mutation:^(NSMutableDictionary *profile) {
             [profile removeObjectForKey:@"device_address"];
             [profile removeObjectForKey:@"privateKey"];
             [profile removeObjectForKey:@"last_reg_fail"];
         }];
+        SGKeychain_DeletePrivateKey(profileIdx);
         if (persisted) [self _republishConfigurationLocked];
         return persisted;
+    }
+}
+
+- (void)confirmRegistrationForProfileAtIndex:(NSInteger)profileIdx {
+    if (!SGProfileIndexIsValid(profileIdx)) return;
+    @synchronized(self) {
+        NSDictionary *profile = [NSDictionary dictionaryWithContentsOfFile:
+            SGProfilePlistPathForIndex(profileIdx)] ?: @{};
+        if (![[profile objectForKey:@"device_address"] length] ||
+            ![profile objectForKey:@"registration_identity"]) {
+            return;
+        }
+        SGDurableRemoveItem(SGPath(SGProfileRegIdentityPathForIndex(profileIdx)), NULL);
+        [self _updateProfileAtIndex:profileIdx
+                           mutation:^(NSMutableDictionary *p) {
+            [p removeObjectForKey:@"registration_identity"];
+        }];
+        [self _republishConfigurationLocked];
     }
 }
 

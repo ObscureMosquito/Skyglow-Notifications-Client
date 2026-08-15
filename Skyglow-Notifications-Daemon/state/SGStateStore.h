@@ -18,6 +18,9 @@
                               deviceAddress:(NSString *)deviceAddress
                               privateKeyPEM:(NSData *)privateKeyPEM;
 - (BOOL)wipeProfileCredentialsAtIndex:(NSInteger)profileIdx;
+
+/** Spends the bootstrap registration identity once auth confirms the registration. */
+- (void)confirmRegistrationForProfileAtIndex:(NSInteger)profileIdx;
 - (BOOL)saveProfileAtIndex:(NSInteger)profileIdx
              serverAddress:(NSString *)serverAddress
             certificatePEM:(NSString *)certificatePEM

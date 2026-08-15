@@ -609,6 +609,9 @@ static BOOL isValidPort(NSString *port) {
 - (void)protocolDidAuthenticateSuccessfully {
     [self handleEvent:SGEventAuthSuccess payload:nil];
 
+    [_stateStore confirmRegistrationForProfileAtIndex:
+        [[SGConfiguration sharedConfiguration] activeProfileIndex]];
+
     NSString *currentAddr = [[SGConfiguration sharedConfiguration] serverAddress];
     if (currentAddr) {
         [SGServerLocator refreshDNSCacheAsynchronouslyForAddress:currentAddr];
