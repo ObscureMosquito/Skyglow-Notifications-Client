@@ -17,13 +17,13 @@ static inline NSString *SGProfilePlistPathForIndex(NSInteger profileIdx) {
 }
 
 static inline NSString *SGProfileCertificatePathForIndex(NSInteger profileIdx) {
-    return [NSString stringWithFormat:@"%@/profile%ld-server.pem",
-            SG_PROFILE_STATE_DIRECTORY, (long)profileIdx];
+    return SGPath([NSString stringWithFormat:@"%@/profile%ld-server.pem",
+            SG_PROFILE_STATE_DIRECTORY, (long)profileIdx]);
 }
 
 static inline NSString *SGProfileRegIdentityPathForIndex(NSInteger profileIdx) {
-    return [NSString stringWithFormat:@"%@/profile%ld-reg-identity.pem",
-            SG_PROFILE_STATE_DIRECTORY, (long)profileIdx];
+    return SGPath([NSString stringWithFormat:@"%@/profile%ld-reg-identity.pem",
+            SG_PROFILE_STATE_DIRECTORY, (long)profileIdx]);
 }
 
 

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-echo "[Skyglow] Running removal script"
+echo "[SGN] Running removal script"
 
 # Detect rootless
 JB_PREFIX=""

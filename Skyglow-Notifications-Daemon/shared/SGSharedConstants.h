@@ -13,7 +13,7 @@
 #define SG_DB_PATH                  @"/var/mobile/Library/SkyglowNotifications/sqlite.db"
 #define SG_DURABLE_EVENT_INBOX_PATH @"/var/mobile/Library/SkyglowNotifications/inbox"
 #define SG_LOG_PATH                 @"/var/log/sgn.log"
-#define SG_PID_PATH                 @"/var/run/skyglow_daemon.pid"
+#define SG_PID_PATH                 @"/var/run/sgn.pid"
 
 #pragma mark - Preference Keys
 

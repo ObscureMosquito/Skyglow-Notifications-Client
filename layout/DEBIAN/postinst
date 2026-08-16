@@ -9,13 +9,13 @@ if [ -d /var/mobile ]; then
     [ -d /var/jb ] && PREFIX="/var/jb"
     PLIST_PATH="$PREFIX/Library/LaunchDaemons/com.skyglow.snd.plist"
     DAEMON_PATH="$PREFIX/usr/libexec/SkyglowNotificationsDaemon"
-    STDERR_PATH="/var/mobile/Library/Logs/snd-err.log"
+    STDERR_PATH="/var/mobile/Library/Logs/sgn-err.log"
 else
     IS_IOS=0
     PREFIX=""
     PLIST_PATH="/Library/LaunchDaemons/com.skyglow.snd.plist"
     DAEMON_PATH="/usr/local/libexec/SkyglowNotificationsDaemon"
-    STDERR_PATH="/usr/local/var/skyglow/var/log/snd-err.log"
+    STDERR_PATH="/usr/local/var/SkyglowNotifications/sgn-err.log"
 fi
 
 echo "[SGN] Target: $([ "$IS_IOS" = 1 ] && echo iOS || echo macOS), prefix ${PREFIX:-/}"
