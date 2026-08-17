@@ -4,6 +4,7 @@
 #import "SNDataManager.h"
 #import "SNChannelGateway.h"
 #import "SNAlert.h"
+#import "SNInterfaceColors.h"
 
 @interface SFPFilePickerViewController (SkyglowPSStubs)
 - (void)setRootController:(id)controller;
@@ -18,6 +19,8 @@
 - (void)willResignActive                   {}
 - (void)willBecomeActive                   {}
 @end
+
+static const CGFloat kSNFooterSideInset = 20.0f;
 
 @implementation SNProfileControllerBase
 
@@ -127,14 +130,39 @@ static BOOL SNProfileIsRegistered(NSInteger index) {
     }];
 }
 
-- (CGFloat)heightForFooterTitle:(NSString *)title {
-    if ([title length] == 0) return 0.0f;
+- (UIView *)footerViewWithTitle:(NSString *)title {
+    if ([title length] == 0) return nil;
+
     CGFloat width = self.tableView.bounds.size.width;
     if (width < 10.0f) width = 320.0f;
-    CGSize size = [title sizeWithFont:[UIFont systemFontOfSize:13.0f]
-                    constrainedToSize:CGSizeMake(width - 32.0f, 200.0f)
-                        lineBreakMode:NSLineBreakByWordWrapping];
-    return size.height + 18.0f;
+    CGFloat textWidth = width - kSNFooterSideInset * 2.0f;
+
+    UILabel *label = [[[UILabel alloc] init] autorelease];
+    label.text            = title;
+    label.font            = [UIFont systemFontOfSize:13.0f];
+    label.textColor       = SNSecondaryLabelColor([UIColor grayColor]);
+    label.shadowColor     = SNLegacyTextShadowColor([UIColor colorWithWhite:1.0f alpha:0.7f]);
+    label.shadowOffset    = CGSizeMake(0, 1);
+    label.backgroundColor = [UIColor clearColor];
+    label.numberOfLines   = 0;
+    label.lineBreakMode   = NSLineBreakByWordWrapping;
+    label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+
+    CGFloat textHeight = ceilf([label sizeThatFits:
+        CGSizeMake(textWidth, 999.0f)].height);
+    label.frame = CGRectMake(kSNFooterSideInset, 8.0f, textWidth, textHeight);
+
+    UIView *footer = [[[UIView alloc] initWithFrame:
+        CGRectMake(0, 0, width, textHeight + 18.0f)] autorelease];
+    footer.backgroundColor  = [UIColor clearColor];
+    footer.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [footer addSubview:label];
+    return footer;
+}
+
+- (CGFloat)heightForFooterTitle:(NSString *)title {
+    UIView *footer = [self footerViewWithTitle:title];
+    return footer ? footer.frame.size.height : 0.0f;
 }
 
 - (BOOL)textFieldShouldReturn:(UITextField *)textField {

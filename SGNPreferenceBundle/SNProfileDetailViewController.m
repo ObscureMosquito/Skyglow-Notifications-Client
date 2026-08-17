@@ -74,7 +74,10 @@ typedef enum {
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section {
-    if (section != SectionDevice) return nil;
+    if (section != SectionDevice) {
+        return [self footerViewWithTitle:
+            [self tableView:tableView titleForFooterInSection:section]];
+    }
 
     SNRegistrationStatus status = [self _registrationStatus];
     CGFloat width = self.tableView.bounds.size.width;
@@ -102,10 +105,9 @@ typedef enum {
     label.numberOfLines = 0;
     label.lineBreakMode = NSLineBreakByWordWrapping;
 
-    CGSize textSize = [text sizeWithFont:font
-                       constrainedToSize:CGSizeMake(textWidth, 200.0f)
-                           lineBreakMode:NSLineBreakByWordWrapping];
-    label.frame = CGRectMake(textLeft, 8.0f, textWidth, textSize.height);
+    CGFloat textHeight = ceilf([label sizeThatFits:
+        CGSizeMake(textWidth, 999.0f)].height);
+    label.frame = CGRectMake(textLeft, 8.0f, textWidth, textHeight);
 
     UIView *dot = [[[UIView alloc] initWithFrame:CGRectMake(18.0f, 11.4f, 9.0f, 9.0f)] autorelease];
     if (status == SNRegistrationRegistered) {
@@ -119,7 +121,7 @@ typedef enum {
     dot.layer.masksToBounds = YES;
 
     UIView *footer = [[[UIView alloc] initWithFrame:
-        CGRectMake(0, 0, width, textSize.height + 18.0f)] autorelease];
+        CGRectMake(0, 0, width, textHeight + 18.0f)] autorelease];
     footer.backgroundColor = [UIColor clearColor];
     [footer addSubview:dot];
     [footer addSubview:label];
@@ -128,9 +130,7 @@ typedef enum {
 
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
     UIView *footer = [self tableView:tableView viewForFooterInSection:section];
-    if (footer) return footer.frame.size.height;
-    return [self heightForFooterTitle:
-        [self tableView:tableView titleForFooterInSection:section]];
+    return footer ? footer.frame.size.height : 0.0f;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {

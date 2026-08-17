@@ -31,6 +31,7 @@
                             failureTitle:(NSString *)failureTitle
                                onSuccess:(void (^)(void))successBlock;
 
+- (UIView *)footerViewWithTitle:(NSString *)title;
 - (CGFloat)heightForFooterTitle:(NSString *)title;
 
 @end

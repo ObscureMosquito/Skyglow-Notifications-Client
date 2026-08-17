@@ -108,11 +108,16 @@ typedef enum {
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     switch (section) {
         case WizardSectionServer:
-            return @"Enter the hostname or IP address of your Skyglow notification server.";
+            return @"Enter the hostname of your Skyglow notification server. It must publish an _sgn TXT record.";
         case WizardSectionCert:
             return @"Fetch the certificate automatically, or import a .pem file manually from disk";
         default: return nil;
     }
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section {
+    return [self footerViewWithTitle:
+        [self tableView:tableView titleForFooterInSection:section]];
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
@@ -129,7 +134,7 @@ typedef enum {
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
 
             UITextField *tf = [[[UITextField alloc] init] autorelease];
-            tf.placeholder              = @"Hostname or IP address";
+            tf.placeholder              = @"Server hostname";
             tf.autocorrectionType       = UITextAutocorrectionTypeNo;
             tf.autocapitalizationType   = UITextAutocapitalizationTypeNone;
             tf.keyboardType             = UIKeyboardTypeURL;
