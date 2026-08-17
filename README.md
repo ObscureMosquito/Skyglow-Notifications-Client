@@ -33,7 +33,7 @@ The best part of this daemon is its usage simplicity, it can be easily adapted t
 
 ## Documentation
 
-[Protocol Documentation](DOCUMENTATION.md)
+[Protocol Documentation](https://cydia.skyglow.es/tweaks/Notifications/Documentation/protocol.html) & [Client Specification](https://cydia.skyglow.es/tweaks/Notifications/Documentation/client.html)
 
 ## Contributors
 
