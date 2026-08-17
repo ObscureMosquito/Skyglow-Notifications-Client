@@ -31,6 +31,25 @@ Sometimes you may encounter an app that still works with apple's built in APNS (
 
 The best part of this daemon is its usage simplicity, it can be easily adapted to work with one or multiple services, allowing users to have notifications in their old iDevices easily, see documentation for an in depth review.
 
+## Building
+
+The whole project builds with [theos](https://theos.dev/docs/installation) on a macOS host. Every third party library is under `libraries/` so nothing else has to be installed other than the SDK for the target you want.
+
+`BuildConfig.mk` picks the target from the make invocation:
+
+| Target                                     | Command                                                     | SDK in `$THEOS/sdks`                        | Produces                                                                                                                     |
+| ------------------------------------------ | ----------------------------------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| iOS 4.0+, rootful (armv7 / armv7s / arm64) | `make package FINALPACKAGE=1`                               | `iPhoneOS7.0.sdk`                           | `packages/*.deb` daemon, `sgnctl`, preference bundle, SpringBoard tweak                                                      |
+| iOS 15+, rootless (arm64 / arm64e)         | `make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless` | `iPhoneOS16.5.sdk`                          | same, rootless layout                                                                                                        |
+| macOS 10.8+ (x86_64) / 11+ (arm64)         | `make macpkg PLATFORM=OSX FINALPACKAGE=1`                   | the macOS SDK shipped with Xcode (`latest`) | `packages/com.skyglow.snd-<arch>-<version>.pkg` — daemon + `sgnctl` with the post-install script that loads the LaunchDaemon |
+
+Notes:
+
+- macOS builds for the host architecture by default, pass `MACOS_ARCH=x86_64` or `MACOS_ARCH=arm64` to cross-build. `make package PLATFORM=OSX` also works but yields theos's bare `.pkg` without the post-install script (theos pls add support :)).
+- Logging toggles are compile time defaults: `SG_DAEMON_FILE_LOGGING` (1), `SG_DAEMON_CONSOLE_LOGGING` (0), `SG_DAEMON_TTY_LOGGING` (1), e.g. `make package PLATFORM=OSX SG_DAEMON_CONSOLE_LOGGING=1`.
+- Host-side unit tests for the pure C parts: `sh Skyglow-Notifications-Daemon/tests/run.sh`.
+- `make -f tools/Makefile` builds a standalone `build/sgnctl` for the Mac host without theos.
+
 ## Documentation
 
 [Protocol Documentation](https://cydia.skyglow.es/tweaks/Notifications/Documentation/protocol.html) & [Client Specification](https://cydia.skyglow.es/tweaks/Notifications/Documentation/client.html)

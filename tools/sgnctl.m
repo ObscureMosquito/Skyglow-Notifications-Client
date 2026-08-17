@@ -33,7 +33,7 @@ static const char *ErrName(SGControlError e) {
         case SGCERR_UNREACHABLE: return "unreachable (is the daemon running?)";
         case SGCERR_TIMEOUT: return "timed out";
         case SGCERR_INVALID_REQUEST: return "invalid request";
-        case SGCERR_UNAUTHORIZED: return "unauthorized (run with sudo)";
+        case SGCERR_UNAUTHORIZED: return "unauthorized";
         case SGCERR_INTERNAL: return "internal daemon error";
         case SGCERR_DAEMON_BUSY: return "daemon busy";
         case SGCERR_NOT_FOUND: return "not found";
